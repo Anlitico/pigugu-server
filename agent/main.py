@@ -1,0 +1,1555 @@
+# agent/main.py
+"""
+AI Voice Agent - Modular STT/LLM/TTS Architecture
+
+This agent is separated into modular components:
+- STT (Speech-to-Text): stt.py
+- LLM (Large Language Model): llm.py  
+- TTS (Text-to-Speech): tts.py
+- Config: config.py
+
+Supports multiple providers for each component.
+"""
+
+import asyncio
+import json
+import os
+import random
+import sys
+import time
+from dotenv import load_dotenv
+from loguru import logger
+
+from livekit.agents import (
+    Agent,
+    AgentSession,
+    AutoSubscribe,
+    JobContext,
+    WorkerOptions,
+    StopResponse,
+    cli,
+    function_tool,
+)
+from livekit.agents.voice import room_io
+from livekit import rtc
+from livekit.plugins import silero
+
+# Import our modular components
+from config import get_config, AI_PERSONALITY, GROUP_DISCUSSION_PROMPT, get_personality_prompt
+from stt import create_stt
+from llm import create_llm
+from search_adapter import build_search_messages
+from tts import create_tts
+from unified_logger import init_unified_logger, get_unified_logger
+from speaker_tracker import SpeakerTracker
+from response_strategy import ResponseStrategy
+
+load_dotenv()
+
+
+# Initialize configuration
+config = get_config()
+
+# Configure loguru
+logger.remove()  # Remove default handler
+
+# Add console handler with colors
+logger.add(
+    sys.stderr,
+    format="<green>{time:YYYY-MM-DD HH:mm:ss.SSS}</green> | <level>{level: <8}</level> | <cyan>{name}</cyan>:<cyan>{function}</cyan>:<cyan>{line}</cyan> - <level>{message}</level>",
+    level=config.LOG_LEVEL.upper(),
+    colorize=True,
+)
+
+# Add file logging if enabled
+if config.LOG_TO_FILE:
+    import os
+    from pathlib import Path
+    
+    # Create log directory from LOG_FILE_PATH
+    log_file = Path(config.LOG_FILE_PATH)
+    log_file.parent.mkdir(parents=True, exist_ok=True)
+    
+    logger.add(
+        config.LOG_FILE_PATH,
+        rotation=config.LOG_ROTATION,
+        retention=config.LOG_RETENTION,
+        level=config.LOG_LEVEL.upper(),
+        format="{time:YYYY-MM-DD HH:mm:ss.SSS} | {level: <8} | {name}:{function}:{line} - {message}",
+        enqueue=True,  # Thread-safe logging
+    )
+    logger.info(f"File logging enabled: {config.LOG_FILE_PATH}")
+
+
+# Trump-authentic filler phrases used to mask LLM latency.
+# Each ends with a period so TTS treats it as a complete sentence and synthesizes immediately.
+TRUMP_FILLERS = [
+    "Well, let me tell you something. This is very interesting.",
+    "You know, a lot of people have been asking me about this.",
+    "Look, I've been thinking about this, and let me tell you.",
+    "So, that's very interesting. A lot of people don't know this.",
+    "Well, let me tell you. This is something I know very well.",
+    "You know what, that's a great point. A really great point.",
+    "That's very interesting. Very very interesting, let me say this.",
+]
+
+
+# Import perplexity search for tool-based web search (only used when POLICY_SEARCH_BACKEND = "perplexity")
+from perplexity_search import web_search as perplexity_web_search
+
+
+class TrumpAgent(Agent):
+    """
+    Custom Agent that adds speaker attribution and response gating for Mode 3.
+    
+    In Mode 3, user messages are prefixed with [Speaker X]: and the agent
+    decides whether to respond based on talk-show guest heuristics.
+    """
+    
+    def __init__(self, speaker_tracker: SpeakerTracker, agent_mode: int, agent_config=None,
+                 llm_api_key: str = "", llm_base_url: str = "", llm_model: str = "",
+                 llm_provider: str = "", search_adapter=None, **kwargs):
+        super().__init__(**kwargs)
+        self._speaker_tracker = speaker_tracker
+        self._agent_mode = agent_mode
+        self._config = agent_config
+        self._pending_filler = None
+        self._filler_yielded_at = None
+        self._use_search = False
+        self._use_perplexity_tool = False
+        # LLM connection info for direct search-enabled calls
+        self._llm_api_key = llm_api_key
+        self._llm_base_url = llm_base_url
+        self._llm_model = llm_model
+        self._llm_provider = llm_provider
+        self._search_adapter = search_adapter
+    
+    @function_tool(description="Search the web for current information using Perplexity")
+    async def web_search(self, query: str) -> str:
+        """
+        Tool-based web search using Perplexity API.
+        Only available when POLICY_SEARCH_BACKEND is set to "perplexity".
+        
+        Args:
+            query: The search query to execute
+            
+        Returns:
+            JSON string with search results including content and citations
+        """
+        if not self._config or self._config.POLICY_SEARCH_BACKEND != "perplexity":
+            logger.warning("🔍 [PERPLEXITY] web_search tool called but backend is not perplexity")
+            return '{"error": "Perplexity search not enabled"}'
+        
+        try:
+            result = await perplexity_web_search(
+                query=query,
+                model=self._config.PERPLEXITY_SEARCH_MODEL if self._config else "sonar-pro",
+                base_url=self._config.PERPLEXITY_SEARCH_BASE_URL if self._config else None,
+            )
+            return json.dumps(result)
+        except Exception as e:
+            logger.error(f"🔍 [PERPLEXITY] web_search tool failed: {e}")
+            return json.dumps({"error": str(e)})
+    
+    async def on_user_turn_completed(self, turn_ctx, new_message):
+        """
+        Called when the user's turn has ended, before the agent's reply.
+        
+        Mode 3: Adds [Speaker X]: prefix AND gates whether the agent should
+        respond at all (raise StopResponse to suppress). Behaves like a
+        talk-show side guest -- only speaks when appropriate.
+        
+        All modes: If filler words are enabled, picks a Trump-style filler
+        and injects context so the LLM continues from it.
+        """
+        # --- Mode 3: speaker attribution + response gating ---
+        if self._agent_mode == 3:
+            last_speaker = self._speaker_tracker.get_last_speaker()
+            original_text = new_message.text_content or ""
+            if last_speaker is not None and original_text:
+                new_message.content = [f"[Speaker {last_speaker}]: {original_text}"]
+                logger.debug(f"📊 [MODE 3] Speaker attribution: [Speaker {last_speaker}]")
+            
+            text_lower = original_text.lower()
+            
+            cooldown = self._config.GROUP_RESPONSE_COOLDOWN_SECONDS if self._config else 15.0
+            min_turns = self._config.GROUP_MIN_TURNS_BEFORE_RESPONSE if self._config else 4
+            rapid_threshold = self._config.GROUP_RAPID_EXCHANGE_THRESHOLD if self._config else 3.0
+            
+            kw_str = self._config.DIRECT_ADDRESS_KEYWORDS if self._config else "Trump,president,Donald,you,what do you think"
+            direct_keywords = [k.strip().lower() for k in kw_str.split(",")]
+            
+            is_direct = any(kw in text_lower for kw in direct_keywords)
+            if is_direct:
+                logger.info(f"🎯 [MODE 3] Direct address detected -- responding")
+            else:
+                recent_turns = self._speaker_tracker.get_recent_turns(count=40)
+                now = time.time()
+                
+                for turn in reversed(recent_turns):
+                    if turn.is_agent:
+                        if (now - turn.timestamp) < cooldown:
+                            logger.info(f"🔇 [MODE 3] Suppressed -- cooldown ({now - turn.timestamp:.1f}s < {cooldown}s)")
+                            raise StopResponse()
+                        break
+                
+                segments = []
+                for turn in recent_turns:
+                    key = "agent" if turn.is_agent else turn.speaker_id
+                    if segments and segments[-1][0] == key:
+                        segments[-1] = (key, turn.timestamp)
+                    else:
+                        segments.append((key, turn.timestamp))
+                
+                user_segments = [(k, ts) for k, ts in segments if k != "agent"]
+                if len(user_segments) >= 2:
+                    prev_speaker, prev_ts = user_segments[-2]
+                    curr_speaker, curr_ts = user_segments[-1]
+                    gap = curr_ts - prev_ts
+                    if prev_speaker != curr_speaker and gap < rapid_threshold:
+                        logger.info(f"🔇 [MODE 3] Suppressed -- rapid exchange between speakers (gap {gap:.1f}s < {rapid_threshold}s)")
+                        raise StopResponse()
+                
+                segments_since_agent = 0
+                for key, _ in reversed(segments):
+                    if key == "agent":
+                        break
+                    segments_since_agent += 1
+                
+                if segments_since_agent < min_turns:
+                    logger.info(f"🔇 [MODE 3] Suppressed -- only {segments_since_agent}/{min_turns} speaker segments since last response")
+                    raise StopResponse()
+                
+                logger.info(f"🎯 [MODE 3] Allowing response ({segments_since_agent} speaker segments since last, gap OK)")
+        
+        # --- Filler words (all modes, skip short messages like greetings) ---
+        user_text = (new_message.text_content or "").strip()
+        if self._config and self._config.ENABLE_FILLER_WORDS and len(user_text.split()) > 5:
+            filler = random.choice(TRUMP_FILLERS)
+            self._pending_filler = filler
+            # Modify turn_ctx to cancel preemptive generation so llm_node
+            # runs fresh with the filler set.
+            turn_ctx.add_message(
+                role="system",
+                content=f'You already began your reply with: "{filler}". Continue from there. Do NOT repeat it.',
+            )
+            logger.info(f"💬 [FILLER] Queued filler: \"{filler}\"")
+        
+        # --- Policy search: let the model decide when to search ---
+        self._use_search = bool(self._config and self._config.ENABLE_POLICY_SEARCH)
+        self._use_perplexity_tool = (
+            self._use_search and 
+            self._config and 
+            self._config.POLICY_SEARCH_BACKEND == "perplexity"
+        )
+        if self._use_search:
+            backend = "perplexity" if self._use_perplexity_tool else "built_in"
+            logger.info(f"🔍 [SEARCH] Policy search enabled, backend={backend}")
+    
+    async def _search_llm_stream(self, chat_ctx):
+        """Stream LLM response with web search enabled (bypasses LiveKit plugin).
+        
+        For Qwen: uses enable_search=True via extra_body on the Chat Completions API.
+        For Grok: uses the Responses API with web_search tool.
+        """
+        messages = build_search_messages(chat_ctx.items)
+        has_system = any(msg["role"] == "system" for msg in messages)
+        force_search = bool(self._config and self._config.FORCE_POLICY_SEARCH)
+        adapter_name = type(self._search_adapter).__name__ if self._search_adapter else "None"
+
+        logger.info(
+            f"🔍 [SEARCH] Sending {len(messages)} messages to {self._llm_provider} "
+            f"(model={self._llm_model}, adapter={adapter_name}, "
+            f"has_system={has_system}, force_search={force_search})"
+        )
+        for i, m in enumerate(messages):
+            preview = m["content"][:80] if m["content"] else "(empty)"
+            logger.info(f"🔍 [SEARCH]   msg[{i}] role={m['role']} content={preview!r}")
+        
+        try:
+            if not self._search_adapter:
+                raise RuntimeError(f"No search adapter configured for provider={self._llm_provider}")
+
+            async for chunk in self._search_adapter.stream_with_search(
+                messages=messages,
+                model=self._llm_model,
+                api_key=self._llm_api_key,
+                base_url=self._llm_base_url,
+                temperature=self._config.LLM_TEMPERATURE if self._config else 0.8,
+                force_search=force_search,
+            ):
+                yield chunk
+        except Exception as e:
+            logger.error(f"🔍 [SEARCH] Search API error ({self._llm_provider}): {e}")
+            raise
+    
+    async def llm_node(self, chat_ctx, tools, model_settings):
+        """Override to yield filler before LLM stream and route policy questions
+        through search-enabled LLM calls.
+
+        When filler is pending:
+        1. Yield filler text immediately (TTS synthesizes right away thanks to period)
+        2. Start LLM in background (processes in parallel while filler plays)
+        3. Hold back LLM output for ~3s so filler audio finishes first
+        4. Then yield buffered + streaming LLM chunks
+
+        When search is enabled (_use_search):
+        - POLICY_SEARCH_BACKEND="built_in": uses _search_llm_stream (provider-native search)
+        - POLICY_SEARCH_BACKEND="perplexity": uses normal LLM flow with web_search tool available
+        """
+        filler = self._pending_filler
+        self._pending_filler = None
+        use_search = self._use_search
+        use_perplexity_tool = self._use_perplexity_tool
+        self._use_search = False
+        self._use_perplexity_tool = False
+
+        if use_search:
+            if use_perplexity_tool:
+                logger.info(f"🔍 [SEARCH] Using Perplexity tool-based search")
+            else:
+                logger.info(f"🔍 [SEARCH] Using built-in provider-native search ({self._llm_provider})")
+
+        def _get_llm_gen():
+            if use_search and not use_perplexity_tool:
+                # Built-in search: bypass normal LLM flow and use provider-native search API
+                return self._search_llm_stream(chat_ctx)
+            # Normal LLM flow (either no search or Perplexity tool-based)
+            # For Perplexity, the web_search tool is available via @ai_callable decorator
+            return Agent.default.llm_node(self, chat_ctx, tools, model_settings)
+
+        if filler:
+            self._filler_yielded_at = time.perf_counter()
+            logger.info(f"⏱️ [TIMING] Filler yielded to TTS at {self._filler_yielded_at:.3f}")
+            yield filler + " "
+
+            chat_ctx.add_message(role="assistant", content=filler)
+
+            queue = asyncio.Queue()
+
+            async def _buffer_llm():
+                try:
+                    async for chunk in _get_llm_gen():
+                        await queue.put(chunk)
+                except Exception as e:
+                    logger.error(f"🔍 [SEARCH] Search LLM stream failed: {e}")
+                finally:
+                    await queue.put(None)
+
+            llm_task = asyncio.create_task(_buffer_llm())
+
+            await asyncio.sleep(3.0)
+
+            while True:
+                chunk = await queue.get()
+                if chunk is None:
+                    break
+                yield chunk
+
+            await llm_task
+        else:
+            async for chunk in _get_llm_gen():
+                yield chunk
+
+
+def validate_configuration():
+    """Validate that required API keys are set in environment variables"""
+    errors = []
+    
+    # Check STT provider API key
+    stt_provider = config.STT_PROVIDER.lower()
+    if stt_provider == "deepgram":
+        if not os.getenv("DEEPGRAM_API_KEY"):
+            errors.append("DEEPGRAM_API_KEY required in .env file for Deepgram STT")
+    elif stt_provider == "cartesia":
+        if not os.getenv("CARTESIA_API_KEY"):
+            errors.append("CARTESIA_API_KEY required in .env file for Cartesia STT")
+    
+    # Check Cartesia API key for TTS (always needed for TTS)
+    if not os.getenv("CARTESIA_API_KEY"):
+        errors.append("CARTESIA_API_KEY required in .env file for Cartesia TTS")
+    
+    # Check LLM API key based on provider
+    llm_provider = config.LLM_PROVIDER.lower()
+    if llm_provider == "qwen-us":
+        if not os.getenv("DASHSCOPE_US_API_KEY"):
+            errors.append("DASHSCOPE_US_API_KEY required in .env file for Qwen US LLM")
+    elif llm_provider == "grok" or llm_provider == "xai":
+        if not os.getenv("XAI_API_KEY"):
+            errors.append("XAI_API_KEY required in .env file for Grok LLM")
+    else:  # default to "qwen"
+        if not os.getenv("DASHSCOPE_API_KEY"):
+            errors.append("DASHSCOPE_API_KEY required in .env file for Qwen LLM")
+    
+    # Check LiveKit credentials
+    if not os.getenv("LIVEKIT_API_KEY"):
+        errors.append("LIVEKIT_API_KEY required in .env file")
+    
+    if not os.getenv("LIVEKIT_API_SECRET"):
+        errors.append("LIVEKIT_API_SECRET required in .env file")
+    
+    # Check Perplexity API key when using Perplexity search backend
+    if config.ENABLE_POLICY_SEARCH and config.POLICY_SEARCH_BACKEND == "perplexity":
+        if not os.getenv("PERPLEXITY_API_KEY") and not os.getenv("OPENROUTER_API_KEY"):
+            errors.append("PERPLEXITY_API_KEY or OPENROUTER_API_KEY required in .env file when POLICY_SEARCH_BACKEND=perplexity")
+    
+    # Mode 3 requires diarization
+    if config.AGENT_MODE == 3 and not config.DEEPGRAM_ENABLE_DIARIZATION:
+        errors.append("Mode 3 (Group Discussion) requires DEEPGRAM_ENABLE_DIARIZATION = true")
+    
+    if errors:
+        logger.error("=" * 70)
+        logger.error("Configuration Errors:")
+        for error in errors:
+            logger.error(f"  - {error}")
+        logger.error("=" * 70)
+        return False
+    
+    return True
+
+
+def create_agent_components():
+    """Create STT, LLM, and TTS components based on configuration"""
+    
+    # Get API keys from environment variables
+    deepgram_api_key = os.getenv("DEEPGRAM_API_KEY")
+    cartesia_api_key = os.getenv("CARTESIA_API_KEY")
+    
+    # Create STT component based on provider selection
+    stt_provider = config.STT_PROVIDER.lower()
+    if stt_provider == "deepgram":
+        stt = create_stt(
+            provider="deepgram",
+            model=config.DEEPGRAM_STT_MODEL,
+            language=config.DEEPGRAM_STT_LANGUAGE,
+            sample_rate=config.DEEPGRAM_STT_SAMPLE_RATE,
+            enable_diarization=config.DEEPGRAM_ENABLE_DIARIZATION,
+            api_key=deepgram_api_key,
+        )
+    elif stt_provider == "cartesia":
+        stt = create_stt(
+            provider="cartesia",
+            model=config.CARTESIA_STT_MODEL,
+            language=config.CARTESIA_STT_LANGUAGE,
+            encoding=config.CARTESIA_STT_ENCODING,
+            sample_rate=config.CARTESIA_STT_SAMPLE_RATE,
+            api_key=cartesia_api_key,
+            base_url=config.CARTESIA_STT_BASE_URL
+        )
+    else:
+        raise ValueError(f"Unknown STT provider: {stt_provider}")
+    
+    # Get LLM configuration based on selected provider
+    llm_config = config.get_llm_config()
+    
+    # Determine model based on provider
+    llm_provider = config.LLM_PROVIDER.lower()
+    if llm_provider == "grok" or llm_provider == "xai":
+        model = config.GROK_MODEL
+    else:
+        model = config.QWEN_MODEL
+    
+    # Create LLM component (OpenAI-compatible plugin)
+    llm = create_llm(
+        model=model,
+        temperature=config.LLM_TEMPERATURE,
+        instructions=get_personality_prompt(llm_provider),
+        max_tokens=config.LLM_MAX_TOKENS,
+        api_key=llm_config["api_key"],
+        base_url=llm_config["base_url"]
+    )
+    
+    # Create TTS component (Cartesia plugin)
+    # Parse emotion from comma-separated string if provided
+    emotion_list = None
+    if config.CARTESIA_TTS_EMOTION:
+        emotion_list = [e.strip() for e in config.CARTESIA_TTS_EMOTION.split(",")]
+    
+    tts = create_tts(
+        model=config.CARTESIA_TTS_MODEL,
+        language=config.CARTESIA_TTS_LANGUAGE,
+        encoding=config.CARTESIA_TTS_ENCODING,
+        voice=config.CARTESIA_TTS_VOICE,
+        speed=config.CARTESIA_TTS_SPEED,
+        emotion=emotion_list,
+        volume=config.CARTESIA_TTS_VOLUME,
+        sample_rate=config.CARTESIA_TTS_SAMPLE_RATE,
+        word_timestamps=config.CARTESIA_TTS_WORD_TIMESTAMPS,
+        api_key=cartesia_api_key,
+        base_url=config.CARTESIA_TTS_BASE_URL
+    )
+    
+    return stt, llm, tts
+
+
+async def entrypoint(ctx: JobContext):
+    """Main agent entry point"""
+    
+    # Interrupt timer state for Mode 2
+    last_user_interaction_time = asyncio.get_event_loop().time()
+    interrupt_task = None
+    
+    # Track conversation history for interrupt generation
+    conversation_history = []
+    
+    # === LATENCY TIMING INSTRUMENTATION (v3 - Highly Granular) ===
+    # Track timestamps for each conversation turn to measure pipeline latency
+    turn_timing = {
+        "turn_id": 0,                    # Incrementing turn counter
+        "user_stop_speaking": None,      # T0: When user finishes speaking
+        "final_transcript": None,        # T1: When final STT transcript received
+        "agent_start_thinking": None,    # T2: When agent enters "thinking" state (LLM request)
+        "llm_first_token": None,         # T2.5: When LLM streams first token (NEW)
+        "speech_created": None,          # T3: When TTS synthesis starts (speech_created event)
+        "llm_response_logged": None,     # T4: When LLM full response is logged
+        "agent_start_speaking": None,    # T5: When agent voice starts playing
+        "filler_yielded": None,          # TF: When filler text was yielded to TTS pipeline
+    }
+    
+    def reset_turn_timing():
+        """Reset timing for a new turn"""
+        turn_timing["turn_id"] += 1
+        turn_timing["user_stop_speaking"] = None
+        turn_timing["final_transcript"] = None
+        turn_timing["agent_start_thinking"] = None
+        turn_timing["llm_first_token"] = None
+        turn_timing["speech_created"] = None
+        turn_timing["llm_response_logged"] = None
+        turn_timing["agent_start_speaking"] = None
+        turn_timing["filler_yielded"] = None
+    
+    def log_turn_timing_summary():
+        """Log a detailed summary of timing for the completed turn"""
+        t0 = turn_timing["user_stop_speaking"]
+        t1 = turn_timing["final_transcript"]
+        t2 = turn_timing["agent_start_thinking"]
+        t2_5 = turn_timing["llm_first_token"]
+        t3 = turn_timing["speech_created"]
+        t4 = turn_timing["llm_response_logged"]
+        t5 = turn_timing["agent_start_speaking"]
+        tf = turn_timing["filler_yielded"]
+        
+        if not t5:
+            return  # Not enough data - agent hasn't spoken yet
+        
+        # Use the best available start time
+        start_time = t0 or t1 or t2
+        if not start_time:
+            return
+        
+        total = t5 - start_time
+        
+        # Build detailed breakdown
+        logger.info(f"⏱️ ══════════════════════════════════════════════════════════")
+        logger.info(f"⏱️ [TIMING] Turn #{turn_timing['turn_id']} DETAILED BREAKDOWN")
+        logger.info(f"⏱️ ══════════════════════════════════════════════════════════")
+        
+        # Log each timestamp
+        if t0:
+            logger.info(f"⏱️   T0   User stopped speaking:    {t0:.3f}")
+        if t1:
+            logger.info(f"⏱️   T1   Final STT transcript:     {t1:.3f}")
+        if t2:
+            logger.info(f"⏱️   T2   Agent started thinking:   {t2:.3f}")
+        if t2_5:
+            logger.info(f"⏱️   T2.5 LLM first token:          {t2_5:.3f}")
+        if t3:
+            logger.info(f"⏱️   T3   TTS speech created:       {t3:.3f}")
+        if t4:
+            logger.info(f"⏱️   T4   LLM response complete:    {t4:.3f}")
+        if tf:
+            logger.info(f"⏱️   TF   Filler yielded to TTS:    {tf:.3f}")
+        if t5:
+            logger.info(f"⏱️   T5   Agent voice playing:      {t5:.3f}")
+        
+        logger.info(f"⏱️ ──────────────────────────────────────────────────────────")
+        
+        # === PHASE 1: STT PROCESSING ===
+        logger.info(f"⏱️ 📊 PHASE 1: STT PROCESSING")
+        if t0 and t1:
+            delta = t1 - t0
+            verdict = "✅" if delta < 0.5 else "⚠️" if delta < 1.0 else "❌"
+            logger.info(f"⏱️   T0→T1 (STT finalization):          {delta:+.3f}s  {verdict}")
+        
+        # === PHASE 2: PIPELINE OVERHEAD ===
+        logger.info(f"⏱️ 📊 PHASE 2: PIPELINE OVERHEAD")
+        if t1 and t2:
+            delta = t2 - t1
+            verdict = "✅" if delta < 0.3 else "⚠️" if delta < 1.0 else "❌"
+            logger.info(f"⏱️   T1→T2 (Pipeline → LLM request):    {delta:+.3f}s  {verdict}")
+        elif t0 and t2:
+            delta = t2 - t0
+            verdict = "✅" if delta < 0.5 else "⚠️" if delta < 1.0 else "❌"
+            logger.info(f"⏱️   T0→T2 (User stop → LLM request):   {delta:+.3f}s  {verdict}")
+        
+        # === PHASE 3: LLM PROCESSING ===
+        logger.info(f"⏱️ 📊 PHASE 3: LLM PROCESSING")
+        if t2 and t2_5:
+            delta = t2_5 - t2
+            verdict = "✅" if delta < 0.5 else "⚠️" if delta < 1.5 else "❌"
+            logger.info(f"⏱️   T2→T2.5 (LLM Time-To-First-Token):  {delta:+.3f}s  {verdict} [TTFT]")
+        
+        if t2_5 and t4:
+            delta = t4 - t2_5
+            logger.info(f"⏱️   T2.5→T4 (LLM streaming):            {delta:+.3f}s  [Full generation]")
+        elif t2 and t4:
+            delta = t4 - t2
+            logger.info(f"⏱️   T2→T4 (LLM total time):            {delta:+.3f}s  [Request → Complete]")
+        
+        # If we don't have T2.5 but have T2 and T5, note it
+        if not t2_5 and t2 and t5:
+            logger.info(f"⏱️   (T2.5 not captured - LLM metrics may arrive late)")
+        
+        # === PHASE 4: TTS & AUDIO PIPELINE ===
+        logger.info(f"⏱️ 📊 PHASE 4: TTS & AUDIO PIPELINE")
+        if t3 and t5:
+            delta = t5 - t3
+            verdict = "✅" if delta < 1.0 else "⚠️" if delta < 3.0 else "❌"
+            logger.info(f"⏱️   T3→T5 (TTS synthesis → Playback):   {delta:+.3f}s  {verdict} [TTS+Buffer]")
+        
+        if t2 and t3:
+            delta = t3 - t2
+            verdict = "✅" if delta < 0.5 else "⚠️" if delta < 2.0 else "❌"
+            logger.info(f"⏱️   T2→T3 (LLM request → TTS start):    {delta:+.3f}s  {verdict}")
+        
+        # === AGGREGATE METRICS ===
+        logger.info(f"⏱️ ──────────────────────────────────────────────────────────")
+        logger.info(f"⏱️ 📊 AGGREGATE METRICS")
+        
+        if t2 and t5:
+            delta = t5 - t2
+            verdict = "✅" if delta < 2.0 else "⚠️" if delta < 5.0 else "❌"
+            logger.info(f"⏱️   T2→T5 (Total LLM+TTS time):        {delta:+.3f}s  {verdict}")
+        
+        if t4 and t5:
+            delta = t5 - t4
+            if delta < 0:
+                logger.info(f"⏱️   T4→T5 (LLM done → Audio start):    {delta:+.3f}s  ✅ [Streaming worked!]")
+            else:
+                verdict = "⚠️" if delta < 2.0 else "❌"
+                logger.info(f"⏱️   T4→T5 (LLM done → Audio start):    {delta:+.3f}s  {verdict} [Post-generation delay]")
+        
+        # === FILLER METRICS ===
+        if tf:
+            logger.info(f"⏱️ 📊 FILLER WORD METRICS")
+            if t0 and tf:
+                delta = tf - t0
+                verdict = "✅" if delta < 0.5 else "⚠️" if delta < 1.0 else "❌"
+                logger.info(f"⏱️   T0→TF (User stop → Filler yield):  {delta:+.3f}s  {verdict}")
+            if tf and t5:
+                delta = t5 - tf
+                verdict = "✅" if delta < 0.5 else "⚠️" if delta < 1.5 else "❌"
+                logger.info(f"⏱️   TF→T5 (Filler yield → Playback):   {delta:+.3f}s  {verdict} [TTS buffer]")
+        
+        logger.info(f"⏱️ ──────────────────────────────────────────────────────────")
+        logger.info(f"⏱️   TOTAL PERCEIVED LAG: {total:.3f}s")
+        
+        # === BOTTLENECK DIAGNOSIS ===
+        bottleneck = "Unknown"
+        bottleneck_time = 0.0
+        
+        # Find the slowest phase
+        if t1 and t2:
+            pipeline_time = t2 - t1
+            if pipeline_time > 0.5 and pipeline_time > bottleneck_time:
+                bottleneck = "Pipeline overhead (T1→T2)"
+                bottleneck_time = pipeline_time
+        
+        if t2 and t2_5:
+            ttft_time = t2_5 - t2
+            if ttft_time > 1.0 and ttft_time > bottleneck_time:
+                bottleneck = "LLM TTFT (T2→T2.5)"
+                bottleneck_time = ttft_time
+        
+        if t2_5 and t4:
+            streaming_time = t4 - t2_5
+            if streaming_time > 3.0 and streaming_time > bottleneck_time:
+                bottleneck = "LLM streaming (T2.5→T4)"
+                bottleneck_time = streaming_time
+        
+        if t3 and t5:
+            tts_audio_time = t5 - t3
+            if tts_audio_time > 2.0 and tts_audio_time > bottleneck_time:
+                bottleneck = "TTS/Audio pipeline (T3→T5)"
+                bottleneck_time = tts_audio_time
+        
+        # If T2.5 is missing, note that we can't fully diagnose
+        if not t2_5 and t2 and t5 and (t5 - t2) > 3.0:
+            bottleneck = "LLM+TTS pipeline (T2→T5, TTFT not captured)"
+        
+        if total < 2.0:
+            logger.info(f"⏱️   VERDICT: ✅ EXCELLENT (under 2s)")
+        elif total < 4.0:
+            logger.info(f"⏱️   VERDICT: ⚠️ ACCEPTABLE (2-4s) - Bottleneck: {bottleneck}")
+        elif total < 6.0:
+            logger.info(f"⏱️   VERDICT: ❌ SLOW (4-6s) - Bottleneck: {bottleneck}")
+        else:
+            logger.info(f"⏱️   VERDICT: ❌❌ VERY SLOW (>6s) - Bottleneck: {bottleneck}")
+        logger.info(f"⏱️ ══════════════════════════════════════════════════════════")
+    # === END LATENCY TIMING INSTRUMENTATION ===
+    
+    # Initialize speaker tracker
+    speaker_tracker = SpeakerTracker(active_window_seconds=60.0)
+    
+    # Initialize response strategy
+    direct_keywords = [k.strip() for k in config.DIRECT_ADDRESS_KEYWORDS.split(",")]
+    response_strategy = ResponseStrategy(
+        enabled=config.ENABLE_SMART_RESPONSE,
+        group_silence_threshold=config.GROUP_RESPONSE_SILENCE_THRESHOLD,
+        direct_address_keywords=direct_keywords
+    )
+    
+    # Parse metadata from job context
+    metadata = {}
+    if ctx.job.metadata:
+        try:
+            import json
+            metadata = json.loads(ctx.job.metadata)
+            logger.info(f"Parsed job metadata: {metadata}")
+        except Exception as e:
+            logger.warning(f"Failed to parse job metadata: {e}")
+    
+    # Determine STT model info for logging
+    stt_provider = config.STT_PROVIDER.lower()
+    if stt_provider == "deepgram":
+        stt_info = f"{config.DEEPGRAM_STT_MODEL} (Deepgram, language: {config.DEEPGRAM_STT_LANGUAGE})"
+    else:
+        stt_info = f"{config.CARTESIA_STT_MODEL} (Cartesia, language: {config.CARTESIA_STT_LANGUAGE})"
+    
+    # Determine LLM model info for logging
+    llm_provider = config.LLM_PROVIDER.lower()
+    if llm_provider == "grok" or llm_provider == "xai":
+        llm_model_info = f"{config.GROK_MODEL} (Provider: {config.LLM_PROVIDER})"
+    else:
+        llm_model_info = f"{config.QWEN_MODEL} (Provider: {config.LLM_PROVIDER})"
+    
+    logger.info("=" * 70)
+    logger.info(f"Agent starting for room: {ctx.room.name}")
+    logger.info(f"Job ID: {ctx.job.id}")
+    mode_desc = {1: "Default", 2: f"Interrupt (every {config.INTERRUPT_INTERVAL_SECONDS}s)", 3: "Group Discussion"}
+    logger.info(f"Agent Mode: {config.AGENT_MODE} ({mode_desc.get(config.AGENT_MODE, 'Unknown')})")
+    logger.info(f"STT: {stt_info}")
+    logger.info(f"LLM: {llm_model_info}")
+    logger.info(f"TTS: {config.CARTESIA_TTS_MODEL} (voice: {config.CARTESIA_TTS_VOICE}, language: {config.CARTESIA_TTS_LANGUAGE})")
+    if metadata:
+        logger.info(f"Metadata: {metadata}")
+    logger.info("=" * 70)
+    
+    # Connect to room
+    await ctx.connect(auto_subscribe=AutoSubscribe.AUDIO_ONLY)
+    
+    # Initialize unified logger with room connection
+    ulog = init_unified_logger(ctx.room)
+    ulog.log_step("INIT", "Agent connected to room", include_timing=False)
+    ulog.log_step("CONFIG", f"STT: {stt_info}", include_timing=False)
+    ulog.log_step("CONFIG", f"LLM: {llm_model_info}", include_timing=False)
+    ulog.log_step("CONFIG", f"TTS: {config.CARTESIA_TTS_MODEL} (voice: {config.CARTESIA_TTS_VOICE})", include_timing=False)
+    
+    # Add room event handlers for connection tracking
+    @ctx.room.on("participant_connected")
+    def on_participant_connected(participant: rtc.RemoteParticipant):
+        logger.info(f"🔗 [ROOM] Participant connected: {participant.identity}")
+        ulog.log_step("ROOM", f"Participant connected: {participant.identity}")
+    
+    @ctx.room.on("participant_disconnected")
+    def on_participant_disconnected(participant: rtc.RemoteParticipant):
+        logger.info(f"🔌 [ROOM] Participant disconnected: {participant.identity}")
+        ulog.log_step("ROOM", f"Participant disconnected: {participant.identity}")
+    
+    # Create agent components
+    stt, llm, tts = create_agent_components()
+    
+    # Get plugin instances for LiveKit Agent
+    stt_plugin = stt.get_plugin() if hasattr(stt, 'get_plugin') else stt
+    llm_plugin = llm.get_plugin() if hasattr(llm, 'get_plugin') else llm
+    tts_plugin = tts.get_plugin() if hasattr(tts, 'get_plugin') else tts
+    
+    logger.info(f"🔍 [DEBUG] STT plugin type: {type(stt_plugin).__name__}")
+    logger.info(f"🔍 [DEBUG] LLM plugin type: {type(llm_plugin).__name__}")
+    logger.info(f"🔍 [DEBUG] TTS plugin type: {type(tts_plugin).__name__}")
+    
+    ulog.log_step("INIT", f"STT plugin: {type(stt_plugin).__name__}", level="debug", include_timing=False)
+    ulog.log_step("INIT", f"LLM plugin: {type(llm_plugin).__name__}", level="debug", include_timing=False)
+    ulog.log_step("INIT", f"TTS plugin: {type(tts_plugin).__name__}", level="debug", include_timing=False)
+    
+    # Create voice agent with modular components
+    if hasattr(stt, 'get_plugin') and hasattr(llm, 'get_plugin') and hasattr(tts, 'get_plugin'):
+        # All components support LiveKit plugins - use Agent with best practices
+        
+        # Build VAD (Voice Activity Detection) - using Silero for background voice cancellation
+        vad = silero.VAD.load()
+        
+        # Prepare instructions - use LLM's or fallback to AI_PERSONALITY
+        if hasattr(llm, 'instructions') and llm.instructions:
+            # LLM has custom instructions (system prompt)
+            instructions = llm.instructions
+            logger.info("✅ Using LLM's system prompt as instructions")
+            ulog.log_step("CONFIG", "Using LLM's system prompt", level="debug", include_timing=False)
+        else:
+            # Fallback to AI_PERSONALITY instructions
+            instructions = AI_PERSONALITY
+            logger.info("✅ Using AI_PERSONALITY as instructions")
+            ulog.log_step("CONFIG", "Using AI_PERSONALITY instructions", level="debug", include_timing=False)
+        
+        # Add metadata context if available
+        if metadata:
+            instructions += f"\n\nContext:\n"
+            for key, value in metadata.items():
+                instructions += f"- {key}: {value}\n"
+        
+        # Add Group Discussion prompt for Mode 3
+        if config.AGENT_MODE == 3:
+            instructions += GROUP_DISCUSSION_PROMPT
+            logger.info("✅ Added Group Discussion prompt for Mode 3")
+            ulog.log_step("CONFIG", "Added Group Discussion prompt for Mode 3", level="debug", include_timing=False)
+        
+        # Create Agent with all components and instructions
+        # Mode 3 uses longer endpointing delays so brief pauses in group
+        # talk don't trigger turn-ends (talk-show guest behavior)
+        if config.AGENT_MODE == 3:
+            min_ep = config.GROUP_MIN_ENDPOINTING_DELAY
+            max_ep = config.GROUP_MAX_ENDPOINTING_DELAY
+        else:
+            min_ep = 0.5
+            max_ep = 2.0
+        
+        agent_kwargs = {
+            "instructions": instructions,
+            "stt": stt_plugin,
+            "llm": llm_plugin,
+            "tts": tts_plugin,
+            "vad": vad,
+            "allow_interruptions": config.ENABLE_INTERRUPTIONS,
+            "min_endpointing_delay": min_ep,
+            "max_endpointing_delay": max_ep,
+        }
+        
+        # If LLM has initial chat context with system prompt, pass it to the Agent
+        if hasattr(llm, 'initial_chat_ctx') and llm.initial_chat_ctx:
+            agent_kwargs["chat_ctx"] = llm.initial_chat_ctx
+            logger.info("✅ Passing LLM's initial chat context to Agent")
+            ulog.log_step("CONFIG", "Passing LLM's initial chat context", level="debug", include_timing=False)
+        
+        # Use TrumpAgent which handles speaker attribution + response gating for Mode 3
+        llm_config = config.get_llm_config()
+        llm_provider = config.LLM_PROVIDER.lower()
+        llm_model_name = config.GROK_MODEL if llm_provider in ("grok", "xai") else config.QWEN_MODEL
+        agent = TrumpAgent(
+            speaker_tracker=speaker_tracker,
+            agent_mode=config.AGENT_MODE,
+            agent_config=config,
+            llm_api_key=llm_config["api_key"],
+            llm_base_url=llm_config["base_url"],
+            llm_model=llm_model_name,
+            llm_provider=llm_provider,
+            search_adapter=llm.get_search_adapter(),
+            **agent_kwargs
+        )
+        
+        # Create AgentSession (manages the runtime)
+        session = AgentSession(
+            preemptive_generation=config.ENABLE_PREEMPTIVE_SYNTHESIS,
+        )
+        
+        logger.info("✅ Agent and session created with best practices (VAD, interruptions, turn detection)")
+        ulog.log_step("INIT", "Agent and session created with VAD, interruptions, turn detection", include_timing=False)
+        
+        # Add comprehensive logging to debug the conversation pipeline
+        @session.on("user_state_changed")
+        def on_user_state_changed(event):
+            if event.old_state != "speaking" and event.new_state == "speaking":
+                logger.info("🎤 [DEBUG] User started speaking")
+                ulog.log_step("USER-STATE", "User started speaking")
+                # Reset timing for new turn when user starts speaking
+                reset_turn_timing()
+            elif event.old_state == "speaking" and event.new_state != "speaking":
+                logger.info(f"🎤 [DEBUG] User stopped speaking (now {event.new_state})")
+                ulog.log_step("USER-STATE", f"User stopped speaking (now {event.new_state})")
+                # === TIMING: Record T0 - user stopped speaking ===
+                turn_timing["user_stop_speaking"] = time.perf_counter()
+                logger.info(f"⏱️ [TIMING] T0: User stopped speaking at {turn_timing['user_stop_speaking']:.3f}")
+            else:
+                logger.info(f"👤 [DEBUG] User state: {event.old_state} → {event.new_state}")
+                ulog.log_step("USER-STATE", f"State changed: {event.old_state} → {event.new_state}", level="debug")
+        
+        @session.on("user_input_transcribed")
+        def on_user_input_transcribed(event):
+            nonlocal last_user_interaction_time
+            
+            # Extract speaker information if available (when diarization is enabled)
+            speaker_info = ""
+            speaker_id = None
+            if hasattr(event, 'speaker_id') and event.speaker_id is not None:
+                speaker_id = event.speaker_id
+                speaker_info = f" (speaker: {speaker_id})"
+            
+            logger.info(f"👤 [STT] User transcribed: {event.transcript}{speaker_info}")
+            logger.info(f"🔍 [DEBUG] is_final={event.is_final}, type={event.type}")
+            logger.info(f"🔍 [DEBUG] Session agent_state: {session.agent_state}")
+            logger.info(f"🔍 [DEBUG] Session user_state: {session.user_state}")
+            
+            # Track speaker if we have speaker_id (diarization enabled)
+            if event.is_final and event.transcript and event.transcript.strip() and speaker_id is not None:
+                speaker_tracker.track_utterance(
+                    speaker_id=speaker_id,
+                    text=event.transcript.strip()
+                )
+                # Log conversation mode periodically
+                logger.info(speaker_tracker.get_conversation_mode_summary())
+            
+            if event.is_final and event.transcript and event.transcript.strip():
+                ulog.log_step("STT", f"User (final): {event.transcript.strip()}{speaker_info}")
+                # === TIMING: Record T1 - final transcript received ===
+                turn_timing["final_transcript"] = time.perf_counter()
+                logger.info(f"⏱️ [TIMING] T1: Final STT transcript at {turn_timing['final_transcript']:.3f}")
+            else:
+                ulog.log_step("STT", f"User (interim): {event.transcript}{speaker_info}", level="debug")
+            
+            # Reset interaction timer when user speaks to agent
+            if event.is_final and event.transcript and event.transcript.strip():
+                last_user_interaction_time = asyncio.get_event_loop().time()
+                logger.debug(f"⏰ [MODE] Interaction timer reset")
+                if config.AGENT_MODE == 2:
+                    ulog.log_step("MODE2", "Interaction timer reset", level="debug")
+                elif config.AGENT_MODE == 3:
+                    ulog.log_step("MODE3", "Interaction timer reset", level="debug")
+            
+            # Publish user transcript to frontend in real-time (when final)
+            if event.is_final and event.transcript and event.transcript.strip():
+                try:
+                    import json
+                    trimmed_transcript = event.transcript.strip()
+                    
+                    # Send JSON payload with speaker_id for Mode 3 web client display
+                    payload = {
+                        "text": trimmed_transcript,
+                        "speaker_id": speaker_id  # Will be None in Mode 1/2
+                    }
+                    
+                    ulog.log_step("PUBLISH", "Sending user transcript to web client")
+                    asyncio.create_task(
+                        ctx.room.local_participant.publish_data(
+                            json.dumps(payload).encode('utf-8'),
+                            reliable=True,
+                            topic="user_transcript"
+                        )
+                    )
+                    logger.debug(f"📤 Published user transcript (real-time, speaker: {speaker_id})")
+                except Exception as e:
+                    logger.error(f"❌ Error publishing user transcript: {e}")
+                    ulog.log_step("ERROR", f"Failed to publish user transcript: {e}", level="error")
+        
+        @session.on("agent_state_changed")
+        def on_agent_state_changed(event):
+            # === TIMING: Capture "thinking" state (LLM processing) ===
+            if event.new_state == "thinking" and event.old_state != "thinking":
+                logger.info(f"🤖 [DEBUG] Agent started THINKING (LLM processing)")
+                ulog.log_step("LLM", "Agent started thinking (LLM request)")
+                # Record T2 - agent enters thinking state (LLM request begins)
+                if turn_timing["agent_start_thinking"] is None:
+                    turn_timing["agent_start_thinking"] = time.perf_counter()
+                    logger.info(f"⏱️ [TIMING] T2: Agent started thinking at {turn_timing['agent_start_thinking']:.3f}")
+            
+            if event.old_state != "speaking" and event.new_state == "speaking":
+                logger.info("🤖 [DEBUG] Agent started speaking")
+                ulog.log_step("TTS", "Agent voice started playing")
+                # === TIMING: Record T5 - agent started speaking and log summary ===
+                turn_timing["agent_start_speaking"] = time.perf_counter()
+                # Capture filler yield timestamp from agent if available
+                if hasattr(agent, '_filler_yielded_at') and agent._filler_yielded_at is not None:
+                    turn_timing["filler_yielded"] = agent._filler_yielded_at
+                    agent._filler_yielded_at = None
+                logger.info(f"⏱️ [TIMING] T5: Agent started speaking at {turn_timing['agent_start_speaking']:.3f}")
+                log_turn_timing_summary()
+                # Send signal to frontend for timing
+                try:
+                    asyncio.create_task(
+                        ctx.room.local_participant.publish_data(
+                            b"started",
+                            reliable=True,
+                            topic="agent_voice_started"
+                        )
+                    )
+                    logger.debug("📤 Published agent_voice_started signal")
+                    ulog.log_step("PUBLISH", "Sent agent_voice_started signal to web client")
+                except Exception as e:
+                    logger.error(f"❌ Error publishing voice started signal: {e}")
+                    ulog.log_step("ERROR", f"Failed to publish voice started signal: {e}", level="error")
+            elif event.old_state == "speaking" and event.new_state != "speaking":
+                logger.info(f"🤖 [DEBUG] Agent stopped speaking (now {event.new_state})")
+                ulog.log_step("TTS", f"Agent voice stopped (now {event.new_state})")
+                # Reset interrupt timer when agent finishes speaking (Mode 2)
+                nonlocal last_user_interaction_time
+                last_user_interaction_time = asyncio.get_event_loop().time()
+                logger.debug(f"⏰ [MODE 2] Timer reset - agent finished speaking")
+            elif event.new_state != "thinking":  # Don't double-log thinking state
+                logger.info(f"🤖 [DEBUG] Agent state: {event.old_state} → {event.new_state}")
+                ulog.log_step("AGENT-STATE", f"State changed: {event.old_state} → {event.new_state}", level="debug")
+        
+        @session.on("speech_created")
+        def on_speech_created(event):
+            logger.info(f"🤖 [SPEECH] Speech created - source: {event.source}, user_initiated: {event.user_initiated}")
+            ulog.log_step("TTS", f"Speech synthesis started (source: {event.source})")
+            # === TIMING: Record T3 - TTS synthesis started ===
+            # Only record first speech_created per turn (avoid overwrites from retries)
+            if turn_timing["speech_created"] is None:
+                turn_timing["speech_created"] = time.perf_counter()
+                logger.info(f"⏱️ [TIMING] T3: TTS speech created at {turn_timing['speech_created']:.3f}")
+        
+        @session.on("metrics_collected")
+        def on_metrics_collected(event):
+            """Handle metrics from LiveKit - captures actual LLM TTFT and TTS TTFB"""
+            from livekit.agents.metrics import LLMMetrics, TTSMetrics
+            
+            metrics = event.metrics
+            
+            # === LLM METRICS: Capture Time-To-First-Token ===
+            if isinstance(metrics, LLMMetrics):
+                # Record T2.5 - LLM first token (only once per turn)
+                if turn_timing["llm_first_token"] is None and metrics.ttft > 0:
+                    # Calculate when first token actually arrived
+                    first_token_time = time.perf_counter() - metrics.duration + metrics.ttft
+                    turn_timing["llm_first_token"] = first_token_time
+                    logger.info(f"⏱️ [TIMING] T2.5: LLM first token at {first_token_time:.3f} (TTFT: {metrics.ttft:.3f}s)")
+                    ulog.log_step("LLM-METRICS", f"TTFT: {metrics.ttft:.3f}s, tokens/sec: {metrics.tokens_per_second:.1f}")
+                
+                logger.info(f"📊 [LLM METRICS] TTFT: {metrics.ttft:.3f}s, Duration: {metrics.duration:.3f}s, "
+                          f"Tokens: {metrics.prompt_tokens}→{metrics.completion_tokens}, "
+                          f"Speed: {metrics.tokens_per_second:.1f} tok/s")
+            
+            # === TTS METRICS: Capture Time-To-First-Byte ===
+            elif isinstance(metrics, TTSMetrics):
+                logger.info(f"📊 [TTS METRICS] TTFB: {metrics.ttfb:.3f}s, Duration: {metrics.duration:.3f}s, "
+                          f"Audio: {metrics.audio_duration:.2f}s, Characters: {metrics.characters_count}")
+                ulog.log_step("TTS-METRICS", f"TTFB: {metrics.ttfb:.3f}s, Audio duration: {metrics.audio_duration:.2f}s", level="debug")
+        
+        @session.on("conversation_item_added")
+        def on_conversation_item_added(event):
+            nonlocal conversation_history
+            
+            # Log conversation items (ChatMessage objects)
+            item = event.item
+            
+            # Try to get text from the item using different methods
+            text = None
+            
+            # Method 1: Check for text_content property (most common)
+            if hasattr(item, 'text_content'):
+                text = item.text_content
+            # Method 2: Check for content list
+            elif hasattr(item, 'content') and item.content:
+                text_parts = []
+                for content_block in item.content:
+                    if hasattr(content_block, 'text') and content_block.text:
+                        text_parts.append(content_block.text)
+                text = ''.join(text_parts) if text_parts else None
+            
+            # Log and publish based on role
+            if text and hasattr(item, 'role'):
+                # Store in conversation history for interrupt generation
+                conversation_history.append({"role": item.role, "content": text})
+                # Keep last 10 messages only
+                if len(conversation_history) > 10:
+                    conversation_history = conversation_history[-10:]
+                
+                if item.role == "assistant":
+                    logger.info(f"🤖 [LLM] Response: {text}")
+                    ulog.log_step("LLM", f"Generated response: {text[:100]}{'...' if len(text) > 100 else ''}")
+                    # === TIMING: Record T4 - LLM full response logged ===
+                    turn_timing["llm_response_logged"] = time.perf_counter()
+                    logger.info(f"⏱️ [TIMING] T4: LLM response complete at {turn_timing['llm_response_logged']:.3f}")
+                    
+                    # Track agent response in speaker tracker
+                    speaker_tracker.track_agent_response(text)
+                    
+                    # Publish agent response to room for frontend display
+                    try:
+                        trimmed_text = text.strip()
+                        ulog.log_step("PUBLISH", "Sending agent response to web client")
+                        asyncio.create_task(
+                            ctx.room.local_participant.publish_data(
+                                trimmed_text.encode('utf-8'),
+                                reliable=True,
+                                topic="agent_response"
+                            )
+                        )
+                        logger.debug(f"📤 Published agent response to room")
+                    except Exception as e:
+                        logger.error(f"❌ Error publishing agent response: {e}")
+                        ulog.log_step("ERROR", f"Failed to publish agent response: {e}", level="error")
+                elif item.role == "user":
+                    logger.info(f"👤 [USER] Message added to context: {text}")
+                    ulog.log_step("LLM", f"User message added to context: {text[:100]}{'...' if len(text) > 100 else ''}", level="debug")
+                    # Note: User transcripts are already published in user_input_transcribed event
+        
+        @session.on("function_tools_executed")
+        def on_function_tools_executed(event):
+            for func_call, func_output in event.zipped():
+                logger.info(f"🔧 [TOOL] Executed: {func_call.name}")
+                ulog.log_step("TOOL", f"Executed function: {func_call.name}")
+                if func_output and func_output.result:
+                    logger.info(f"🔧 [TOOL] Result: {func_output.result}")
+                    ulog.log_step("TOOL", f"Result: {func_output.result}", level="debug")
+        
+        # Log any errors
+        @session.on("error")
+        def on_error(event):
+            logger.error(f"❌ [ERROR] Session error: {event.error}")
+            ulog.log_step("ERROR", f"Session error: {event.error}", level="error")
+        
+        # Log session close events
+        @session.on("close")
+        def on_close(event):
+            logger.info(f"🔌 [SESSION] Session closed - reason: {event.reason}")
+            ulog.log_step("SESSION", f"Session closed - reason: {event.reason}")
+            if event.error:
+                logger.error(f"❌ [SESSION] Close error: {event.error}")
+                ulog.log_step("ERROR", f"Session close error: {event.error}", level="error")
+        
+        logger.info("✅ Starting voice agent session...")
+        logger.info(f"🔍 [DEBUG] Agent instructions length: {len(instructions)} chars")
+        logger.info(f"🔍 [DEBUG] Room participants: {len(ctx.room.remote_participants)}")
+        
+        ulog.log_step("SESSION", f"Instructions: {len(instructions)} chars, Participants: {len(ctx.room.remote_participants)}", level="debug", include_timing=False)
+        
+        ulog.log_step("SESSION", "Starting voice agent session")
+        
+        # Configure room options to keep session alive on disconnect/reconnect
+        room_options = room_io.RoomOptions(
+            audio_input=True,
+            audio_output=True,
+            text_output=True,
+            close_on_disconnect=False,  # Keep session alive when user disconnects
+        )
+        
+        # Start the session with the agent - this runs the session in background tasks
+        await session.start(agent, room=ctx.room, room_options=room_options)
+        
+        logger.info("✅ Session started successfully!")
+        logger.info(f"🔍 [DEBUG] Session state - agent: {session.agent_state}, user: {session.user_state}")
+        
+        # Log search configuration
+        search_status = "ENABLED" if config.ENABLE_POLICY_SEARCH else "DISABLED"
+        if config.ENABLE_POLICY_SEARCH:
+            backend = config.POLICY_SEARCH_BACKEND
+            model_info = ""
+            if backend == "perplexity":
+                model_info = f" (model={config.PERPLEXITY_SEARCH_MODEL})"
+            logger.info(f"🔍 [SEARCH] Policy web search: {search_status}, backend={backend}{model_info}")
+        else:
+            logger.info(f"🔍 [SEARCH] Policy web search: {search_status}")
+        
+        logger.info("🎤 Agent is ready and will respond when you speak...")
+        
+        ulog.log_step("SESSION", f"Agent ready (agent: {session.agent_state}, user: {session.user_state})")
+        
+        # Mode 2: Auto-Interrupt Mode - start background task to check for interrupts
+        async def interrupt_checker():
+            """Background task to check if agent should interrupt"""
+            nonlocal last_user_interaction_time
+            
+            ulog.log_step("MODE2", "Auto-interrupt checker started")
+            
+            # Send debug message to frontend
+            try:
+                await ctx.room.local_participant.publish_data(
+                    "Interrupt checker started".encode('utf-8'),
+                    reliable=True,
+                    topic="interrupt_debug"
+                )
+            except Exception as e:
+                logger.error(f"❌ Error publishing interrupt debug: {e}")
+                ulog.log_step("ERROR", f"Failed to publish interrupt debug: {e}", level="error")
+            
+            while True:
+                try:
+                    await asyncio.sleep(5)  # Check every 5 seconds
+                    
+                    current_time = asyncio.get_event_loop().time()
+                    time_since_last_interaction = current_time - last_user_interaction_time
+                    
+                    # Send periodic status to frontend
+                    status_msg = f"Interrupt check: {time_since_last_interaction:.1f}s / {config.INTERRUPT_INTERVAL_SECONDS}s | Agent: {session.agent_state}"
+                    try:
+                        await ctx.room.local_participant.publish_data(
+                            status_msg.encode('utf-8'),
+                            reliable=True,
+                            topic="interrupt_debug"
+                        )
+                    except Exception as e:
+                        logger.error(f"❌ Error publishing status: {e}")
+                        ulog.log_step("ERROR", f"Failed to publish status: {e}", level="error")
+                    
+                    # If enough time has passed and agent isn't already speaking
+                    if time_since_last_interaction >= config.INTERRUPT_INTERVAL_SECONDS:
+                        if session.agent_state != "speaking":
+                            logger.info(f"⏰ [MODE 2] Auto-interrupt triggered after {time_since_last_interaction:.1f}s")
+                            ulog.log_step("MODE2", f"Auto-interrupt triggered ({time_since_last_interaction:.1f}s elapsed)")
+                            
+                            # Send interrupt trigger notification to frontend
+                            try:
+                                await ctx.room.local_participant.publish_data(
+                                    f"INTERRUPT TRIGGERED after {time_since_last_interaction:.1f}s".encode('utf-8'),
+                                    reliable=True,
+                                    topic="interrupt_debug"
+                                )
+                            except Exception as e:
+                                logger.error(f"❌ Error publishing interrupt trigger: {e}")
+                                ulog.log_step("ERROR", f"Failed to publish interrupt trigger: {e}", level="error")
+                            
+                            # Generate LLM interrupt using LiveKit's ChatChunk structure
+                            try:
+                                # Build conversation history summary
+                                history_summary = ""
+                                if conversation_history and len(conversation_history) > 0:
+                                    recent_messages = conversation_history[-6:]
+                                    history_summary = "Recent conversation:\n"
+                                    for msg in recent_messages:
+                                        role_label = "User" if msg["role"] == "user" else "You"
+                                        history_summary += f"{role_label}: {msg['content']}\n"
+                                
+                                # Create interrupt generation prompt
+                                interrupt_prompt = f"""You are Donald Trump. Analyze the conversation below and decide how to jump back in.
+
+{history_summary if history_summary else "No conversation history yet - this is the start of the conversation."}
+
+ANALYZE THE CONVERSATION:
+- Was it "bland"? (just greetings like "hello", "hi", "how are you", small talk, nothing substantive)
+- Or was it substantive? (discussing real topics, policies, opinions, etc.)
+
+YOUR RESPONSE STRATEGY:
+
+IF BLAND/GREETINGS ONLY:
+Pick a random hot topic (economy, trade, immigration, China, energy, taxes, jobs, military, media, elections, etc.) and:
+1. Share YOUR bold opinion on it in Trump's style
+2. Then ask the user what THEY think about it
+Example: "You know what's been on my mind? [topic]. Here's my take: [opinion]. What do you think about that?"
+
+IF SUBSTANTIVE:
+Continue the existing topic naturally - add a follow-up thought, ask a deeper question, or share a related opinion.
+
+RULES:
+- 1-3 sentences maximum
+- Pure Trump speaking style - confident, bold, entertaining
+- Don't mention you're "interrupting" or apologize
+- Just jump in naturally
+
+Your response:"""
+
+                                logger.info(f"🔍 [MODE 2] Calling LLM for interrupt generation")
+                                ulog.log_step("MODE2", "Generating LLM interrupt")
+
+                                # Call LLM
+                                from livekit.agents.llm import ChatContext
+                                
+                                interrupt_ctx = ChatContext()
+                                interrupt_ctx.add_message(role="user", content=interrupt_prompt)
+                                
+                                llm_plugin = llm.get_plugin() if hasattr(llm, 'get_plugin') else llm
+                                llm_stream = llm_plugin.chat(chat_ctx=interrupt_ctx)
+                                
+                                interrupt_msg = ""
+                                
+                                # LiveKit ChatChunk structure: chunk.delta.content
+                                async for chunk in llm_stream:
+                                    if hasattr(chunk, 'delta') and chunk.delta:
+                                        if hasattr(chunk.delta, 'content') and chunk.delta.content:
+                                            interrupt_msg += chunk.delta.content
+                                
+                                interrupt_msg = interrupt_msg.strip()
+                                logger.info(f"🔍 [MODE 2] LLM generated interrupt: '{interrupt_msg[:100]}{'...' if len(interrupt_msg) > 100 else ''}'")
+                                
+                                if interrupt_msg:
+                                    ulog.log_step("MODE2", f"LLM interrupt: {interrupt_msg[:80]}{'...' if len(interrupt_msg) > 80 else ''}")
+                                    
+                                    await ctx.room.local_participant.publish_data(
+                                        f"LLM Interrupt: {interrupt_msg}".encode('utf-8'),
+                                        reliable=True,
+                                        topic="interrupt_debug"
+                                    )
+                                    
+                                    # session.say() returns SpeechHandle directly (not a coroutine)
+                                    session.say(interrupt_msg, allow_interruptions=True)
+                                    logger.info(f"🤖 [MODE 2] Agent interrupting with LLM: {interrupt_msg[:100]}")
+                                else:
+                                    logger.warning(f"⚠️ [MODE 2] LLM returned empty")
+                                    ulog.log_step("MODE2", "LLM returned empty - skipping interrupt", level="warning")
+                                
+                            except Exception as e:
+                                logger.error(f"❌ [MODE 2] Error generating interrupt: {e}")
+                                ulog.log_step("ERROR", f"Error generating interrupt: {e}", level="error")
+                            
+                            # Reset timer after interrupt
+                            last_user_interaction_time = current_time
+                        else:
+                            logger.debug(f"⏰ [MODE 2] Skip interrupt - agent already speaking")
+                            ulog.log_step("MODE2", "Skip interrupt - agent already speaking", level="debug")
+                            try:
+                                await ctx.room.local_participant.publish_data(
+                                    "Skip interrupt - agent already speaking".encode('utf-8'),
+                                    reliable=True,
+                                    topic="interrupt_debug"
+                                )
+                            except Exception as e:
+                                logger.error(f"❌ Error publishing skip notice: {e}")
+                                ulog.log_step("ERROR", f"Failed to publish skip notice: {e}", level="error")
+                
+                except asyncio.CancelledError:
+                    logger.info("⏰ [MODE 2] Interrupt checker stopped")
+                    ulog.log_step("MODE2", "Interrupt checker stopped")
+                    break
+                except Exception as e:
+                    logger.error(f"❌ [MODE 2] Error in interrupt checker: {e}")
+                    ulog.log_step("ERROR", f"Interrupt checker error: {e}", level="error")
+        
+        # Mode 3: Group Discussion Mode - LLM decides whether to intervene
+        async def should_intervene_group(last_utterance: str) -> tuple[bool, str]:
+            """
+            LLM decides if agent should speak in group discussion.
+            Returns (should_speak, response_if_yes)
+            """
+            # Build context with speaker info
+            active_speakers = speaker_tracker.get_active_speakers()
+            is_group = speaker_tracker.is_group_conversation()
+            recent_turns = speaker_tracker.get_recent_turns(count=8)
+            
+            # Build conversation history with speaker attribution
+            history_lines = []
+            for turn in recent_turns:
+                if turn.is_agent:
+                    history_lines.append(f"Trump (you): {turn.text}")
+                else:
+                    history_lines.append(f"Speaker {turn.speaker_id}: {turn.text}")
+            history_text = "\n".join(history_lines) if history_lines else "No conversation yet."
+            
+            decision_prompt = f"""You are Donald Trump in a GROUP DISCUSSION with multiple people.
+
+CURRENT SITUATION:
+- Active speakers: {len(active_speakers)} people
+- Conversation type: {"Group discussion" if is_group else "1-on-1"}
+- Last utterance: "{last_utterance}"
+
+RECENT CONVERSATION:
+{history_text}
+
+YOUR DECISION:
+Analyze whether you should speak now or stay quiet. Consider:
+1. Was something directed at you? (your name, "Trump", "president", "you", asking your opinion)
+2. Is there a natural pause where you could add value?
+3. Would jumping in disrupt an ongoing exchange between others?
+4. Do you have something meaningful to contribute?
+
+RESPOND IN THIS EXACT FORMAT:
+DECISION: [SPEAK or QUIET]
+REASON: [one short sentence why]
+RESPONSE: [if SPEAK, your 1-3 sentence response in Trump style. If QUIET, write "none"]
+
+Example if you should speak:
+DECISION: SPEAK
+REASON: They asked what I think about the economy.
+RESPONSE: Let me tell you about the economy - we had the best numbers ever, believe me!
+
+Example if you should stay quiet:
+DECISION: QUIET
+REASON: They're having a back-and-forth, I'd be interrupting.
+RESPONSE: none"""
+
+            try:
+                from livekit.agents.llm import ChatContext
+                
+                decision_ctx = ChatContext()
+                decision_ctx.add_message(role="user", content=decision_prompt)
+                
+                llm_plugin = llm.get_plugin() if hasattr(llm, 'get_plugin') else llm
+                llm_stream = llm_plugin.chat(chat_ctx=decision_ctx)
+                
+                decision_text = ""
+                async for chunk in llm_stream:
+                    if hasattr(chunk, 'delta') and chunk.delta:
+                        if hasattr(chunk.delta, 'content') and chunk.delta.content:
+                            decision_text += chunk.delta.content
+                
+                decision_text = decision_text.strip()
+                logger.info(f"🎯 [MODE 3] LLM decision: {decision_text[:150]}...")
+                
+                # Parse decision
+                should_speak = "DECISION: SPEAK" in decision_text.upper()
+                response = ""
+                
+                if should_speak and "RESPONSE:" in decision_text:
+                    response_start = decision_text.find("RESPONSE:") + 9
+                    response = decision_text[response_start:].strip()
+                    if response.lower() == "none":
+                        response = ""
+                
+                return (should_speak, response)
+                
+            except Exception as e:
+                logger.error(f"❌ [MODE 3] Error in should_intervene_group: {e}")
+                return (False, "")
+        
+        async def group_discussion_checker():
+            """Background task for Mode 3 - periodic check if agent should intervene"""
+            nonlocal last_user_interaction_time
+            
+            ulog.log_step("MODE3", "Group discussion checker started")
+            logger.info(f"🎯 [MODE 3] Group discussion mode active (check every {config.GROUP_MODE_SILENCE_CHECK_SECONDS}s)")
+            
+            while True:
+                try:
+                    await asyncio.sleep(config.GROUP_MODE_SILENCE_CHECK_SECONDS)
+                    
+                    current_time = asyncio.get_event_loop().time()
+                    time_since_last = current_time - last_user_interaction_time
+                    
+                    # Only check if there's been some silence and agent isn't speaking
+                    if time_since_last >= config.GROUP_MODE_SILENCE_CHECK_SECONDS:
+                        if session.agent_state != "speaking":
+                            logger.info(f"🎯 [MODE 3] Silence detected ({time_since_last:.1f}s), checking if should intervene...")
+                            
+                            # Get last utterance from history
+                            last_utterance = ""
+                            if conversation_history:
+                                last_msg = conversation_history[-1]
+                                if last_msg["role"] == "user":
+                                    last_utterance = last_msg["content"]
+                            
+                            should_speak, response = await should_intervene_group(last_utterance)
+                            
+                            if should_speak and response:
+                                ulog.log_step("MODE3", f"LLM decided to speak: {response[:80]}...")
+                                session.say(response, allow_interruptions=True)
+                                logger.info(f"🎯 [MODE 3] Agent intervening: {response[:100]}")
+                                last_user_interaction_time = current_time
+                            else:
+                                logger.debug(f"🎯 [MODE 3] LLM decided to stay quiet")
+                
+                except asyncio.CancelledError:
+                    logger.info("🎯 [MODE 3] Group discussion checker stopped")
+                    ulog.log_step("MODE3", "Group discussion checker stopped")
+                    break
+                except Exception as e:
+                    logger.error(f"❌ [MODE 3] Error in group discussion checker: {e}")
+                    ulog.log_step("ERROR", f"Group discussion checker error: {e}", level="error")
+        
+        # Start interrupt checker if in Mode 2
+        group_mode_task = None
+        if config.AGENT_MODE == 2:
+            interrupt_task = asyncio.create_task(interrupt_checker())
+            logger.info(f"⏰ [MODE 2] Auto-interrupt enabled (every {config.INTERRUPT_INTERVAL_SECONDS}s)")
+            ulog.log_step("MODE2", f"Auto-interrupt enabled (every {config.INTERRUPT_INTERVAL_SECONDS}s)", include_timing=False)
+        elif config.AGENT_MODE == 3:
+            group_mode_task = asyncio.create_task(group_discussion_checker())
+            logger.info(f"🎯 [MODE 3] Group discussion mode enabled (diarization: {config.DEEPGRAM_ENABLE_DIARIZATION})")
+            ulog.log_step("MODE3", f"Group discussion mode enabled", include_timing=False)
+        
+        # Keep the job alive - the session runs in background tasks
+        # Wait forever (until cancelled by job shutdown)
+        try:
+            await asyncio.Event().wait()
+        finally:
+            # Clean up background tasks
+            if interrupt_task:
+                interrupt_task.cancel()
+                try:
+                    await interrupt_task
+                except asyncio.CancelledError:
+                    pass
+            if group_mode_task:
+                group_mode_task.cancel()
+                try:
+                    await group_mode_task
+                except asyncio.CancelledError:
+                    pass
+        
+    else:
+        # Custom implementation for providers without LiveKit plugins (e.g., Qwen)
+        logger.info("Using custom agent implementation for non-plugin providers")
+        
+        # Set up data channel for text-based communication
+        @ctx.room.on("data_received")
+        def on_data_received(data: bytes, participant):
+            try:
+                message = data.decode('utf-8')
+                logger.info(f"👤 User ({participant.identity}): {message}")
+                
+                # Process message with LLM
+                asyncio.create_task(handle_text_message(llm, ctx, message))
+                
+            except Exception as e:
+                logger.error(f"Error processing data: {e}")
+        
+        logger.info("✅ Text-based agent is active and listening...")
+        
+        # Send greeting if enabled
+        if config.ENABLE_WELCOME_GREETING:
+            greeting = config.WELCOME_GREETING
+            await ctx.room.local_participant.publish_data(
+                greeting.encode('utf-8'),
+                reliable=True
+            )
+            logger.info(f"🤖 Agent: {greeting}")
+    
+    # Keep agent running
+    logger.info("Agent session started. Press Ctrl+C to stop.")
+
+
+async def handle_text_message(llm, ctx: JobContext, message: str):
+    """Handle text messages for custom LLM implementations"""
+    try:
+        # Get response from LLM
+        response = await llm.chat(message)
+        
+        # Send response back
+        await ctx.room.local_participant.publish_data(
+            response.encode('utf-8'),
+            reliable=True
+        )
+        logger.info(f"🤖 Agent: {response}")
+        
+    except Exception as e:
+        logger.error(f"Error handling text message: {e}")
+
+
+if __name__ == "__main__":
+    # Print banner
+    stt_provider = config.STT_PROVIDER.lower()
+    if stt_provider == "deepgram":
+        stt_display = f"Deepgram {config.DEEPGRAM_STT_MODEL}"
+    else:
+        stt_display = f"Cartesia {config.CARTESIA_STT_MODEL}"
+    
+    # Determine LLM model for banner
+    llm_provider = config.LLM_PROVIDER.lower()
+    if llm_provider == "grok" or llm_provider == "xai":
+        llm_model_display = f"{config.GROK_MODEL} (Provider: {config.LLM_PROVIDER})"
+    else:
+        llm_model_display = f"{config.QWEN_MODEL} (Provider: {config.LLM_PROVIDER})"
+    
+    logger.info("=" * 70)
+    logger.info("🤖 AI Voice Agent - Modular Architecture")
+    logger.info("=" * 70)
+    logger.info(f"LiveKit URL: {config.LIVEKIT_URL}")
+    logger.info(f"STT: {stt_display}")
+    logger.info(f"LLM: {llm_model_display}")
+    logger.info(f"TTS: Cartesia {config.CARTESIA_TTS_MODEL}")
+    logger.info(f"Workers: {config.AGENT_WORKERS}")
+    logger.info("=" * 70)
+    
+    # Validate configuration
+    if not validate_configuration():
+        logger.error("Please fix the configuration errors and try again.")
+        exit(1)
+    
+    logger.info("✅ Configuration validated successfully")
+    logger.info("🚀 Starting agent workers...")
+    
+    # Run the agent
+    cli.run_app(
+        WorkerOptions(
+            entrypoint_fnc=entrypoint,
+            api_key=os.getenv("LIVEKIT_API_KEY"),
+            api_secret=os.getenv("LIVEKIT_API_SECRET"),
+            ws_url=config.LIVEKIT_URL,
+        )
+    )
