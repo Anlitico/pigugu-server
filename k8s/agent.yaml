@@ -15,6 +15,7 @@ spec:
       containers:
       - name: agent
         image: 537557168531.dkr.ecr.us-west-1.amazonaws.com/pigugu-agent:latest
+        imagePullPolicy: Always
         env:
         - name: DATABASE_URL
           valueFrom:
