@@ -80,8 +80,13 @@ jobs:
       env:
         ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
         IMAGE_TAG: ${{ github.event.inputs.image_tag }}
+        DB_PASSWORD: ${{ secrets.DB_PASSWORD }}
       run: |
+        # Inject real database URL into secrets.yaml
+        sed -i "s|__DATABASE_URL__|postgresql+asyncpg://pigugu:$DB_PASSWORD@pigugu-db.c1esma68egsk.us-west-1.rds.amazonaws.com:5432/pigugu|g" k8s/secrets.yaml
+        
         # Apply K8s manifests
+        kubectl apply -f k8s/secrets.yaml
         kubectl apply -f k8s/api.yaml
         kubectl apply -f k8s/agent.yaml
         
