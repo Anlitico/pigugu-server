@@ -39,28 +39,45 @@ This document outlines the workflow for developing, contributing, and deploying 
 
 ## 3. Deployment (CI/CD)
 
-We use a decoupled CI/CD strategy to ensure safe releases.
+We use a decoupled CI/CD strategy. Merging code **Builds** it, but you must manually **Deploy** it.
 
-### Phase 1: Automated Build
-Every time a PR is merged into `main`, GitHub Actions automatically:
-- Builds new Docker images for API and Agent.
-- Pushes images to Amazon ECR with the tags `latest` and the `commit-sha`.
+### Phase 1: Automated Build (After MR)
+1. **Trigger**: Every time a PR is merged into `main`.
+2. **Where to watch**: Go to the **Actions** tab in GitHub. You will see a workflow run named `Build and Push`.
+3. **Status**: Green checkmark means the Docker images are successfully stored in Amazon ECR.
 
 ### Phase 2: Manual Deployment to EKS
-Merging code does **not** automatically update the live server. A manual step is required:
+Merging code does **not** update the server. You must trigger the final release:
 
-1. Navigate to the **Actions** tab in GitHub.
-2. Select the **"Deploy to Amazon EKS"** workflow.
-3. Click the **"Run workflow"** button.
-4. **Image Tag**: Use `latest` for the most recent code, or a specific `commit-sha` for rollbacks.
-5. Click **"Run workflow"**.
+1. **Navigate**: Go to the **Actions** tab.
+2. **Select**: Click **"Deploy to Amazon EKS"** on the left sidebar.
+3. **Trigger**: Click the **"Run workflow"** button on the right.
+4. **Input**:
+   - `image_tag`: Keep `latest` for the newest code.
+5. **Monitor Logs**: 
+   - Click on the running job to see the live console output.
+   - You will see `kubectl apply` and `kubectl rollout status`.
+   - **Success Criteria**: The log should end with `deployment "pigugu-api" successfully rolled out`.
 
-The deployment uses a **Rolling Update** strategy, ensuring zero downtime. You can monitor the progress in the workflow logs via `kubectl rollout status`.
+## 4. How to Verify Success
 
-## 4. Monitoring & Troubleshooting
-- **Pod Status**: Check in AWS Console under EKS > Resources > Pods.
-- **Logs**:
-  ```bash
-  kubectl logs -l app=pigugu-api --tail 100
-  ```
-- **Endpoint**: Access the API via the LoadBalancer URL found in the `05-deployment-walkthrough.md` document.
+### In AWS Console (GUI)
+1. **Pod Refresh**: Go to **EKS > Clusters > pigugu-cluster > Resources > Pods**.
+   - Check the **Age** column. New pods should show an age of "seconds" or "a few minutes".
+   - Status must be **Running**.
+2. **Load Balancer**: Go to **EC2 > Load Balancers**.
+   - Ensure the associated ELB is **Active**.
+
+### CLI Verification
+```bash
+# Check if pods are running with the new version
+kubectl get pods
+
+# Check application logs for startup errors
+kubectl logs -l app=pigugu-api --tail 50
+```
+
+## 5. Troubleshooting
+- **Build Fails**: Check `pyproject.toml` for missing dependencies.
+- **Deploy Fails**: Ensure `DB_PASSWORD` is correctly set in GitHub Secrets.
+- **Pods won't start**: Check `kubectl describe pod <pod-name>` for "ImagePullBackOff" (permissions) or "CrashLoopBackOff" (app error).
