@@ -10,7 +10,6 @@ dependencies = [
     "alembic>=1.13.0",
     "redis>=5.0.0",
     "python-jose[cryptography]>=3.3.0",
-    "passlib[bcrypt]>=1.7.4",
     "pydantic-settings>=2.2.0",
     "firebase-admin>=6.5.0",
     "livekit-agents>=0.8.0",
