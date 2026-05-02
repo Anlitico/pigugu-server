@@ -1,0 +1,37 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: pigugu-agent
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: pigugu-agent
+  template:
+    metadata:
+      labels:
+        app: pigugu-agent
+    spec:
+      containers:
+      - name: agent
+        image: 537557168531.dkr.ecr.us-west-1.amazonaws.com/pigugu-agent:latest
+        env:
+        - name: DATABASE_URL
+          valueFrom:
+            secretKeyRef:
+              name: pigugu-secrets
+              key: DATABASE_URL
+        - name: REDIS_URL
+          valueFrom:
+            secretKeyRef:
+              name: pigugu-secrets
+              key: REDIS_URL
+        volumeMounts:
+        - name: firebase-creds
+          mountPath: "/app/firebase-credentials.json"
+          subPath: "firebase-credentials.json"
+          readOnly: true
+      volumes:
+      - name: firebase-creds
+        secret:
+          secretName: pigugu-firebase-secret

@@ -1,0 +1,53 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: pigugu-api
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: pigugu-api
+  template:
+    metadata:
+      labels:
+        app: pigugu-api
+    spec:
+      containers:
+      - name: api
+        image: 537557168531.dkr.ecr.us-west-1.amazonaws.com/pigugu-api:latest
+        ports:
+        - containerPort: 8000
+        env:
+        - name: DATABASE_URL
+          valueFrom:
+            secretKeyRef:
+              name: pigugu-secrets
+              key: DATABASE_URL
+        - name: REDIS_URL
+          valueFrom:
+            secretKeyRef:
+              name: pigugu-secrets
+              key: REDIS_URL
+        # Firebase 凭证通常通过 Secret 挂载
+        volumeMounts:
+        - name: firebase-creds
+          mountPath: "/app/firebase-credentials.json"
+          subPath: "firebase-credentials.json"
+          readOnly: true
+      volumes:
+      - name: firebase-creds
+        secret:
+          secretName: pigugu-firebase-secret
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: pigugu-api-service
+spec:
+  type: LoadBalancer
+  selector:
+    app: pigugu-api
+  ports:
+    - protocol: TCP
+      port: 80
+      targetPort: 8000
