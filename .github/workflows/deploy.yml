@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
     inputs:
       image_tag:
-        description: 'ECR 镜像标签 (例如: latest 或 git commit sha)'
+        description: 'ECR Image Tag (e.g., latest or git commit sha)'
         required: true
         default: 'latest'
 
@@ -19,7 +19,7 @@ env:
 jobs:
   build:
     name: Build and Push
-    if: github.event_name == 'push' # 仅在代码推送时自动构建
+    if: github.event_name == 'push' # Automate build on code push only
     runs-on: ubuntu-latest
     steps:
     - name: Checkout
@@ -56,7 +56,7 @@ jobs:
 
   deploy:
     name: Deploy to EKS
-    if: github.event_name == 'workflow_dispatch' # 仅手动触发时部署
+    if: github.event_name == 'workflow_dispatch' # Manual deployment only
     runs-on: ubuntu-latest
     steps:
     - name: Checkout
@@ -79,9 +79,16 @@ jobs:
     - name: Deploy to EKS
       env:
         ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
-        IMAGE_TAG: ${{ needs.build.outputs.image_tag }}
+        IMAGE_TAG: ${{ github.event.inputs.image_tag }}
       run: |
-        sed -i "s|image:.*pigugu-api:.*|image: $ECR_REGISTRY/$ECR_REPOSITORY_API:$IMAGE_TAG|g" k8s/api.yaml
-        sed -i "s|image:.*pigugu-agent:.*|image: $ECR_REGISTRY/$ECR_REPOSITORY_AGENT:$IMAGE_TAG|g" k8s/agent.yaml
+        # Apply K8s manifests
         kubectl apply -f k8s/api.yaml
         kubectl apply -f k8s/agent.yaml
+        
+        # Update image without modifying YAML source
+        kubectl set image deployment/pigugu-api api=$ECR_REGISTRY/$ECR_REPOSITORY_API:$IMAGE_TAG
+        kubectl set image deployment/pigugu-agent agent=$ECR_REGISTRY/$ECR_REPOSITORY_AGENT:$IMAGE_TAG
+        
+        # Wait for rollout to complete
+        kubectl rollout status deployment/pigugu-api
+        kubectl rollout status deployment/pigugu-agent
