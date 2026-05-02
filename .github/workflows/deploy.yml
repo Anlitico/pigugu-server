@@ -3,7 +3,12 @@ name: Deploy to Amazon EKS
 on:
   push:
     branches: [ main ]
-  workflow_dispatch: # 允许手动触发部署
+  workflow_dispatch:
+    inputs:
+      image_tag:
+        description: 'ECR 镜像标签 (例如: latest 或 git commit sha)'
+        required: true
+        default: 'latest'
 
 env:
   AWS_REGION: us-west-1
@@ -14,16 +19,11 @@ env:
 jobs:
   build:
     name: Build and Push
+    if: github.event_name == 'push' # 仅在代码推送时自动构建
     runs-on: ubuntu-latest
-    outputs:
-      image_tag: ${{ steps.set-tag.outputs.tag }}
     steps:
     - name: Checkout
       uses: actions/checkout@v3
-
-    - name: Set Image Tag
-      id: set-tag
-      run: echo "tag=${{ github.sha }}" >> $GITHUB_OUTPUT
 
     - name: Configure AWS credentials
       uses: aws-actions/configure-aws-credentials@v1
@@ -36,27 +36,28 @@ jobs:
       id: login-ecr
       uses: aws-actions/amazon-ecr-login@v1
 
-    - name: Build, tag, and push API image
+    - name: Build and Push API
       env:
         ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
-        IMAGE_TAG: ${{ steps.set-tag.outputs.tag }}
+        IMAGE_TAG: ${{ github.sha }}
       run: |
-        docker build -t $ECR_REGISTRY/$ECR_REPOSITORY_API:$IMAGE_TAG -f Dockerfile.api .
+        docker build -t $ECR_REGISTRY/$ECR_REPOSITORY_API:$IMAGE_TAG -t $ECR_REGISTRY/$ECR_REPOSITORY_API:latest -f Dockerfile.api .
         docker push $ECR_REGISTRY/$ECR_REPOSITORY_API:$IMAGE_TAG
+        docker push $ECR_REGISTRY/$ECR_REPOSITORY_API:latest
 
-    - name: Build, tag, and push Agent image
+    - name: Build and Push Agent
       env:
         ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
-        IMAGE_TAG: ${{ steps.set-tag.outputs.tag }}
+        IMAGE_TAG: ${{ github.sha }}
       run: |
-        docker build -t $ECR_REGISTRY/$ECR_REPOSITORY_AGENT:$IMAGE_TAG -f Dockerfile.agent .
+        docker build -t $ECR_REGISTRY/$ECR_REPOSITORY_AGENT:$IMAGE_TAG -t $ECR_REGISTRY/$ECR_REPOSITORY_AGENT:latest -f Dockerfile.agent .
         docker push $ECR_REGISTRY/$ECR_REPOSITORY_AGENT:$IMAGE_TAG
+        docker push $ECR_REGISTRY/$ECR_REPOSITORY_AGENT:latest
 
   deploy:
     name: Deploy to EKS
+    if: github.event_name == 'workflow_dispatch' # 仅手动触发时部署
     runs-on: ubuntu-latest
-    needs: build
-    if: github.event_name == 'workflow_dispatch' # 仅在手动触发时执行部署
     steps:
     - name: Checkout
       uses: actions/checkout@v3
