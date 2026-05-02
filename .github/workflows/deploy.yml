@@ -80,7 +80,7 @@ jobs:
       env:
         ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
         IMAGE_TAG: ${{ github.event.inputs.image_tag }}
-        DATABASE_URL: postgresql+asyncpg://pigugu:${{ secrets.DB_PASSWORD }}@pigugu-db.c1esma68egsk.us-west-1.rds.amazonaws.com:5432/pigugu
+        DB_PASSWORD: ${{ secrets.DB_PASSWORD }}
         REDIS_URL: ${{ secrets.REDIS_URL }}
         LIVEKIT_URL: ${{ secrets.LIVEKIT_URL }}
         LIVEKIT_API_KEY: ${{ secrets.LIVEKIT_API_KEY }}
@@ -93,7 +93,10 @@ jobs:
         PERPLEXITY_API_KEY: ${{ secrets.PERPLEXITY_API_KEY }}
         OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
       run: |
-        # Inject deployment secrets into secrets.yaml
+        # Inject real database URL into secrets.yaml
+        sed -i "s|__DATABASE_URL__|postgresql+asyncpg://pigugu:$DB_PASSWORD@pigugu-db.c1esma68egsk.us-west-1.rds.amazonaws.com:5432/pigugu|g" k8s/secrets.yaml
+
+        # Inject agent secrets into secrets.yaml
         python - <<'PY'
         import os
         from pathlib import Path
@@ -102,7 +105,6 @@ jobs:
         text = path.read_text()
 
         for key in (
-            "DATABASE_URL",
             "REDIS_URL",
             "LIVEKIT_URL",
             "LIVEKIT_API_KEY",
