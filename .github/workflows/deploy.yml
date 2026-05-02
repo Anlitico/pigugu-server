@@ -3,6 +3,7 @@ name: Deploy to Amazon EKS
 on:
   push:
     branches: [ main ]
+  workflow_dispatch: # 允许手动触发部署
 
 env:
   AWS_REGION: us-west-1
@@ -11,10 +12,51 @@ env:
   ECR_REPOSITORY_AGENT: pigugu-agent
 
 jobs:
-  deploy:
-    name: Build and Deploy
+  build:
+    name: Build and Push
     runs-on: ubuntu-latest
+    outputs:
+      image_tag: ${{ steps.set-tag.outputs.tag }}
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v3
 
+    - name: Set Image Tag
+      id: set-tag
+      run: echo "tag=${{ github.sha }}" >> $GITHUB_OUTPUT
+
+    - name: Configure AWS credentials
+      uses: aws-actions/configure-aws-credentials@v1
+      with:
+        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        aws-region: ${{ env.AWS_REGION }}
+
+    - name: Login to Amazon ECR
+      id: login-ecr
+      uses: aws-actions/amazon-ecr-login@v1
+
+    - name: Build, tag, and push API image
+      env:
+        ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+        IMAGE_TAG: ${{ steps.set-tag.outputs.tag }}
+      run: |
+        docker build -t $ECR_REGISTRY/$ECR_REPOSITORY_API:$IMAGE_TAG -f Dockerfile.api .
+        docker push $ECR_REGISTRY/$ECR_REPOSITORY_API:$IMAGE_TAG
+
+    - name: Build, tag, and push Agent image
+      env:
+        ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+        IMAGE_TAG: ${{ steps.set-tag.outputs.tag }}
+      run: |
+        docker build -t $ECR_REGISTRY/$ECR_REPOSITORY_AGENT:$IMAGE_TAG -f Dockerfile.agent .
+        docker push $ECR_REGISTRY/$ECR_REPOSITORY_AGENT:$IMAGE_TAG
+
+  deploy:
+    name: Deploy to EKS
+    runs-on: ubuntu-latest
+    needs: build
+    if: github.event_name == 'workflow_dispatch' # 仅在手动触发时执行部署
     steps:
     - name: Checkout
       uses: actions/checkout@v3
@@ -30,35 +72,15 @@ jobs:
       id: login-ecr
       uses: aws-actions/amazon-ecr-login@v1
 
-    - name: Build, tag, and push API image to Amazon ECR
-      id: build-api-image
-      env:
-        ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
-        IMAGE_TAG: ${{ github.sha }}
-      run: |
-        docker build -t $ECR_REGISTRY/$ECR_REPOSITORY_API:$IMAGE_TAG -f Dockerfile.api .
-        docker push $ECR_REGISTRY/$ECR_REPOSITORY_API:$IMAGE_TAG
-        echo "image=$ECR_REGISTRY/$ECR_REPOSITORY_API:$IMAGE_TAG" >> $GITHUB_OUTPUT
-
-    - name: Build, tag, and push Agent image to Amazon ECR
-      id: build-agent-image
-      env:
-        ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
-        IMAGE_TAG: ${{ github.sha }}
-      run: |
-        docker build -t $ECR_REGISTRY/$ECR_REPOSITORY_AGENT:$IMAGE_TAG -f Dockerfile.agent .
-        docker push $ECR_REGISTRY/$ECR_REPOSITORY_AGENT:$IMAGE_TAG
-        echo "image=$ECR_REGISTRY/$ECR_REPOSITORY_AGENT:$IMAGE_TAG" >> $GITHUB_OUTPUT
-
     - name: Update kubeconfig
       run: aws eks update-kubeconfig --name ${{ env.EKS_CLUSTER_NAME }} --region ${{ env.AWS_REGION }}
 
     - name: Deploy to EKS
+      env:
+        ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+        IMAGE_TAG: ${{ needs.build.outputs.image_tag }}
       run: |
-        # 使用新的镜像标签替换 YAML 中的占位符
-        sed -i "s|image:.*pigugu-api:.*|image: ${{ steps.build-api-image.outputs.image }}|g" k8s/api.yaml
-        sed -i "s|image:.*pigugu-agent:.*|image: ${{ steps.build-agent-image.outputs.image }}|g" k8s/agent.yaml
-        
-        # 应用 Kubernetes 配置
+        sed -i "s|image:.*pigugu-api:.*|image: $ECR_REGISTRY/$ECR_REPOSITORY_API:$IMAGE_TAG|g" k8s/api.yaml
+        sed -i "s|image:.*pigugu-agent:.*|image: $ECR_REGISTRY/$ECR_REPOSITORY_AGENT:$IMAGE_TAG|g" k8s/agent.yaml
         kubectl apply -f k8s/api.yaml
         kubectl apply -f k8s/agent.yaml
