@@ -15,6 +15,7 @@ env:
   EKS_CLUSTER_NAME: pigugu-cluster
   ECR_REPOSITORY_API: pigugu-api
   ECR_REPOSITORY_AGENT: pigugu-agent
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 jobs:
   build:
@@ -23,10 +24,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
     - name: Checkout
-      uses: actions/checkout@v3
+      uses: actions/checkout@v4
 
     - name: Configure AWS credentials
-      uses: aws-actions/configure-aws-credentials@v1
+      uses: aws-actions/configure-aws-credentials@v4
       with:
         aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
         aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
@@ -34,7 +35,7 @@ jobs:
 
     - name: Login to Amazon ECR
       id: login-ecr
-      uses: aws-actions/amazon-ecr-login@v1
+      uses: aws-actions/amazon-ecr-login@v2
 
     - name: Build and Push API
       env:
@@ -60,10 +61,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
     - name: Checkout
-      uses: actions/checkout@v3
+      uses: actions/checkout@v4
 
     - name: Configure AWS credentials
-      uses: aws-actions/configure-aws-credentials@v1
+      uses: aws-actions/configure-aws-credentials@v4
       with:
         aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
         aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
@@ -71,7 +72,7 @@ jobs:
 
     - name: Login to Amazon ECR
       id: login-ecr
-      uses: aws-actions/amazon-ecr-login@v1
+      uses: aws-actions/amazon-ecr-login@v2
 
     - name: Update kubeconfig
       run: aws eks update-kubeconfig --name ${{ env.EKS_CLUSTER_NAME }} --region ${{ env.AWS_REGION }}
@@ -127,10 +128,14 @@ jobs:
         kubectl apply -f k8s/api.yaml
         kubectl apply -f k8s/agent.yaml
         
-        # Update image without modifying YAML source
+        # Update image
         kubectl set image deployment/pigugu-api api=$ECR_REGISTRY/$ECR_REPOSITORY_API:$IMAGE_TAG
         kubectl set image deployment/pigugu-agent agent=$ECR_REGISTRY/$ECR_REPOSITORY_AGENT:$IMAGE_TAG
         
+        # Force a restart to ensure fresh image is pulled (especially if tag is 'latest')
+        kubectl rollout restart deployment/pigugu-api
+        kubectl rollout restart deployment/pigugu-agent
+
         # Wait for rollout to complete
         kubectl rollout status deployment/pigugu-api
         kubectl rollout status deployment/pigugu-agent

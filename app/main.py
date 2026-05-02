@@ -3,15 +3,16 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 
+from app.core.redis import close_redis, get_redis
 from app.modules.auth.router import router as auth_router
 from app.modules.device.router import router as device_router
-from app.modules.game.router import leaderboard_router, router as game_router
+from app.modules.game.router import leaderboard_router
+from app.modules.game.router import router as game_router
 from app.modules.news.router import router as news_router
 from app.modules.push.router import router as push_router
 from app.modules.push.service import init_firebase
 from app.modules.ws.manager import ws_manager
 from app.modules.ws.router import router as ws_router
-from app.core.redis import close_redis, get_redis
 
 
 async def _redis_subscriber() -> None:

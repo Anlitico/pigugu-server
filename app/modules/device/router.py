@@ -2,7 +2,13 @@ from fastapi import APIRouter, Depends
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
-from app.modules.device.schemas import DeviceBindRequest, DeviceRenameRequest, DeviceResponse, DeviceStateRequest, LiveKitTokenResponse
+from app.modules.device.schemas import (
+    DeviceBindRequest,
+    DeviceRenameRequest,
+    DeviceResponse,
+    DeviceStateRequest,
+    LiveKitTokenResponse,
+)
 
 router = APIRouter(prefix="/device", tags=["device"])
 
