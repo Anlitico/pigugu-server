@@ -90,10 +90,14 @@ jobs:
         kubectl apply -f k8s/api.yaml
         kubectl apply -f k8s/agent.yaml
         
-        # Update image without modifying YAML source
+        # Update image
         kubectl set image deployment/pigugu-api api=$ECR_REGISTRY/$ECR_REPOSITORY_API:$IMAGE_TAG
         kubectl set image deployment/pigugu-agent agent=$ECR_REGISTRY/$ECR_REPOSITORY_AGENT:$IMAGE_TAG
         
+        # Force a restart to ensure fresh image is pulled (especially if tag is 'latest')
+        kubectl rollout restart deployment/pigugu-api
+        kubectl rollout restart deployment/pigugu-agent
+
         # Wait for rollout to complete
         kubectl rollout status deployment/pigugu-api
         kubectl rollout status deployment/pigugu-agent

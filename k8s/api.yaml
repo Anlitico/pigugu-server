@@ -15,6 +15,7 @@ spec:
       containers:
       - name: api
         image: 537557168531.dkr.ecr.us-west-1.amazonaws.com/pigugu-api:latest
+        imagePullPolicy: Always
         ports:
         - containerPort: 8000
         env:
