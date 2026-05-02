@@ -26,12 +26,3 @@ spec:
             secretKeyRef:
               name: pigugu-secrets
               key: REDIS_URL
-        volumeMounts:
-        - name: firebase-creds
-          mountPath: "/app/firebase-credentials.json"
-          subPath: "firebase-credentials.json"
-          readOnly: true
-      volumes:
-      - name: firebase-creds
-        secret:
-          secretName: pigugu-firebase-secret
