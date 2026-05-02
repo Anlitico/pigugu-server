@@ -15,6 +15,7 @@ env:
   EKS_CLUSTER_NAME: pigugu-cluster
   ECR_REPOSITORY_API: pigugu-api
   ECR_REPOSITORY_AGENT: pigugu-agent
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 jobs:
   build:
