@@ -24,6 +24,23 @@ Follow this checklist for a successful deployment to the current EKS environment
    ```
    Access the `EXTERNAL-IP` to verify the API is reachable.
 
+### Agent Pod Checks
+The agent is a background LiveKit worker, so it does not have a public Service or URL.
+
+```bash
+kubectl rollout status deployment/pigugu-agent
+kubectl get pods -l app=pigugu-agent
+kubectl logs -l app=pigugu-agent --tail=100
+```
+
+For `kubectl get pods`, a healthy first result is `READY` showing `1/1`, `STATUS` showing `Running`, and `RESTARTS` staying at `0` or not increasing. In the logs, look for agent startup messages showing configuration loading and the LiveKit worker starting.
+
+Common bad states:
+- `ImagePullBackOff`: Kubernetes cannot pull the ECR image. Check the image tag and ECR access.
+- `CrashLoopBackOff`: The container starts and then exits repeatedly. Check logs for missing secrets, config errors, or Python import errors.
+- `Pending`: Kubernetes has not scheduled the pod yet. Check node capacity and resource requests.
+- Increasing `RESTARTS`: The pod is unstable even if it currently says `Running`.
+
 ## Phase 4: Database Initialisation
 Since we are using a fresh RDS instance, you may need to run migrations:
 ```bash

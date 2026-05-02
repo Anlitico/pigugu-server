@@ -1,3 +1,18 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: pigugu-agent-config
+data:
+  STT_PROVIDER: "deepgram"
+  LLM_PROVIDER: "grok"
+  POLICY_SEARCH_BACKEND: "built_in"
+  AGENT_MODE: "1"
+  DEEPGRAM_ENABLE_DIARIZATION: "true"
+  ENABLE_POLICY_SEARCH: "true"
+  FORCE_POLICY_SEARCH: "false"
+  LOG_LEVEL: "INFO"
+  LOG_TO_FILE: "false"
+---
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -15,14 +30,57 @@ spec:
       containers:
       - name: agent
         image: 537557168531.dkr.ecr.us-west-1.amazonaws.com/pigugu-agent:latest
+        envFrom:
+        - configMapRef:
+            name: pigugu-agent-config
         env:
-        - name: DATABASE_URL
+        - name: LIVEKIT_URL
           valueFrom:
             secretKeyRef:
               name: pigugu-secrets
-              key: DATABASE_URL
-        - name: REDIS_URL
+              key: LIVEKIT_URL
+        - name: LIVEKIT_API_KEY
           valueFrom:
             secretKeyRef:
               name: pigugu-secrets
-              key: REDIS_URL
+              key: LIVEKIT_API_KEY
+        - name: LIVEKIT_API_SECRET
+          valueFrom:
+            secretKeyRef:
+              name: pigugu-secrets
+              key: LIVEKIT_API_SECRET
+        - name: CARTESIA_API_KEY
+          valueFrom:
+            secretKeyRef:
+              name: pigugu-secrets
+              key: CARTESIA_API_KEY
+        - name: DEEPGRAM_API_KEY
+          valueFrom:
+            secretKeyRef:
+              name: pigugu-secrets
+              key: DEEPGRAM_API_KEY
+        - name: XAI_API_KEY
+          valueFrom:
+            secretKeyRef:
+              name: pigugu-secrets
+              key: XAI_API_KEY
+        - name: DASHSCOPE_API_KEY
+          valueFrom:
+            secretKeyRef:
+              name: pigugu-secrets
+              key: DASHSCOPE_API_KEY
+        - name: DASHSCOPE_US_API_KEY
+          valueFrom:
+            secretKeyRef:
+              name: pigugu-secrets
+              key: DASHSCOPE_US_API_KEY
+        - name: PERPLEXITY_API_KEY
+          valueFrom:
+            secretKeyRef:
+              name: pigugu-secrets
+              key: PERPLEXITY_API_KEY
+        - name: OPENROUTER_API_KEY
+          valueFrom:
+            secretKeyRef:
+              name: pigugu-secrets
+              key: OPENROUTER_API_KEY

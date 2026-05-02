@@ -80,10 +80,45 @@ jobs:
       env:
         ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
         IMAGE_TAG: ${{ github.event.inputs.image_tag }}
-        DB_PASSWORD: ${{ secrets.DB_PASSWORD }}
+        DATABASE_URL: postgresql+asyncpg://pigugu:${{ secrets.DB_PASSWORD }}@pigugu-db.c1esma68egsk.us-west-1.rds.amazonaws.com:5432/pigugu
+        REDIS_URL: ${{ secrets.REDIS_URL }}
+        LIVEKIT_URL: ${{ secrets.LIVEKIT_URL }}
+        LIVEKIT_API_KEY: ${{ secrets.LIVEKIT_API_KEY }}
+        LIVEKIT_API_SECRET: ${{ secrets.LIVEKIT_API_SECRET }}
+        CARTESIA_API_KEY: ${{ secrets.CARTESIA_API_KEY }}
+        DEEPGRAM_API_KEY: ${{ secrets.DEEPGRAM_API_KEY }}
+        XAI_API_KEY: ${{ secrets.XAI_API_KEY }}
+        DASHSCOPE_API_KEY: ${{ secrets.DASHSCOPE_API_KEY }}
+        DASHSCOPE_US_API_KEY: ${{ secrets.DASHSCOPE_US_API_KEY }}
+        PERPLEXITY_API_KEY: ${{ secrets.PERPLEXITY_API_KEY }}
+        OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
       run: |
-        # Inject real database URL into secrets.yaml
-        sed -i "s|__DATABASE_URL__|postgresql+asyncpg://pigugu:$DB_PASSWORD@pigugu-db.c1esma68egsk.us-west-1.rds.amazonaws.com:5432/pigugu|g" k8s/secrets.yaml
+        # Inject deployment secrets into secrets.yaml
+        python - <<'PY'
+        import os
+        from pathlib import Path
+
+        path = Path("k8s/secrets.yaml")
+        text = path.read_text()
+
+        for key in (
+            "DATABASE_URL",
+            "REDIS_URL",
+            "LIVEKIT_URL",
+            "LIVEKIT_API_KEY",
+            "LIVEKIT_API_SECRET",
+            "CARTESIA_API_KEY",
+            "DEEPGRAM_API_KEY",
+            "XAI_API_KEY",
+            "DASHSCOPE_API_KEY",
+            "DASHSCOPE_US_API_KEY",
+            "PERPLEXITY_API_KEY",
+            "OPENROUTER_API_KEY",
+        ):
+            text = text.replace(f"__{key}__", os.environ.get(key, ""))
+
+        path.write_text(text)
+        PY
         
         # Apply K8s manifests
         kubectl apply -f k8s/secrets.yaml
