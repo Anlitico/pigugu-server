@@ -48,11 +48,20 @@ apiVersion: v1
 kind: Service
 metadata:
   name: pigugu-api-service
+  annotations:
+    service.beta.kubernetes.io/aws-load-balancer-ssl-cert: arn:aws:acm:us-west-1:537557168531:certificate/4a84c383-f015-4961-b56c-b3a0a20166c1
+    service.beta.kubernetes.io/aws-load-balancer-ssl-ports: "443"
+    service.beta.kubernetes.io/aws-load-balancer-backend-protocol: "http"
 spec:
   type: LoadBalancer
   selector:
     app: pigugu-api
   ports:
-    - protocol: TCP
+    - name: http
+      protocol: TCP
       port: 80
+      targetPort: 8000
+    - name: https
+      protocol: TCP
+      port: 443
       targetPort: 8000
