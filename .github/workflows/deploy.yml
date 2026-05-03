@@ -93,6 +93,7 @@ jobs:
         DASHSCOPE_US_API_KEY: ${{ secrets.DASHSCOPE_US_API_KEY }}
         PERPLEXITY_API_KEY: ${{ secrets.PERPLEXITY_API_KEY }}
         OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+        AWS_IOT_WEBHOOK_SECRET: ${{ secrets.AWS_IOT_WEBHOOK_SECRET }}
       run: |
         # Inject real database URL into secrets.yaml
         sed -i "s|__DATABASE_URL__|postgresql+asyncpg://pigugu:$DB_PASSWORD@pigugu-db.c1esma68egsk.us-west-1.rds.amazonaws.com:5432/pigugu|g" k8s/secrets.yaml
@@ -117,6 +118,7 @@ jobs:
             "DASHSCOPE_US_API_KEY",
             "PERPLEXITY_API_KEY",
             "OPENROUTER_API_KEY",
+            "AWS_IOT_WEBHOOK_SECRET",
         ):
             text = text.replace(f"__{key}__", os.environ.get(key, ""))
 

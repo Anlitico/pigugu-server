@@ -5,6 +5,7 @@ from fastapi import FastAPI
 
 from app.core.redis import close_redis, get_redis
 from app.modules.auth.router import router as auth_router
+from app.modules.device.internal_router import router as internal_device_router
 from app.modules.device.router import router as device_router
 from app.modules.game.router import leaderboard_router
 from app.modules.game.router import router as game_router
@@ -40,6 +41,7 @@ app = FastAPI(title="Pigugu Server", version="0.1.0", lifespan=lifespan)
 
 app.include_router(auth_router, prefix="/v1")
 app.include_router(device_router, prefix="/v1")
+app.include_router(internal_device_router, prefix="/v1")
 app.include_router(news_router, prefix="/v1")
 app.include_router(game_router, prefix="/v1")
 app.include_router(leaderboard_router, prefix="/v1")

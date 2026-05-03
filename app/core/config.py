@@ -20,6 +20,12 @@ class Settings(BaseSettings):
 
     firebase_credentials_path: str = "./firebase-credentials.json"
 
+    aws_region: str = "us-west-1"
+    aws_access_key_id: str = ""
+    aws_secret_access_key: str = ""
+    aws_iot_endpoint: str = "agktqmnw53qnj-ats.iot.us-west-1.amazonaws.com"
+    aws_iot_webhook_secret: str = "change-me"
+
     app_env: str = "development"
     log_level: str = "INFO"
 
