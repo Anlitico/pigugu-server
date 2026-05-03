@@ -12,6 +12,7 @@ spec:
       labels:
         app: pigugu-api
     spec:
+      serviceAccountName: pigugu-server-sa
       containers:
       - name: api
         image: 537557168531.dkr.ecr.us-west-1.amazonaws.com/pigugu-api:latest
@@ -29,6 +30,19 @@ spec:
             secretKeyRef:
               name: pigugu-secrets
               key: REDIS_URL
+        - name: AWS_REGION
+          value: "us-west-1"
+        - name: AWS_IOT_ENDPOINT
+          valueFrom:
+            secretKeyRef:
+              name: pigugu-secrets
+              key: AWS_IOT_ENDPOINT
+        - name: AWS_IOT_WEBHOOK_SECRET
+          valueFrom:
+            secretKeyRef:
+              name: pigugu-secrets
+              key: AWS_IOT_WEBHOOK_SECRET
+
 ---
 apiVersion: v1
 kind: Service

@@ -466,13 +466,13 @@ class AuthBloc extends Bloc<AuthEvent, AuthState> {
 **Route**: `/login`
 
 **Elements**:
-| Element | ID | Notes |
-|---------|----|-------|
-| Email field | `login_email_field` | Keyboard: email, auto-lowercase |
+| Element        | ID                     | Notes                              |
+| -------------- | ---------------------- | ---------------------------------- |
+| Email field    | `login_email_field`    | Keyboard: email, auto-lowercase    |
 | Password field | `login_password_field` | Obscured, toggle visibility button |
-| Login button | `login_submit_button` | Disabled while loading |
-| Register link | `login_register_link` | Navigates to `/register` |
-| Error banner | `login_error_banner` | Shown when `AuthError` state |
+| Login button   | `login_submit_button`  | Disabled while loading             |
+| Register link  | `login_register_link`  | Navigates to `/register`           |
+| Error banner   | `login_error_banner`   | Shown when `AuthError` state       |
 
 **Behavior**:
 - Dispatch `AuthLoginRequested` on submit
@@ -487,13 +487,13 @@ class AuthBloc extends Bloc<AuthEvent, AuthState> {
 **Route**: `/register`
 
 **Elements**:
-| Element | ID | Notes |
-|---------|----|-------|
-| Display name field | `register_name_field` | Optional, placeholder "Your name (optional)" |
-| Email field | `register_email_field` | Keyboard: email |
-| Password field | `register_password_field` | Min 8 chars, show strength indicator |
-| Register button | `register_submit_button` | |
-| Login link | `register_login_link` | Back to `/login` |
+| Element            | ID                        | Notes                                        |
+| ------------------ | ------------------------- | -------------------------------------------- |
+| Display name field | `register_name_field`     | Optional, placeholder "Your name (optional)" |
+| Email field        | `register_email_field`    | Keyboard: email                              |
+| Password field     | `register_password_field` | Min 8 chars, show strength indicator         |
+| Register button    | `register_submit_button`  |                                              |
+| Login link         | `register_login_link`     | Back to `/login`                             |
 
 **Behavior**:
 - Dispatch `AuthRegisterRequested` on submit
@@ -510,11 +510,11 @@ class AuthBloc extends Bloc<AuthEvent, AuthState> {
 **Access**: Only visible when `AuthAuthenticated`
 
 **Elements**:
-| Element | ID | Notes |
-|---------|----|-------|
-| Current password field | `change_pw_old_field` | Obscured |
-| New password field | `change_pw_new_field` | Obscured, min 8 chars |
-| Save button | `change_pw_submit_button` | |
+| Element                | ID                        | Notes                 |
+| ---------------------- | ------------------------- | --------------------- |
+| Current password field | `change_pw_old_field`     | Obscured              |
+| New password field     | `change_pw_new_field`     | Obscured, min 8 chars |
+| Save button            | `change_pw_submit_button` |                       |
 
 **Behavior**:
 - Dispatch `AuthChangePasswordRequested` on submit
