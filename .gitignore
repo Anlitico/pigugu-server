@@ -221,3 +221,4 @@ firebase-credentials.json
 htmlcov/
 tests/.pytest_cache/
 temp/
+.claude/
