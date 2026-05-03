@@ -11,6 +11,10 @@ from app.modules.device.schemas import (
     DeviceResponse,
     DeviceStateRequest,
     LiveKitTokenResponse,
+    MqttCredentialRequest,
+    MqttCredentialResponse,
+    MqttTokenRefreshRequest,
+    MqttTokenRefreshResponse,
     ProvisioningSessionResponse,
     VerifyConnectivityRequest,
     VerifyConnectivityResponse,
@@ -41,6 +45,51 @@ async def verify_connectivity(
         raise HTTPException(status_code=400, detail="Invalid session ID")
     
     return await service.verify_connectivity(db, s_id, current_user.id, body.hardware_id)
+
+
+@router.post(
+    "/provisioning/sessions/{session_id}/mqtt-credentials",
+    response_model=MqttCredentialResponse,
+    status_code=201,
+)
+async def issue_mqtt_creds(
+    session_id: str,
+    body: MqttCredentialRequest,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    import uuid
+    try:
+        s_id = uuid.UUID(session_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid session ID")
+
+    try:
+        return await service.issue_mqtt_credentials(db, s_id, current_user.id, body.hardware_id)
+    except ValueError as e:
+        error_msg = str(e)
+        if error_msg == "PROVISION_SESSION_NOT_FOUND":
+            raise HTTPException(status_code=404, detail=error_msg)
+        if error_msg == "PROVISION_SESSION_EXPIRED":
+            raise HTTPException(status_code=410, detail=error_msg)
+        raise HTTPException(status_code=400, detail=error_msg)
+
+
+@router.post(
+    "/mqtt-token/refresh",
+    response_model=MqttTokenRefreshResponse,
+)
+async def refresh_mqtt_creds(
+    body: MqttTokenRefreshRequest,
+    db: AsyncSession = Depends(get_db),
+):
+    try:
+        return await service.refresh_mqtt_token(body.token)
+    except ValueError as e:
+        error_msg = str(e)
+        if error_msg in ("MQTT_TOKEN_EXPIRED_BEYOND_GRACE", "MQTT_TOKEN_MISSING_HW_ID"):
+            raise HTTPException(status_code=401, detail=error_msg)
+        raise HTTPException(status_code=401, detail="Invalid or expired token")
 
 
 @router.post("/bind", response_model=DeviceResponse, status_code=201)

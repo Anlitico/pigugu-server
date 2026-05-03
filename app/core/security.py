@@ -56,3 +56,44 @@ def decode_access_token(token: str) -> dict:
         return jwt.decode(token, settings.jwt_secret_key, algorithms=[settings.jwt_algorithm])
     except JWTError as exc:
         raise ValueError("Invalid token") from exc
+
+
+def create_mqtt_token(hw_id: str) -> tuple[str, str, datetime]:
+    """Create a short-lived MQTT auth token for device connectivity.
+
+    Returns (token, jti, expires_at).
+    """
+    jti = str(uuid.uuid4())
+    expire = datetime.now(timezone.utc) + timedelta(minutes=settings.mqtt_jwt_expire_minutes)
+    payload = {
+        "sub": hw_id,
+        "hw_id": hw_id,
+        "exp": expire,
+        "iat": datetime.now(timezone.utc),
+        "iss": "pigugu-server",
+        "token_type": "mqtt",
+        "jti": jti,
+    }
+    token = jwt.encode(payload, settings.mqtt_jwt_secret_key, algorithm=settings.mqtt_jwt_algorithm)
+    return token, jti, expire
+
+
+def decode_mqtt_token(token: str, verify_exp: bool = True) -> dict:
+    """Decode and validate an MQTT auth token.
+
+    Raises ValueError if the token is invalid, not an MQTT token, or expired.
+    Pass verify_exp=False to allow decoding an expired token for the refresh grace period.
+    """
+    options = {"verify_exp": verify_exp}
+    try:
+        payload = jwt.decode(
+            token,
+            settings.mqtt_jwt_secret_key,
+            algorithms=[settings.mqtt_jwt_algorithm],
+            options=options,
+        )
+        if payload.get("token_type") != "mqtt":
+            raise ValueError("Token is not an MQTT token")
+        return payload
+    except JWTError as exc:
+        raise ValueError("Invalid MQTT token") from exc

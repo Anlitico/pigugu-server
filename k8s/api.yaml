@@ -30,6 +30,23 @@ spec:
             secretKeyRef:
               name: pigugu-secrets
               key: REDIS_URL
+        - name: JWT_SECRET_KEY
+          valueFrom:
+            secretKeyRef:
+              name: pigugu-secrets
+              key: JWT_SECRET_KEY
+        - name: MQTT_JWT_SECRET_KEY
+          valueFrom:
+            secretKeyRef:
+              name: pigugu-secrets
+              key: MQTT_JWT_SECRET_KEY
+        - name: MQTT_BROKER_URI
+          valueFrom:
+            secretKeyRef:
+              name: pigugu-secrets
+              key: MQTT_BROKER_URI
+        - name: APP_ENV
+          value: "production"
         - name: AWS_REGION
           value: "us-west-1"
         - name: AWS_IOT_ENDPOINT

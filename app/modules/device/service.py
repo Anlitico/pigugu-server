@@ -7,10 +7,73 @@ from datetime import datetime, timedelta
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.config import settings
 from app.core.redis import get_redis
+from app.core.security import create_mqtt_token, decode_mqtt_token
 from app.models.device import Device
 from app.models.device_provisioning_session import DeviceProvisioningSession
-from app.modules.device.schemas import DeviceBindRequest, VerifyConnectivityResponse
+from app.modules.device.schemas import (
+    DeviceBindRequest,
+    MqttCredentialResponse,
+    MqttTokenRefreshResponse,
+    VerifyConnectivityResponse,
+)
+
+
+async def issue_mqtt_credentials(
+    db: AsyncSession, session_id: uuid.UUID, user_id: uuid.UUID, hardware_id: str
+):
+    """Issue MQTT credentials for a hardware_id within a valid provisioning session."""
+    hw_id = hardware_id.strip().lower()
+    if not hw_id:
+        raise ValueError("HARDWARE_ID_EMPTY")
+
+    result = await db.execute(
+        select(DeviceProvisioningSession).where(
+            DeviceProvisioningSession.id == session_id,
+            DeviceProvisioningSession.user_id == user_id,
+        )
+    )
+    session = result.scalar_one_or_none()
+
+    if not session:
+        raise ValueError("PROVISION_SESSION_NOT_FOUND")
+
+    if session.expires_at.replace(tzinfo=None) < datetime.now():
+        session.status = "expired"
+        raise ValueError("PROVISION_SESSION_EXPIRED")
+
+    if session.status in ("expired", "bound", "cancelled"):
+        raise ValueError(f"PROVISION_SESSION_INVALID_STATE:{session.status}")
+
+    token, jti, expires_at = create_mqtt_token(hw_id)
+    session.hardware_id = hw_id
+
+    return MqttCredentialResponse(
+        broker_uri=settings.mqtt_broker_uri,
+        username=hw_id,
+        password=token,
+        expires_at=expires_at,
+    )
+
+
+async def refresh_mqtt_token(old_token: str):
+    """Refresh an MQTT token. Accepts tokens within a 1-hour grace period after expiry."""
+    try:
+        payload = decode_mqtt_token(old_token, verify_exp=True)
+    except ValueError:
+        payload = decode_mqtt_token(old_token, verify_exp=False)
+        exp_ts = payload.get("exp", 0)
+        now_ts = datetime.now().timestamp()
+        if now_ts - exp_ts > 3600:
+            raise ValueError("MQTT_TOKEN_EXPIRED_BEYOND_GRACE")
+
+    hw_id = payload.get("hw_id") or payload.get("sub")
+    if not hw_id:
+        raise ValueError("MQTT_TOKEN_MISSING_HW_ID")
+
+    token, jti, expires_at = create_mqtt_token(hw_id)
+    return MqttTokenRefreshResponse(password=token, expires_at=expires_at)
 
 
 async def create_provisioning_session(

@@ -55,3 +55,23 @@ class LiveKitTokenResponse(BaseModel):
 class DeviceStateRequest(BaseModel):
     device_id: str
     state: str  # listening | thinking | speaking | idle
+
+
+class MqttCredentialRequest(BaseModel):
+    hardware_id: str
+
+
+class MqttCredentialResponse(BaseModel):
+    broker_uri: str
+    username: str
+    password: str
+    expires_at: datetime
+
+
+class MqttTokenRefreshRequest(BaseModel):
+    token: str
+
+
+class MqttTokenRefreshResponse(BaseModel):
+    password: str
+    expires_at: datetime
