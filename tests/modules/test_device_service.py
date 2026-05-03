@@ -1,6 +1,6 @@
 import uuid
 import json
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 import pytest
 from unittest.mock import AsyncMock, patch
 
@@ -229,7 +229,168 @@ async def test_connectivity_check(mock_get_redis, mock_publish, db_session: Asyn
     mock_get_redis.return_value = mock_redis
 
     res = await connectivity_check(db_session, test_user.id, device.id)
-    
+
     assert res.verified is True
     assert res.rtt_ms == 45
     mock_publish.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
+# MQTT credential issuance tests
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_issue_mqtt_credentials_success(db_session: AsyncSession, test_user: User):
+    from app.modules.device.service import issue_mqtt_credentials
+
+    session = DeviceProvisioningSession(
+        id=uuid.uuid4(),
+        user_id=test_user.id,
+        status="created",
+        challenge_nonce="nonce",
+        expires_at=datetime.now() + timedelta(minutes=10),
+    )
+    db_session.add(session)
+    await db_session.flush()
+
+    resp = await issue_mqtt_credentials(db_session, session.id, test_user.id, "TEST-HW-123")
+
+    assert resp.broker_uri.startswith("mqtts://")
+    assert resp.username == "test-hw-123"
+    assert resp.password != ""
+    assert resp.expires_at > datetime.now(timezone.utc)
+    assert session.hardware_id == "test-hw-123"
+
+
+@pytest.mark.asyncio
+async def test_issue_mqtt_credentials_session_not_found(db_session: AsyncSession, test_user: User):
+    from app.modules.device.service import issue_mqtt_credentials
+
+    with pytest.raises(ValueError, match="PROVISION_SESSION_NOT_FOUND"):
+        await issue_mqtt_credentials(db_session, uuid.uuid4(), test_user.id, "HW")
+
+
+@pytest.mark.asyncio
+async def test_issue_mqtt_credentials_session_expired(db_session: AsyncSession, test_user: User):
+    from app.modules.device.service import issue_mqtt_credentials
+
+    session = DeviceProvisioningSession(
+        id=uuid.uuid4(),
+        user_id=test_user.id,
+        status="created",
+        challenge_nonce="nonce",
+        expires_at=datetime.now() - timedelta(minutes=1),
+    )
+    db_session.add(session)
+    await db_session.flush()
+
+    with pytest.raises(ValueError, match="PROVISION_SESSION_EXPIRED"):
+        await issue_mqtt_credentials(db_session, session.id, test_user.id, "HW")
+
+
+@pytest.mark.asyncio
+async def test_issue_mqtt_credentials_session_bound(db_session: AsyncSession, test_user: User):
+    from app.modules.device.service import issue_mqtt_credentials
+
+    session = DeviceProvisioningSession(
+        id=uuid.uuid4(),
+        user_id=test_user.id,
+        status="bound",
+        challenge_nonce="nonce",
+        expires_at=datetime.now() + timedelta(minutes=10),
+    )
+    db_session.add(session)
+    await db_session.flush()
+
+    with pytest.raises(ValueError, match="PROVISION_SESSION_INVALID_STATE"):
+        await issue_mqtt_credentials(db_session, session.id, test_user.id, "HW")
+
+
+@pytest.mark.asyncio
+async def test_issue_mqtt_credentials_empty_hardware_id(db_session: AsyncSession, test_user: User):
+    from app.modules.device.service import issue_mqtt_credentials
+
+    session = DeviceProvisioningSession(
+        id=uuid.uuid4(),
+        user_id=test_user.id,
+        status="created",
+        challenge_nonce="nonce",
+        expires_at=datetime.now() + timedelta(minutes=10),
+    )
+    db_session.add(session)
+    await db_session.flush()
+
+    with pytest.raises(ValueError, match="HARDWARE_ID_EMPTY"):
+        await issue_mqtt_credentials(db_session, session.id, test_user.id, "")
+
+
+# ---------------------------------------------------------------------------
+# MQTT token refresh tests
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_refresh_mqtt_token_success():
+    from app.core.security import create_mqtt_token
+    from app.modules.device.service import refresh_mqtt_token
+
+    token, jti, expire = create_mqtt_token("my-hw-id")
+    resp = await refresh_mqtt_token(token)
+
+    assert resp.password != ""
+    assert resp.password != token
+    assert resp.expires_at > datetime.now(timezone.utc)
+
+
+@pytest.mark.asyncio
+async def test_refresh_mqtt_token_within_grace():
+    from app.core.config import settings
+    from app.core.security import create_mqtt_token
+    from app.modules.device.service import refresh_mqtt_token
+
+    # Create a token that expired 30 minutes ago (well within the 1-hour grace window)
+    original_expire = settings.mqtt_jwt_expire_minutes
+    settings.mqtt_jwt_expire_minutes = -30  # Expired 30 min ago
+    try:
+        token, jti, _ = create_mqtt_token("my-hw-id")
+    finally:
+        settings.mqtt_jwt_expire_minutes = original_expire
+
+    resp = await refresh_mqtt_token(token)
+    assert resp.password != ""
+    assert resp.password != token
+
+
+@pytest.mark.asyncio
+async def test_refresh_mqtt_token_beyond_grace():
+    from app.core.config import settings
+    from app.core.security import create_mqtt_token
+    from app.modules.device.service import refresh_mqtt_token
+
+    # Create a token that expired 2 hours ago (beyond the 1-hour grace window)
+    original_expire = settings.mqtt_jwt_expire_minutes
+    settings.mqtt_jwt_expire_minutes = -180  # Expired 3 hours ago
+    try:
+        token, jti, _ = create_mqtt_token("my-hw-id")
+    finally:
+        settings.mqtt_jwt_expire_minutes = original_expire
+
+    with pytest.raises(ValueError, match="MQTT_TOKEN_EXPIRED_BEYOND_GRACE"):
+        await refresh_mqtt_token(token)
+
+
+@pytest.mark.asyncio
+async def test_refresh_mqtt_token_rejects_user_auth_token(test_user: User):
+    from app.core.security import create_access_token
+    from app.modules.device.service import refresh_mqtt_token
+
+    user_token = create_access_token(str(test_user.id))
+    with pytest.raises(ValueError, match="MQTT token"):
+        await refresh_mqtt_token(user_token)
+
+
+@pytest.mark.asyncio
+async def test_refresh_mqtt_token_malformed():
+    from app.modules.device.service import refresh_mqtt_token
+
+    with pytest.raises(ValueError):
+        await refresh_mqtt_token("not-a-valid-jwt")
