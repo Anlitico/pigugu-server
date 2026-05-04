@@ -137,9 +137,9 @@ async def verify_connectivity(
     }
 
     from app.core.aws import publish_mqtt_message
-    await publish_mqtt_message(f"pgg/dev/{hw_id}/c2d", ping_payload)
 
-    for retry in range(2):  # Try twice as per doc (6s + 1 retry)
+    for retry in range(2):  # Try twice, re-publish each retry (6s + 1 retry)
+        await publish_mqtt_message(f"pgg/dev/{hw_id}/c2d", ping_payload)
         start_time = datetime.now()
         while (datetime.now() - start_time).total_seconds() < 6:
             pong_data = await redis.get(f"provision:verify:{session_id}:{request_id}")
@@ -150,7 +150,7 @@ async def verify_connectivity(
                     rtt = pong.get("rtt_ms")
                     return VerifyConnectivityResponse(verified=True, rtt_ms=rtt)
             await asyncio.sleep(0.5)
-        
+
         if retry == 0:
             await publish_mqtt_message(f"pgg/dev/{hw_id}/c2d", ping_payload)
 
