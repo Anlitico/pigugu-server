@@ -2,7 +2,7 @@ import asyncio
 import json
 import secrets
 import uuid
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -39,7 +39,7 @@ async def issue_mqtt_credentials(
     if not session:
         raise ValueError("PROVISION_SESSION_NOT_FOUND")
 
-    if session.expires_at.replace(tzinfo=None) < datetime.now():
+    if session.expires_at < datetime.now(timezone.utc):
         session.status = "expired"
         raise ValueError("PROVISION_SESSION_EXPIRED")
 
@@ -84,7 +84,7 @@ async def create_provisioning_session(
         user_id=user_id,
         status="created",
         challenge_nonce=secrets.token_urlsafe(32),
-        expires_at=datetime.now() + timedelta(minutes=15),
+        expires_at=datetime.now(timezone.utc) + timedelta(minutes=15),
     )
     db.add(session)
     await db.flush()
@@ -105,7 +105,7 @@ async def verify_connectivity(
     if not session:
         return VerifyConnectivityResponse(verified=False, error_code="PROVISION_SESSION_NOT_FOUND")
 
-    if session.expires_at < datetime.now():
+    if session.expires_at < datetime.now(timezone.utc):
         session.status = "expired"
         return VerifyConnectivityResponse(verified=False, error_code="PROVISION_SESSION_EXPIRED")
 
