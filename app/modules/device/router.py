@@ -31,6 +31,15 @@ async def create_provisioning_session(
     return await service.create_provisioning_session(db, current_user.id)
 
 
+@router.get("/online-status/{hardware_id}")
+async def check_online_status(hardware_id: str):
+    """Check if device is online via MQTT (used by App before verify-connectivity)."""
+    from app.core.redis import get_redis
+    redis = await get_redis()
+    is_online = await redis.get(f"device:online:hw:{hardware_id.strip().lower()}")
+    return {"hardware_id": hardware_id, "online": bool(is_online)}
+
+
 @router.post("/provisioning/sessions/{session_id}/verify-connectivity", response_model=VerifyConnectivityResponse)
 async def verify_connectivity(
     session_id: str,
