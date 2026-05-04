@@ -16,8 +16,10 @@ IOT_POLICY = {
         {"Effect": "Allow", "Action": "iot:Connect", "Resource": "*"},
         {"Effect": "Allow", "Action": "iot:Publish",
          "Resource": "arn:aws:iot:us-west-1:*:topic/pgg/dev/*/d2c"},
-        {"Effect": "Allow", "Action": ["iot:Subscribe", "iot:Receive"],
+        {"Effect": "Allow", "Action": "iot:Subscribe",
          "Resource": "arn:aws:iot:us-west-1:*:topicfilter/pgg/dev/*/c2d"},
+        {"Effect": "Allow", "Action": "iot:Receive",
+         "Resource": "arn:aws:iot:us-west-1:*:topic/pgg/dev/*/c2d"},
     ]
 }
 
