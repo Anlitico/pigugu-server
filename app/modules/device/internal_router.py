@@ -62,7 +62,7 @@ async def aws_iot_webhook(
                 ex=300
             )
 
-    elif msg_type == "device.heartbeat":
+    elif msg_type in ("device.heartbeat", "device.online"):
         await redis.set(f"device:online:hw:{hw_id}", "1", ex=90)
         await redis.set(f"device:last_seen:hw:{hw_id}", str(datetime.now().isoformat()), ex=86400)
 

@@ -30,7 +30,7 @@ class Settings(BaseSettings):
     mqtt_jwt_secret_key: str = ""
     mqtt_jwt_algorithm: str = "HS256"
     mqtt_jwt_expire_minutes: int = 1440  # 24 hours
-    mqtt_broker_uri: str = "mqtts://agktqmnw53qnj-ats.iot.us-west-1.amazonaws.com:8883"
+    mqtt_broker_uri: str = "mqtts://agktqmnw53qnj-ats.iot.us-west-1.amazonaws.com:443"
 
     app_env: str = "development"
     log_level: str = "INFO"
