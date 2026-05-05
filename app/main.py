@@ -1,9 +1,14 @@
 import asyncio
+import logging
 from contextlib import asynccontextmanager
+from datetime import datetime, timedelta, timezone
 
 from fastapi import FastAPI
+from sqlalchemy import delete
 
+from app.core.database import AsyncSessionLocal
 from app.core.redis import close_redis, get_redis
+from app.models.device_provisioning_session import DeviceProvisioningSession
 from app.modules.auth.router import router as auth_router
 from app.modules.device.internal_router import router as internal_device_router
 from app.modules.device.router import router as device_router
@@ -28,12 +33,34 @@ async def _redis_subscriber() -> None:
         await ws_manager.broadcast(device_id, message["data"])
 
 
+async def _session_cleanup() -> None:
+    """Periodically delete expired provisioning sessions older than 7 days."""
+    logger = logging.getLogger(__name__)
+    while True:
+        await asyncio.sleep(3600)  # every hour
+        try:
+            async with AsyncSessionLocal() as db:
+                cutoff = datetime.now(timezone.utc) - timedelta(days=7)
+                result = await db.execute(
+                    delete(DeviceProvisioningSession).where(
+                        DeviceProvisioningSession.expires_at < cutoff
+                    )
+                )
+                await db.commit()
+                if result.rowcount:
+                    logger.info("Cleaned up %d expired provisioning sessions", result.rowcount)
+        except Exception as e:
+            logger.error("Session cleanup failed: %s", e)
+
+
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
     init_firebase()
     subscriber_task = asyncio.create_task(_redis_subscriber())
+    cleanup_task = asyncio.create_task(_session_cleanup())
     yield
     subscriber_task.cancel()
+    cleanup_task.cancel()
     await close_redis()
 
 

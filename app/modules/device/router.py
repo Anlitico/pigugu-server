@@ -28,11 +28,16 @@ async def create_provisioning_session(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
+    from app.core.rate_limit import check_session_create_limit
+    await check_session_create_limit(str(current_user.id))
     return await service.create_provisioning_session(db, current_user.id)
 
 
 @router.get("/online-status/{hardware_id}")
-async def check_online_status(hardware_id: str):
+async def check_online_status(
+    hardware_id: str,
+    current_user: User = Depends(get_current_user),
+):
     """Check if device is online via MQTT (used by App before verify-connectivity)."""
     from app.modules.device.service import get_device_online_status
     is_online = await get_device_online_status(hardware_id)
@@ -47,11 +52,13 @@ async def verify_connectivity(
     db: AsyncSession = Depends(get_db),
 ):
     import uuid
+    from app.core.rate_limit import check_verify_limit
     try:
         s_id = uuid.UUID(session_id)
     except ValueError:
         raise HTTPException(status_code=400, detail="Invalid session ID")
-    
+
+    await check_verify_limit(session_id)
     return await service.verify_connectivity(db, s_id, current_user.id, body.hardware_id)
 
 
@@ -67,11 +74,13 @@ async def issue_mqtt_creds(
     db: AsyncSession = Depends(get_db),
 ):
     import uuid
+    from app.core.rate_limit import check_mqtt_creds_limit
     try:
         s_id = uuid.UUID(session_id)
     except ValueError:
         raise HTTPException(status_code=400, detail="Invalid session ID")
 
+    await check_mqtt_creds_limit(session_id)
     try:
         return await service.issue_mqtt_credentials(db, s_id, current_user.id, body.hardware_id)
     except ValueError as e:
