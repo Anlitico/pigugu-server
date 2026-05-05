@@ -10,34 +10,32 @@ router = APIRouter(prefix="/internal/aws-iot", tags=["internal", "aws-iot"])
 
 
 @router.post("/webhook")
-@router.get("/webhook")  # AWS IoT Rule sends subscription confirmation via GET
 async def aws_iot_webhook(
     request: Request,
     payload: dict | None = None,
     x_aws_secret: str | None = Header(None, alias="x-aws-secret")
 ):
-    # 1. Verify Secret (skip for GET confirmation requests which don't include headers)
-    secret_valid = x_aws_secret == settings.aws_iot_webhook_secret
+    # Handle AWS IoT Topic Rule Destination subscription confirmation FIRST.
+    # Confirmation requests do NOT include the Rule's custom headers (x-aws-secret),
+    # so we must process them before secret validation.
+    # AWS IoT sends the confirmationToken as a query parameter:
+    #   POST /webhook?confirmationToken=xxxxx
+    confirmation_token = request.query_params.get("confirmationToken")
+    if confirmation_token:
+        # Must echo the token as plain text to confirm the destination
+        from fastapi.responses import PlainTextResponse
+        return PlainTextResponse(confirmation_token)
 
-    # 2. Handle AWS IoT Rule subscription confirmation
-    # AWS IoT sends a confirmation request when a rule is created/updated.
-    # The request body contains a "Type" field set to "SubscriptionConfirmation".
+    # Also handle SNS-style SubscriptionConfirmation (alternative format)
     if payload and payload.get("Type") == "SubscriptionConfirmation":
         token = payload.get("Token", "")
         if token:
-            # Echo the token back to confirm
             from fastapi.responses import PlainTextResponse
             return PlainTextResponse(token)
-        # No token but still confirmation type — return 200 to accept
         return {"status": "ok"}
 
-    # GET requests from AWS IoT for confirmation have a ?token= query param
-    token = request.query_params.get("token")
-    if token:
-        from fastapi.responses import PlainTextResponse
-        return PlainTextResponse(token)
-
-    if not secret_valid:
+    # Verify Secret for regular D2C message processing
+    if x_aws_secret != settings.aws_iot_webhook_secret:
         raise HTTPException(status_code=403, detail="Forbidden")
 
     # 3. Extract Topic
