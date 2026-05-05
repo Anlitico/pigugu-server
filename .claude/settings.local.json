@@ -1,7 +1,0 @@
-{
-  "permissions": {
-    "allow": [
-      "Read(//d/projects/Pigugu-Docs/jinzhao/tech-design/**)"
-    ]
-  }
-}
