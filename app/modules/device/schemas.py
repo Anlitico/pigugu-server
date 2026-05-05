@@ -18,7 +18,6 @@ class DeviceResponse(BaseModel):
     id: uuid.UUID
     device_name: str
     hardware_id: str
-    connectivity_status: str
     active_state: str
     is_online: bool = False
     last_seen_at: datetime | None = None
