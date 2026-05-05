@@ -37,26 +37,24 @@ async def test_create_provisioning_session(db_session: AsyncSession, test_user: 
     assert session.user_id == test_user.id
     assert session.status == "created"
     assert session.challenge_nonce is not None
-    assert session.expires_at > datetime.now()
+    assert session.expires_at > datetime.now(timezone.utc)
 
 @pytest.mark.asyncio
 @patch("app.core.aws.publish_mqtt_message")
-@patch("app.modules.device.service.get_redis")
+@patch("app.modules.device.service.redis_get")
 async def test_verify_connectivity_success(
-    mock_get_redis, mock_publish, db_session: AsyncSession, test_user: User
+    mock_redis_get, mock_publish, db_session: AsyncSession, test_user: User
 ):
     # 1. Create a session
     session = await create_provisioning_session(db_session, test_user.id)
-    
-    # 2. Mock Redis behavior (return pong immediately)
-    mock_redis = AsyncMock()
+
+    # 2. Mock redis_get behavior (return pong immediately)
     pong_payload = {"nonce": session.challenge_nonce, "rtt_ms": 120}
-    mock_redis.get.return_value = json.dumps(pong_payload)
-    mock_get_redis.return_value = mock_redis
-    
+    mock_redis_get.return_value = json.dumps(pong_payload)
+
     # 3. Verify
     res = await verify_connectivity(db_session, session.id, test_user.id, "TEST-HW-123")
-    
+
     assert res.verified is True
     assert res.rtt_ms == 120
     assert session.status == "verified"
@@ -70,7 +68,7 @@ async def test_bind_device_success_first_device(db_session: AsyncSession, test_u
         user_id=test_user.id,
         status="verified",
         challenge_nonce="nonce",
-        expires_at=datetime.now() + timedelta(minutes=10)
+        expires_at=datetime.now(timezone.utc) + timedelta(minutes=10)
     )
     db_session.add(session)
     await db_session.flush()
@@ -87,7 +85,8 @@ async def test_bind_device_success_first_device(db_session: AsyncSession, test_u
     assert session.status == "bound"
 
 @pytest.mark.asyncio
-async def test_bind_device_conflict(db_session: AsyncSession, test_user: User):
+@patch("app.modules.device.service.redis_exists", return_value=False)
+async def test_bind_device_conflict(mock_exists, db_session: AsyncSession, test_user: User):
     other_user = User(id=uuid.uuid4(), email="other@example.com", hashed_password="h")
     db_session.add(other_user)
     
@@ -102,7 +101,7 @@ async def test_bind_device_conflict(db_session: AsyncSession, test_user: User):
     db_session.add(existing_device)
     
     session = DeviceProvisioningSession(
-        id=uuid.uuid4(), user_id=test_user.id, status="verified", challenge_nonce="x", expires_at=datetime.now() + timedelta(minutes=10)
+        id=uuid.uuid4(), user_id=test_user.id, status="verified", challenge_nonce="x", expires_at=datetime.now(timezone.utc) + timedelta(minutes=10)
     )
     db_session.add(session)
     await db_session.flush()
@@ -113,7 +112,8 @@ async def test_bind_device_conflict(db_session: AsyncSession, test_user: User):
         await bind_device(db_session, test_user.id, req)
 
 @pytest.mark.asyncio
-async def test_bind_device_soft_unbind_transfer(db_session: AsyncSession, test_user: User):
+@patch("app.modules.device.service.redis_exists", return_value=False)
+async def test_bind_device_soft_unbind_transfer(mock_exists, db_session: AsyncSession, test_user: User):
     other_user = User(id=uuid.uuid4(), email="other2@example.com", hashed_password="h")
     db_session.add(other_user)
     
@@ -129,7 +129,7 @@ async def test_bind_device_soft_unbind_transfer(db_session: AsyncSession, test_u
     db_session.add(unbound_device)
     
     session = DeviceProvisioningSession(
-        id=uuid.uuid4(), user_id=test_user.id, status="verified", challenge_nonce="y", expires_at=datetime.now() + timedelta(minutes=10)
+        id=uuid.uuid4(), user_id=test_user.id, status="verified", challenge_nonce="y", expires_at=datetime.now(timezone.utc) + timedelta(minutes=10)
     )
     db_session.add(session)
     await db_session.flush()
@@ -143,32 +143,31 @@ async def test_bind_device_soft_unbind_transfer(db_session: AsyncSession, test_u
     assert device.active_state == "active"
 
 @pytest.mark.asyncio
-@patch("app.modules.device.service.get_redis")
-async def test_get_devices_for_user(mock_get_redis, db_session: AsyncSession, test_user: User):
+@patch("app.modules.device.service.redis_exists")
+async def test_get_devices_for_user(mock_exists, db_session: AsyncSession, test_user: User):
     from app.modules.device.service import get_devices_for_user
-    
+
     device1 = Device(id=uuid.uuid4(), user_id=test_user.id, hardware_id="dev1", device_name="D1", binding_status="bound")
     device2 = Device(id=uuid.uuid4(), user_id=test_user.id, hardware_id="dev2", device_name="D2", binding_status="bound")
     device3 = Device(id=uuid.uuid4(), user_id=test_user.id, hardware_id="dev3", device_name="D3", binding_status="unbound")
     db_session.add_all([device1, device2, device3])
     await db_session.flush()
 
-    mock_redis = AsyncMock()
-    # Let dev1 be online (id-based exists returns 1), dev2 offline
-    mock_redis.exists.side_effect = lambda key: 1 if "dev1" in key or str(device1.id) in key else 0
-    mock_get_redis.return_value = mock_redis
+    # dev1 is online, dev2 is offline
+    mock_exists.side_effect = lambda key: "dev1" in key
 
     devices = await get_devices_for_user(db_session, test_user.id)
-    
+
     assert len(devices) == 2  # unbound device should not be returned
     d1 = next(d for d in devices if d.id == device1.id)
     d2 = next(d for d in devices if d.id == device2.id)
-    
+
     assert d1.is_online is True
     assert d2.is_online is False
 
 @pytest.mark.asyncio
-async def test_set_active_device(db_session: AsyncSession, test_user: User):
+@patch("app.modules.device.service.redis_exists", return_value=False)
+async def test_set_active_device(mock_exists, db_session: AsyncSession, test_user: User):
     device1 = Device(id=uuid.uuid4(), user_id=test_user.id, hardware_id="dev1", device_name="D1", active_state="active", binding_status="bound")
     device2 = Device(id=uuid.uuid4(), user_id=test_user.id, hardware_id="dev2", device_name="D2", active_state="standby", binding_status="bound")
     db_session.add_all([device1, device2])
@@ -205,7 +204,8 @@ async def test_unbind_device(mock_get_devices, db_session: AsyncSession, test_us
     assert device2.active_state == "active"
 
 @pytest.mark.asyncio
-async def test_rename_device(db_session: AsyncSession, test_user: User):
+@patch("app.modules.device.service.redis_exists", return_value=False)
+async def test_rename_device(mock_exists, db_session: AsyncSession, test_user: User):
     from app.modules.device.service import rename_device
     device = Device(id=uuid.uuid4(), user_id=test_user.id, hardware_id="dev1", device_name="Old", binding_status="bound")
     db_session.add(device)
@@ -216,17 +216,15 @@ async def test_rename_device(db_session: AsyncSession, test_user: User):
 
 @pytest.mark.asyncio
 @patch("app.core.aws.publish_mqtt_message")
-@patch("app.modules.device.service.get_redis")
-async def test_connectivity_check(mock_get_redis, mock_publish, db_session: AsyncSession, test_user: User):
+@patch("app.modules.device.service.redis_get")
+async def test_connectivity_check(mock_redis_get, mock_publish, db_session: AsyncSession, test_user: User):
     from app.modules.device.service import connectivity_check
     device = Device(id=uuid.uuid4(), user_id=test_user.id, hardware_id="dev1", device_name="D1", binding_status="bound")
     db_session.add(device)
     await db_session.flush()
 
-    mock_redis = AsyncMock()
     pong_payload = {"rtt_ms": 45}
-    mock_redis.get.return_value = json.dumps(pong_payload)
-    mock_get_redis.return_value = mock_redis
+    mock_redis_get.return_value = json.dumps(pong_payload)
 
     res = await connectivity_check(db_session, test_user.id, device.id)
 
@@ -248,7 +246,7 @@ async def test_issue_mqtt_credentials_success(db_session: AsyncSession, test_use
         user_id=test_user.id,
         status="created",
         challenge_nonce="nonce",
-        expires_at=datetime.now() + timedelta(minutes=10),
+        expires_at=datetime.now(timezone.utc) + timedelta(minutes=10),
     )
     db_session.add(session)
     await db_session.flush()
@@ -279,7 +277,7 @@ async def test_issue_mqtt_credentials_session_expired(db_session: AsyncSession, 
         user_id=test_user.id,
         status="created",
         challenge_nonce="nonce",
-        expires_at=datetime.now() - timedelta(minutes=1),
+        expires_at=datetime.now(timezone.utc) - timedelta(minutes=1),
     )
     db_session.add(session)
     await db_session.flush()
@@ -297,7 +295,7 @@ async def test_issue_mqtt_credentials_session_bound(db_session: AsyncSession, te
         user_id=test_user.id,
         status="bound",
         challenge_nonce="nonce",
-        expires_at=datetime.now() + timedelta(minutes=10),
+        expires_at=datetime.now(timezone.utc) + timedelta(minutes=10),
     )
     db_session.add(session)
     await db_session.flush()
@@ -315,7 +313,7 @@ async def test_issue_mqtt_credentials_empty_hardware_id(db_session: AsyncSession
         user_id=test_user.id,
         status="created",
         challenge_nonce="nonce",
-        expires_at=datetime.now() + timedelta(minutes=10),
+        expires_at=datetime.now(timezone.utc) + timedelta(minutes=10),
     )
     db_session.add(session)
     await db_session.flush()

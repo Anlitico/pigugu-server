@@ -1,13 +1,13 @@
 import asyncio
 import json
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 
 import boto3
 from fastapi import APIRouter, Header, HTTPException, Request
 
 from app.core.config import settings
-from app.core.redis import get_redis
+from app.core.redis import redis_set
 
 logger = logging.getLogger(__name__)
 
@@ -122,26 +122,40 @@ async def aws_iot_webhook(
     request_id = msg.get("request_id")
     session_id = msg.get("session_id")
 
-    redis = await get_redis()
-
     if msg_type == "connectivity.pong":
         if session_id and request_id:
             msg["rtt_ms"] = int((datetime.now().timestamp() - msg.get("ts", 0)) * 1000)
-            await redis.set(
+            await redis_set(
                 f"provision:verify:{session_id}:{request_id}",
                 json.dumps(msg),
                 ex=300
             )
-        
+
         if request_id:
-             await redis.set(
+             await redis_set(
                 f"device:connectivity:hw:{hw_id}:{request_id}",
                 json.dumps(msg),
                 ex=300
             )
 
+        # Persist last RTT to Device record (best-effort)
+        try:
+            from sqlalchemy import update
+            from app.core.database import AsyncSessionLocal
+            from app.models.device import Device
+            async with AsyncSessionLocal() as db:
+                rtt = int((datetime.now().timestamp() - msg.get("ts", 0)) * 1000)
+                await db.execute(
+                    update(Device)
+                    .where(Device.hardware_id == hw_id)
+                    .values(last_rtt_ms=rtt, last_seen_at=datetime.now(timezone.utc))
+                )
+                await db.commit()
+        except Exception as e:
+            logger.warning("Failed to persist device RTT for %s: %s", hw_id, e)
+
     elif msg_type in ("device.heartbeat", "device.online"):
-        await redis.set(f"device:online:hw:{hw_id}", "1", ex=90)
-        await redis.set(f"device:last_seen:hw:{hw_id}", str(datetime.now().isoformat()), ex=86400)
+        await redis_set(f"device:online:hw:{hw_id}", "1", ex=90)
+        await redis_set(f"device:last_seen:hw:{hw_id}", str(datetime.now().isoformat()), ex=86400)
 
     return {"status": "ok"}
