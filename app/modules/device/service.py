@@ -150,15 +150,15 @@ async def verify_connectivity(
 
     from app.core.aws import publish_mqtt_message
 
-    for retry in range(2):  # Two attempts, one publish + 6s poll each
+    # App already waited for MQTT online before calling us, so pong should
+    # arrive in < 1s. Short poll keeps user-facing latency low.
+    for retry in range(2):  # 2 × 3s = ~6s total worst case
         try:
             await publish_mqtt_message(f"pgg/dev/{hw_id}/c2d", ping_payload)
         except Exception as e:
             logger.error("MQTT publish failed (retry=%d): %s", retry, e)
-            # Continue to next retry — device may already be online from
-            # a previous publish, so polling Redis is still worthwhile
         start_time = datetime.now()
-        while (datetime.now() - start_time).total_seconds() < 6:
+        while (datetime.now() - start_time).total_seconds() < 3:
             pong_data = await redis_get(f"provision:verify:{session_id}:{request_id}")
             if pong_data:
                 pong = json.loads(pong_data)
@@ -199,13 +199,14 @@ async def connectivity_check(
 
     from app.core.aws import publish_mqtt_message
 
-    for retry in range(2):
+    # Single retry, short poll — this is a quick "are you there?" check
+    for retry in range(1):  # 1 × 3s = ~3s total
         try:
             await publish_mqtt_message(f"pgg/dev/{hw_id}/c2d", ping_payload)
         except Exception as e:
             logger.error("MQTT publish failed in connectivity_check (retry=%d): %s", retry, e)
         start_time = datetime.now()
-        while (datetime.now() - start_time).total_seconds() < 6:
+        while (datetime.now() - start_time).total_seconds() < 3:
             pong_data = await redis_get(f"device:connectivity:hw:{hw_id}:{request_id}")
             if pong_data:
                 pong = json.loads(pong_data)
