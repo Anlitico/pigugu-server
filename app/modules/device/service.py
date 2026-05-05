@@ -261,6 +261,7 @@ async def bind_device(db: AsyncSession, user_id: uuid.UUID, body: DeviceBindRequ
         user_id=user_id,
         device_name=body.device_name,
         hardware_id=body.hardware_id.strip(),
+        connectivity_status="unknown",
         active_state="active" if not has_devices else "standby",
         binding_status="bound"
     )
