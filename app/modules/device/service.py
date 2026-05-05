@@ -231,6 +231,7 @@ async def bind_device(db: AsyncSession, user_id: uuid.UUID, body: DeviceBindRequ
             existing_device.device_name = body.device_name
             existing_device.binding_status = "bound"
             session.status = "bound"
+            existing_device.is_online = True  # Just verified via connectivity
             return existing_device
         elif existing_device.binding_status != "bound":
             # Rebind an unbound device
@@ -238,20 +239,21 @@ async def bind_device(db: AsyncSession, user_id: uuid.UUID, body: DeviceBindRequ
             existing_device.device_name = body.device_name
             existing_device.binding_status = "bound"
             session.status = "bound"
-            
+
             # Check if this is the first device to set active for this user
             result = await db.execute(select(Device).where(Device.user_id == user_id, Device.id != existing_device.id))
             has_devices = result.first() is not None
             existing_device.active_state = "standby" if has_devices else "active"
+            existing_device.is_online = True  # Just verified via connectivity
             return existing_device
         else:
             raise ValueError("DEVICE_ALREADY_BOUND")
-            
+
     # 3. Create new device
     # Check if this is the first device to set active
     result = await db.execute(select(Device).where(Device.user_id == user_id))
     has_devices = result.first() is not None
-    
+
     device = Device(
         id=uuid.uuid4(),
         user_id=user_id,
@@ -262,6 +264,7 @@ async def bind_device(db: AsyncSession, user_id: uuid.UUID, body: DeviceBindRequ
     )
     db.add(device)
     session.status = "bound"
+    device.is_online = True  # Just verified via connectivity
     return device
 
 
@@ -298,6 +301,7 @@ async def set_active_device(db: AsyncSession, user_id: uuid.UUID, device_id: uui
         raise ValueError("DEVICE_NOT_FOUND")
         
     device.active_state = "active"
+    device.is_online = False  # Will be refreshed by caller if needed
     return device
 
 
@@ -331,6 +335,7 @@ async def rename_device(db: AsyncSession, user_id: uuid.UUID, device_id: uuid.UU
         raise ValueError("DEVICE_NOT_FOUND")
         
     device.device_name = name
+    device.is_online = False  # Not checked here; caller should refresh
     return device
 
 
