@@ -224,13 +224,16 @@ async def bind_device(db: AsyncSession, user_id: uuid.UUID, body: DeviceBindRequ
         select(Device).where(Device.hardware_id.ilike(hw_id_normalized))
     )
     existing_device = result.scalar_one_or_none()
-    
+
+    is_online = await get_device_online_status(hw_id_normalized)
+
     if existing_device:
         if existing_device.user_id == user_id:
             # Idempotent return
             existing_device.device_name = body.device_name
             existing_device.binding_status = "bound"
             session.status = "bound"
+            existing_device.is_online = is_online
             return existing_device
         elif existing_device.binding_status != "bound":
             # Rebind an unbound device
@@ -238,20 +241,21 @@ async def bind_device(db: AsyncSession, user_id: uuid.UUID, body: DeviceBindRequ
             existing_device.device_name = body.device_name
             existing_device.binding_status = "bound"
             session.status = "bound"
-            
+
             # Check if this is the first device to set active for this user
             result = await db.execute(select(Device).where(Device.user_id == user_id, Device.id != existing_device.id))
             has_devices = result.first() is not None
             existing_device.active_state = "standby" if has_devices else "active"
+            existing_device.is_online = is_online
             return existing_device
         else:
             raise ValueError("DEVICE_ALREADY_BOUND")
-            
+
     # 3. Create new device
     # Check if this is the first device to set active
     result = await db.execute(select(Device).where(Device.user_id == user_id))
     has_devices = result.first() is not None
-    
+
     device = Device(
         id=uuid.uuid4(),
         user_id=user_id,
@@ -262,6 +266,7 @@ async def bind_device(db: AsyncSession, user_id: uuid.UUID, body: DeviceBindRequ
     )
     db.add(device)
     session.status = "bound"
+    device.is_online = is_online
     return device
 
 
@@ -271,14 +276,21 @@ async def get_devices_for_user(db: AsyncSession, user_id: uuid.UUID) -> list[Dev
     )
     devices = list(result.scalars().all())
     
-    redis = await get_redis()
     for device in devices:
-        # Check both ID-based and HW-based online keys
-        id_online = await redis.exists(f"device:online:{device.id}")
-        hw_online = await redis.exists(f"device:online:hw:{device.hardware_id.strip().lower()}")
-        device.is_online = (id_online > 0) or (hw_online > 0)
+        device.is_online = await get_device_online_status(device.hardware_id)
         
     return devices
+
+
+async def get_device_online_status(hardware_id: str) -> bool:
+    """Check if a device is online via Redis. Centralized for all callers."""
+    redis = await get_redis()
+    return await redis.exists(f"device:online:hw:{hardware_id.strip().lower()}") > 0
+
+
+async def _set_device_online_status(device: Device) -> None:
+    """Set device.is_online from Redis (non-persisted)."""
+    device.is_online = await get_device_online_status(device.hardware_id)
 
 
 async def set_active_device(db: AsyncSession, user_id: uuid.UUID, device_id: uuid.UUID) -> Device:
@@ -288,7 +300,7 @@ async def set_active_device(db: AsyncSession, user_id: uuid.UUID, device_id: uui
         .where(Device.user_id == user_id, Device.id != device_id)
         .values(active_state="standby")
     )
-    
+
     # Set target device to active
     result = await db.execute(
         select(Device).where(Device.id == device_id, Device.user_id == user_id)
@@ -296,8 +308,9 @@ async def set_active_device(db: AsyncSession, user_id: uuid.UUID, device_id: uui
     device = result.scalar_one_or_none()
     if not device:
         raise ValueError("DEVICE_NOT_FOUND")
-        
+
     device.active_state = "active"
+    await _set_device_online_status(device)
     return device
 
 
@@ -331,6 +344,7 @@ async def rename_device(db: AsyncSession, user_id: uuid.UUID, device_id: uuid.UU
         raise ValueError("DEVICE_NOT_FOUND")
         
     device.device_name = name
+    await _set_device_online_status(device)
     return device
 
 
