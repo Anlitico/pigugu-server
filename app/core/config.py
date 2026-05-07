@@ -26,11 +26,9 @@ class Settings(BaseSettings):
     aws_iot_endpoint: str = "agktqmnw53qnj-ats.iot.us-west-1.amazonaws.com"
     aws_iot_webhook_secret: str = ""
 
-    # MQTT / Device Token (separate from user auth JWT)
-    mqtt_jwt_secret_key: str = ""
-    mqtt_jwt_algorithm: str = "HS256"
-    mqtt_jwt_expire_minutes: int = 1440  # 24 hours
-    mqtt_broker_uri: str = "mqtts://agktqmnw53qnj-ats.iot.us-west-1.amazonaws.com:443"
+    # MQTT mTLS (X.509 client certificate)
+    mqtt_broker_uri: str = "mqtts://agktqmnw53qnj-ats.iot.us-west-1.amazonaws.com:8883"
+    aws_iot_policy_name: str = "pigugu_device_policy"
 
     app_env: str = "development"
     log_level: str = "INFO"

@@ -62,15 +62,7 @@ class MqttCredentialRequest(BaseModel):
 
 class MqttCredentialResponse(BaseModel):
     broker_uri: str
-    username: str
-    password: str
-    expires_at: datetime
+    client_cert: str
+    client_key: str
 
 
-class MqttTokenRefreshRequest(BaseModel):
-    token: str
-
-
-class MqttTokenRefreshResponse(BaseModel):
-    password: str
-    expires_at: datetime

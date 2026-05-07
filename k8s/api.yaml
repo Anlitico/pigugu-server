@@ -35,11 +35,6 @@ spec:
             secretKeyRef:
               name: pigugu-secrets
               key: JWT_SECRET_KEY
-        - name: MQTT_JWT_SECRET_KEY
-          valueFrom:
-            secretKeyRef:
-              name: pigugu-secrets
-              key: MQTT_JWT_SECRET_KEY
         - name: MQTT_BROKER_URI
           valueFrom:
             secretKeyRef:
