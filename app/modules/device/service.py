@@ -12,13 +12,19 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
 from app.core.redis import redis_get, redis_exists, redis_set
-from app.core.security import create_mqtt_token, decode_mqtt_token
+from app.core.aws import (
+    create_device_certificate,
+    ensure_device_thing,
+    attach_cert_to_thing,
+    attach_policy_to_cert,
+    deactivate_certificate,
+    cleanup_old_certificates,
+)
 from app.models.device import Device
 from app.models.device_provisioning_session import DeviceProvisioningSession
 from app.modules.device.schemas import (
     DeviceBindRequest,
     MqttCredentialResponse,
-    MqttTokenRefreshResponse,
     VerifyConnectivityResponse,
 )
 
@@ -26,7 +32,12 @@ from app.modules.device.schemas import (
 async def issue_mqtt_credentials(
     db: AsyncSession, session_id: uuid.UUID, user_id: uuid.UUID, hardware_id: str
 ):
-    """Issue MQTT credentials for a hardware_id within a valid provisioning session."""
+    """Issue mTLS credentials for a hardware_id within a valid provisioning session.
+
+    Creates an X.509 client certificate via AWS IoT, attaches it to a Thing
+    (creating the Thing if it doesn't exist), and attaches the shared device
+    policy. Old certificates from previous provisioning attempts are cleaned up.
+    """
     hw_id = hardware_id.strip().lower()
     if not hw_id:
         raise ValueError("HARDWARE_ID_EMPTY")
@@ -48,34 +59,26 @@ async def issue_mqtt_credentials(
     if session.status in ("expired", "bound", "cancelled"):
         raise ValueError(f"PROVISION_SESSION_INVALID_STATE:{session.status}")
 
-    token, jti, expires_at = create_mqtt_token(hw_id)
     session.hardware_id = hw_id
+
+    # Create IoT resources (cert, thing, policy attachment)
+    try:
+        await asyncio.to_thread(cleanup_old_certificates, hw_id)
+        cert = await asyncio.to_thread(create_device_certificate)
+        await asyncio.to_thread(ensure_device_thing, hw_id)
+        await asyncio.to_thread(attach_cert_to_thing, hw_id, cert["certificateArn"])
+        await asyncio.to_thread(attach_policy_to_cert, cert["certificateArn"])
+    except Exception as e:
+        logger.error("Failed to create IoT resources for %s: %s", hw_id, e)
+        raise ValueError("IOT_RESOURCE_CREATION_FAILED")
+
+    session.certificate_arn = cert["certificateArn"]
 
     return MqttCredentialResponse(
         broker_uri=settings.mqtt_broker_uri,
-        username=hw_id,
-        password=token,
-        expires_at=expires_at,
+        client_cert=cert["certificatePem"],
+        client_key=cert["keyPair"]["PrivateKey"],
     )
-
-
-async def refresh_mqtt_token(old_token: str):
-    """Refresh an MQTT token. Accepts tokens within a 1-hour grace period after expiry."""
-    try:
-        payload = decode_mqtt_token(old_token, verify_exp=True)
-    except ValueError:
-        payload = decode_mqtt_token(old_token, verify_exp=False)
-        exp_ts = payload.get("exp", 0)
-        now_ts = datetime.now().timestamp()
-        if now_ts - exp_ts > 3600:
-            raise ValueError("MQTT_TOKEN_EXPIRED_BEYOND_GRACE")
-
-    hw_id = payload.get("hw_id") or payload.get("sub")
-    if not hw_id:
-        raise ValueError("MQTT_TOKEN_MISSING_HW_ID")
-
-    token, jti, expires_at = create_mqtt_token(hw_id)
-    return MqttTokenRefreshResponse(password=token, expires_at=expires_at)
 
 
 async def create_provisioning_session(
@@ -245,6 +248,9 @@ async def bind_device(db: AsyncSession, user_id: uuid.UUID, body: DeviceBindRequ
             # Idempotent return
             existing_device.device_name = body.device_name
             existing_device.binding_status = "bound"
+            if session.certificate_arn:
+                existing_device.certificate_arn = session.certificate_arn
+            existing_device.thing_name = hw_id_normalized
             session.status = "bound"
             existing_device.is_online = is_online
             return existing_device
@@ -253,6 +259,9 @@ async def bind_device(db: AsyncSession, user_id: uuid.UUID, body: DeviceBindRequ
             existing_device.user_id = user_id
             existing_device.device_name = body.device_name
             existing_device.binding_status = "bound"
+            if session.certificate_arn:
+                existing_device.certificate_arn = session.certificate_arn
+            existing_device.thing_name = hw_id_normalized
             session.status = "bound"
 
             # Check if this is the first device to set active for this user
@@ -284,7 +293,9 @@ async def bind_device(db: AsyncSession, user_id: uuid.UUID, body: DeviceBindRequ
         device_name=body.device_name,
         hardware_id=body.hardware_id.strip(),
         active_state="active" if not has_active else "standby",
-        binding_status="bound"
+        binding_status="bound",
+        certificate_arn=session.certificate_arn if hasattr(session, 'certificate_arn') else None,
+        thing_name=hw_id_normalized,
     )
     db.add(device)
     session.status = "bound"
@@ -346,7 +357,15 @@ async def unbind_device(db: AsyncSession, user_id: uuid.UUID, device_id: uuid.UU
     is_active = device.active_state == "active"
     device.binding_status = "unbound"
     device.active_state = "standby"
-    
+
+    # Deactivate IoT certificate
+    if device.certificate_arn:
+        cert_id = device.certificate_arn.rsplit("/", 1)[-1]
+        try:
+            await asyncio.to_thread(deactivate_certificate, cert_id)
+        except Exception as e:
+            logger.warning("Failed to deactivate cert for device %s: %s", device_id, e)
+
     if is_active:
         # Try to promote another online device — prefer the most recently
         # created device as a deterministic tiebreaker.

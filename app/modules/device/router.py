@@ -13,8 +13,6 @@ from app.modules.device.schemas import (
     LiveKitTokenResponse,
     MqttCredentialRequest,
     MqttCredentialResponse,
-    MqttTokenRefreshRequest,
-    MqttTokenRefreshResponse,
     ProvisioningSessionResponse,
     VerifyConnectivityRequest,
     VerifyConnectivityResponse,
@@ -89,24 +87,9 @@ async def issue_mqtt_creds(
             raise HTTPException(status_code=404, detail=error_msg)
         if error_msg == "PROVISION_SESSION_EXPIRED":
             raise HTTPException(status_code=410, detail=error_msg)
+        if error_msg == "IOT_RESOURCE_CREATION_FAILED":
+            raise HTTPException(status_code=503, detail=error_msg)
         raise HTTPException(status_code=400, detail=error_msg)
-
-
-@router.post(
-    "/mqtt-token/refresh",
-    response_model=MqttTokenRefreshResponse,
-)
-async def refresh_mqtt_creds(
-    body: MqttTokenRefreshRequest,
-    db: AsyncSession = Depends(get_db),
-):
-    try:
-        return await service.refresh_mqtt_token(body.token)
-    except ValueError as e:
-        error_msg = str(e)
-        if error_msg in ("MQTT_TOKEN_EXPIRED_BEYOND_GRACE", "MQTT_TOKEN_MISSING_HW_ID"):
-            raise HTTPException(status_code=401, detail=error_msg)
-        raise HTTPException(status_code=401, detail="Invalid or expired token")
 
 
 @router.post("/bind", response_model=DeviceResponse, status_code=201)

@@ -27,6 +27,8 @@ class Device(Base):
     active_state: Mapped[str] = mapped_column(String(16), default="standby", nullable=False)
     binding_status: Mapped[str] = mapped_column(String(16), default="bound", nullable=False)
     livekit_room_name: Mapped[str | None] = mapped_column(String(255))
+    certificate_arn: Mapped[str | None] = mapped_column(String(512))
+    thing_name: Mapped[str | None] = mapped_column(String(128))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False

@@ -99,7 +99,7 @@ jobs:
         OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
         JWT_SECRET_KEY: ${{ secrets.JWT_SECRET_KEY }}
         AWS_IOT_WEBHOOK_SECRET: ${{ secrets.AWS_IOT_WEBHOOK_SECRET }}
-        MQTT_JWT_SECRET_KEY: ${{ secrets.MQTT_JWT_SECRET_KEY }}
+        MQTT_BROKER_URI: ${{ secrets.MQTT_BROKER_URI }}
       run: |
         # Inject real database URL into secrets.yaml
         sed -i "s|__DATABASE_URL__|postgresql+asyncpg://${DATABASE_USER}:${DB_PASSWORD}@${DATABASE_HOST}:${DATABASE_PORT}/${DATABASE_NAME}|g" k8s/secrets.yaml
@@ -126,7 +126,7 @@ jobs:
             "PERPLEXITY_API_KEY",
             "OPENROUTER_API_KEY",
             "AWS_IOT_WEBHOOK_SECRET",
-            "MQTT_JWT_SECRET_KEY",
+            "MQTT_BROKER_URI",
         ):
             text = text.replace(f"__{key}__", os.environ.get(key, ""))
 
