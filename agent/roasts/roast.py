@@ -1,4 +1,4 @@
-# agent/game_modes/roast.py
+# agent/roasts/roast.py
 """RoastMode — 毒观点: vent → react → amplify → rate."""
 
 import random

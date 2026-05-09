@@ -39,7 +39,7 @@ from config import get_config
 from core.search_adapter import build_search_messages
 from utils import init_unified_logger, get_unified_logger, SpeakerTracker, ResponseStrategy
 from personas import PersonaRegistry, get_persona, GROUP_DISCUSSION_PROMPT
-from game_modes import GameModeRegistry, get_game_mode
+from roasts import GameModeRegistry, get_game_mode
 from components.factory import create_agent_components, validate_configuration
 from lifecycle import ConversationManager, PersistenceProvider
 from models import ConversationState, NewsContext

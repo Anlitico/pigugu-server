@@ -10,7 +10,7 @@ from typing import Optional, TYPE_CHECKING
 
 if TYPE_CHECKING:
     from models import ConversationState, ScoreResult
-    from game_modes.base import GameMode
+    from roasts import GameMode
 
 
 class Scorer:

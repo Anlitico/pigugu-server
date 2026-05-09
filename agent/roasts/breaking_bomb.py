@@ -1,4 +1,4 @@
-# agent/game_modes/breaking_bomb.py
+# agent/roasts/breaking_bomb.py
 """BreakingBombMode — 突发炸弹: urgent → react → reflect."""
 
 import random

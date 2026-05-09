@@ -26,7 +26,7 @@ from .persistence import PersistenceProvider
 if TYPE_CHECKING:
     from models import ConversationState, NewsContext
     from personas.base import Persona
-    from game_modes.base import GameMode
+    from roasts import GameMode
     from memory.store import MemoryStore
     from context.assembler import ContextAssembler
 

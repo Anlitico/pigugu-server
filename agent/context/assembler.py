@@ -19,7 +19,7 @@ from loguru import logger
 
 if TYPE_CHECKING:
     from personas.base import Persona
-    from game_modes.base import GameMode
+    from roasts import GameMode
     from models import ConversationState, MoodState, NewsContext
     from memory.store import MemoryStore
 

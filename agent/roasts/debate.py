@@ -1,4 +1,4 @@
-# agent/game_modes/debate.py
+# agent/roasts/debate.py
 """DebateMode — 来辩: stance → rebut → concede/fight/deflect."""
 
 import random

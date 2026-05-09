@@ -1,4 +1,4 @@
-# agent/game_modes/predict.py
+# agent/roasts/predict.py
 """PredictMode — 预测混乱: predict → wait → reveal."""
 
 import random

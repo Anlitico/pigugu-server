@@ -1,4 +1,4 @@
-# agent/game_modes/base.py
+# agent/roasts/base.py
 """
 GameMode abstract base class.
 

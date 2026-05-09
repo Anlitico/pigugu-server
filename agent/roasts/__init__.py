@@ -1,4 +1,4 @@
-# agent/game_modes/__init__.py
+# agent/roasts/__init__.py
 """Game mode registry for Pigugu gameplay modes."""
 
 from loguru import logger
