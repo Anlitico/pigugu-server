@@ -61,6 +61,20 @@ async def issue_mqtt_credentials(
 
     session.hardware_id = hw_id
 
+    # Idempotency: if this session already generated a certificate, return
+    # the cached one. Prevents duplicate cert creation when the device
+    # reboots and calls the endpoint again with the same session ID.
+    cache_key = f"provision:cert:{session_id}"
+    cached = await redis_get(cache_key)
+    if cached:
+        logger.info("Returning cached cert for session %s", session_id)
+        creds = json.loads(cached)
+        return MqttCredentialResponse(
+            broker_uri=creds["broker_uri"],
+            client_cert=creds["client_cert"],
+            client_key=creds["client_key"],
+        )
+
     # Create IoT resources (cert, thing, policy attachment)
     try:
         await asyncio.to_thread(cleanup_old_certificates, hw_id)
@@ -74,11 +88,17 @@ async def issue_mqtt_credentials(
 
     session.certificate_arn = cert["certificateArn"]
 
-    return MqttCredentialResponse(
+    response = MqttCredentialResponse(
         broker_uri=settings.mqtt_broker_uri,
         client_cert=cert["certificatePem"],
         client_key=cert["keyPair"]["PrivateKey"],
     )
+
+    # Cache the credentials so subsequent calls with the same session
+    # return the same cert. TTL = 30 min (double the session lifetime).
+    await redis_set(cache_key, response.model_dump_json(), ex=1800)
+
+    return response
 
 
 async def create_provisioning_session(
