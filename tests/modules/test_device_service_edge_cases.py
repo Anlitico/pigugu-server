@@ -7,11 +7,11 @@ import pytest
 from unittest.mock import AsyncMock, patch
 
 from sqlalchemy.ext.asyncio import AsyncSession
-from app.models.user import User
-from app.models.device import Device
-from app.models.device_provisioning_session import DeviceProvisioningSession
-from app.modules.device.schemas import DeviceBindRequest
-from app.modules.device.service import (
+from models.user import User
+from models.device import Device
+from models.device_provisioning_session import DeviceProvisioningSession
+from modules.device.schemas import DeviceBindRequest
+from modules.device.service import (
     create_provisioning_session,
     verify_connectivity,
     bind_device,
@@ -35,8 +35,8 @@ async def test_user(db_session: AsyncSession) -> User:
 # ── C1: verify_connectivity publish count ──────────────────────────────
 
 @pytest.mark.asyncio
-@patch("app.core.aws.publish_mqtt_message")
-@patch("app.modules.device.service.redis_get", return_value=None)
+@patch("core.aws.publish_mqtt_message")
+@patch("modules.device.service.redis_get", return_value=None)
 async def test_verify_publishes_exactly_twice(
     mock_redis_get, mock_publish, db_session: AsyncSession, test_user: User
 ):
@@ -54,8 +54,8 @@ async def test_verify_publishes_exactly_twice(
 # ── C1 & C11: verify_connectivity survives MQTT publish failure ────────
 
 @pytest.mark.asyncio
-@patch("app.core.aws.publish_mqtt_message")
-@patch("app.modules.device.service.redis_get", return_value=None)
+@patch("core.aws.publish_mqtt_message")
+@patch("modules.device.service.redis_get", return_value=None)
 async def test_verify_handles_mqtt_publish_failure(
     mock_redis_get, mock_publish, db_session: AsyncSession, test_user: User
 ):
@@ -97,7 +97,7 @@ async def test_session_limit_cancels_oldest(db_session: AsyncSession, test_user:
 # ── C6: concurrent first-device bind protection ────────────────────────
 
 @pytest.mark.asyncio
-@patch("app.modules.device.service.redis_exists", return_value=False)
+@patch("modules.device.service.redis_exists", return_value=False)
 async def test_second_device_binds_as_standby(mock_exists, db_session: AsyncSession, test_user: User):
     """C6: Second bound device gets active_state='standby'."""
     session1 = DeviceProvisioningSession(
@@ -125,7 +125,7 @@ async def test_second_device_binds_as_standby(mock_exists, db_session: AsyncSess
 
 
 @pytest.mark.asyncio
-@patch("app.modules.device.service.redis_exists", return_value=False)
+@patch("modules.device.service.redis_exists", return_value=False)
 async def test_has_active_check_prevents_double_active(
     mock_exists, db_session: AsyncSession, test_user: User
 ):
@@ -153,7 +153,7 @@ async def test_has_active_check_prevents_double_active(
 # ── C7: update_device_state ────────────────────────────────────────────
 
 @pytest.mark.asyncio
-@patch("app.modules.device.service.redis_set")
+@patch("modules.device.service.redis_set")
 async def test_update_device_state_writes_redis(mock_redis_set, db_session: AsyncSession):
     """C7: update_device_state writes device state to Redis with 60s TTL."""
     await update_device_state("dev-123", "online")
@@ -188,7 +188,7 @@ async def test_unbind_active_promotes_most_recent(db_session: AsyncSession, test
     await db_session.flush()
 
     # Both standby devices are online
-    with patch("app.modules.device.service.redis_exists", return_value=True):
+    with patch("modules.device.service.redis_exists", return_value=True):
         await unbind_device(db_session, test_user.id, active_dev.id)
 
     await db_session.refresh(older)
@@ -214,7 +214,7 @@ async def test_unbind_no_online_device_leaves_no_active(db_session: AsyncSession
     await db_session.flush()
 
     # Standby is offline
-    with patch("app.modules.device.service.redis_exists", return_value=False):
+    with patch("modules.device.service.redis_exists", return_value=False):
         await unbind_device(db_session, test_user.id, active_dev.id)
 
     await db_session.refresh(standby)

@@ -1,0 +1,30 @@
+{
+    "folders": [
+        {
+            "name": "pigugu-server",
+            "path": ".",
+            "settings": {
+                "python.analysis.extraPaths": ["api", "agent"]
+            }
+        },
+        {
+            "name": "api (APP)",
+            "path": "api",
+            "settings": {
+                "python.defaultInterpreterPath": "${workspaceFolder}/.venv/Scripts/python.exe",
+                "python.analysis.extraPaths": ["${workspaceFolder}"]
+            }
+        },
+        {
+            "name": "agent (LiveKit)",
+            "path": "agent",
+            "settings": {
+                "python.defaultInterpreterPath": "${workspaceFolder}/.venv/Scripts/python.exe",
+                "python.analysis.extraPaths": ["${workspaceFolder}"]
+            }
+        }
+    ],
+    "settings": {
+        "python.terminal.activateEnvInSelectedTerminal": true
+    }
+}

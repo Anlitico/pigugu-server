@@ -4,7 +4,7 @@ import asyncio
 import pytest
 from fastapi import HTTPException
 
-from app.core.rate_limit import RateLimiter, check_session_create_limit, check_verify_limit
+from core.rate_limit import RateLimiter, check_session_create_limit, check_verify_limit
 
 
 class TestRateLimiter:

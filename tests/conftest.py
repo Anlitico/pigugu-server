@@ -11,9 +11,9 @@ from unittest.mock import AsyncMock, patch
 if not hasattr(bcrypt, "__about__"):
     bcrypt.__about__ = type("About", (), {"__version__": bcrypt.__version__})
 
-from app.main import app
-from app.core.database import Base, get_db
-from app.core.config import settings
+from main import app
+from core.database import Base, get_db
+from core.config import settings
 
 # Use NullPool to ensure no connection reuse issues
 engine = create_async_engine(settings.database_url, poolclass=NullPool)
@@ -54,7 +54,7 @@ async def client(db_session: AsyncSession) -> AsyncGenerator[AsyncClient, None]:
 @pytest.fixture(autouse=True)
 async def mock_redis():
     # Patch it where it is USED
-    with patch("app.modules.auth.service.get_redis") as mocked_get_redis:
+    with patch("modules.auth.service.get_redis") as mocked_get_redis:
         mock_instance = AsyncMock()
         mock_instance.get.return_value = None
         mock_instance.set.return_value = True
@@ -66,5 +66,5 @@ async def mock_redis():
 
 @pytest.fixture(autouse=True)
 def mock_firebase():
-    with patch("app.modules.push.service.init_firebase"):
+    with patch("modules.push.service.init_firebase"):
         yield
