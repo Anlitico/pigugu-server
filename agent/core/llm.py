@@ -159,7 +159,7 @@ class QwenLLM(LLMProvider):
         return self._initial_chat_ctx
 
     def get_search_adapter(self) -> Any:
-        from search_adapter import create_search_adapter
+        from .search_adapter import create_search_adapter
 
         if "api.x.ai" in self._base_url:
             return create_search_adapter("grok")

@@ -9,7 +9,7 @@ in different conversation contexts (1-on-1 vs group conversations).
 import time
 from typing import Optional, List
 from loguru import logger
-from speaker_tracker import SpeakerTracker
+from .speaker_tracker import SpeakerTracker
 
 
 class ResponseStrategy:

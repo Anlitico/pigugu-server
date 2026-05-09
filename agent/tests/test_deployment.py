@@ -21,9 +21,9 @@ from loguru import logger
 sys.path.insert(0, str(Path(__file__).parent))
 
 from config import get_config, AI_PERSONALITY
-from stt import create_stt
-from llm import create_llm
-from tts import create_tts
+from core.stt import create_stt
+from core.llm import create_llm
+from core.tts import create_tts
 
 # Load environment variables
 load_dotenv()

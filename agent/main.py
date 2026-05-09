@@ -35,14 +35,16 @@ from livekit import rtc
 from livekit.plugins import silero
 
 # Import our modular components
-from config import get_config, AI_PERSONALITY, GROUP_DISCUSSION_PROMPT, get_personality_prompt
-from stt import create_stt
-from llm import create_llm
-from search_adapter import build_search_messages
-from tts import create_tts
-from unified_logger import init_unified_logger, get_unified_logger
-from speaker_tracker import SpeakerTracker
-from response_strategy import ResponseStrategy
+from config import get_config
+from core.search_adapter import build_search_messages
+from utils import init_unified_logger, get_unified_logger, SpeakerTracker, ResponseStrategy
+from personas import PersonaRegistry, get_persona, GROUP_DISCUSSION_PROMPT
+from game_modes import GameModeRegistry, get_game_mode
+from components.factory import create_agent_components, validate_configuration
+from lifecycle import ConversationManager, PersistenceProvider
+from models import ConversationState, NewsContext
+from memory import ShortTermMemory
+from context import ContextAssembler, MoodProvider
 
 load_dotenv()
 
@@ -81,21 +83,14 @@ if config.LOG_TO_FILE:
     logger.info(f"File logging enabled: {config.LOG_FILE_PATH}")
 
 
-# Trump-authentic filler phrases used to mask LLM latency.
-# Each ends with a period so TTS treats it as a complete sentence and synthesizes immediately.
-TRUMP_FILLERS = [
-    "Well, let me tell you something. This is very interesting.",
-    "You know, a lot of people have been asking me about this.",
-    "Look, I've been thinking about this, and let me tell you.",
-    "So, that's very interesting. A lot of people don't know this.",
-    "Well, let me tell you. This is something I know very well.",
-    "You know what, that's a great point. A really great point.",
-    "That's very interesting. Very very interesting, let me say this.",
-]
+# Filler phrases are now provided by Persona. During migration, the
+# TrumpAgent still references TRUMP_FILLERS imported from personas.trump
+# for backward compat. New code should use persona.get_filler().
+from personas.trump import TRUMP_FILLERS
 
 
 # Import perplexity search for tool-based web search (only used when POLICY_SEARCH_BACKEND = "perplexity")
-from perplexity_search import web_search as perplexity_web_search
+from core.perplexity_search import web_search as perplexity_web_search
 
 
 class TrumpAgent(Agent):
@@ -108,7 +103,8 @@ class TrumpAgent(Agent):
     
     def __init__(self, speaker_tracker: SpeakerTracker, agent_mode: int, agent_config=None,
                  llm_api_key: str = "", llm_base_url: str = "", llm_model: str = "",
-                 llm_provider: str = "", search_adapter=None, **kwargs):
+                 llm_provider: str = "", search_adapter=None, game_mode=None, persona=None,
+                 conv_manager=None, **kwargs):
         super().__init__(**kwargs)
         self._speaker_tracker = speaker_tracker
         self._agent_mode = agent_mode
@@ -123,6 +119,10 @@ class TrumpAgent(Agent):
         self._llm_model = llm_model
         self._llm_provider = llm_provider
         self._search_adapter = search_adapter
+        # Persona + Game Mode + Lifecycle (Phase 1-3)
+        self._game_mode = game_mode
+        self._persona = persona
+        self._conv_manager = conv_manager
     
     @function_tool(description="Search the web for current information using Perplexity")
     async def web_search(self, query: str) -> str:
@@ -238,13 +238,34 @@ class TrumpAgent(Agent):
         # --- Policy search: let the model decide when to search ---
         self._use_search = bool(self._config and self._config.ENABLE_POLICY_SEARCH)
         self._use_perplexity_tool = (
-            self._use_search and 
-            self._config and 
+            self._use_search and
+            self._config and
             self._config.POLICY_SEARCH_BACKEND == "perplexity"
         )
         if self._use_search:
             backend = "perplexity" if self._use_perplexity_tool else "built_in"
             logger.info(f"🔍 [SEARCH] Policy search enabled, backend={backend}")
+
+        # --- Lifecycle: delegate to ConversationManager ---
+        user_text = (new_message.text_content or "").strip()
+        if self._conv_manager:
+            lifecycle_result = await self._conv_manager.on_user_turn_completed(user_text)
+            if lifecycle_result:
+                # Inject ending review tone if triggered
+                if lifecycle_result.get("ending_triggered"):
+                    review_tone = lifecycle_result.get("review_tone", "")
+                    if review_tone:
+                        turn_ctx.add_message(role="system", content=review_tone)
+                        logger.info("📖 [LIFECYCLE] Review tone injected into context")
+                    ending_line = lifecycle_result.get("ending_line", "")
+                    if ending_line:
+                        logger.info(f"🏁 [LIFECYCLE] Ending line: {ending_line[:80]}...")
+
+                # Inject mode-specific context if any
+                if lifecycle_result.get("mode_context"):
+                    turn_ctx.add_message(
+                        role="system", content=lifecycle_result["mode_context"]
+                    )
     
     async def _search_llm_stream(self, chat_ctx):
         """Stream LLM response with web search enabled (bypasses LiveKit plugin).
@@ -297,6 +318,12 @@ class TrumpAgent(Agent):
         - POLICY_SEARCH_BACKEND="built_in": uses _search_llm_stream (provider-native search)
         - POLICY_SEARCH_BACKEND="perplexity": uses normal LLM flow with web_search tool available
         """
+        # ── Dynamic context assembly ──────────────────────────────────
+        if self._conv_manager:
+            await self._conv_manager.assemble_context(
+                chat_ctx, provider=self._llm_provider
+            )
+
         filler = self._pending_filler
         self._pending_filler = None
         use_search = self._use_search
@@ -350,136 +377,6 @@ class TrumpAgent(Agent):
         else:
             async for chunk in _get_llm_gen():
                 yield chunk
-
-
-def validate_configuration():
-    """Validate that required API keys are set in environment variables"""
-    errors = []
-    
-    # Check STT provider API key
-    stt_provider = config.STT_PROVIDER.lower()
-    if stt_provider == "deepgram":
-        if not os.getenv("DEEPGRAM_API_KEY"):
-            errors.append("DEEPGRAM_API_KEY required in .env file for Deepgram STT")
-    elif stt_provider == "cartesia":
-        if not os.getenv("CARTESIA_API_KEY"):
-            errors.append("CARTESIA_API_KEY required in .env file for Cartesia STT")
-    
-    # Check Cartesia API key for TTS (always needed for TTS)
-    if not os.getenv("CARTESIA_API_KEY"):
-        errors.append("CARTESIA_API_KEY required in .env file for Cartesia TTS")
-    
-    # Check LLM API key based on provider
-    llm_provider = config.LLM_PROVIDER.lower()
-    if llm_provider == "qwen-us":
-        if not os.getenv("DASHSCOPE_US_API_KEY"):
-            errors.append("DASHSCOPE_US_API_KEY required in .env file for Qwen US LLM")
-    elif llm_provider == "grok" or llm_provider == "xai":
-        if not os.getenv("XAI_API_KEY"):
-            errors.append("XAI_API_KEY required in .env file for Grok LLM")
-    else:  # default to "qwen"
-        if not os.getenv("DASHSCOPE_API_KEY"):
-            errors.append("DASHSCOPE_API_KEY required in .env file for Qwen LLM")
-    
-    # Check LiveKit credentials
-    if not os.getenv("LIVEKIT_API_KEY"):
-        errors.append("LIVEKIT_API_KEY required in .env file")
-    
-    if not os.getenv("LIVEKIT_API_SECRET"):
-        errors.append("LIVEKIT_API_SECRET required in .env file")
-    
-    # Check Perplexity API key when using Perplexity search backend
-    if config.ENABLE_POLICY_SEARCH and config.POLICY_SEARCH_BACKEND == "perplexity":
-        if not os.getenv("PERPLEXITY_API_KEY") and not os.getenv("OPENROUTER_API_KEY"):
-            errors.append("PERPLEXITY_API_KEY or OPENROUTER_API_KEY required in .env file when POLICY_SEARCH_BACKEND=perplexity")
-    
-    # Mode 3 requires diarization
-    if config.AGENT_MODE == 3 and not config.DEEPGRAM_ENABLE_DIARIZATION:
-        errors.append("Mode 3 (Group Discussion) requires DEEPGRAM_ENABLE_DIARIZATION = true")
-    
-    if errors:
-        logger.error("=" * 70)
-        logger.error("Configuration Errors:")
-        for error in errors:
-            logger.error(f"  - {error}")
-        logger.error("=" * 70)
-        return False
-    
-    return True
-
-
-def create_agent_components():
-    """Create STT, LLM, and TTS components based on configuration"""
-    
-    # Get API keys from environment variables
-    deepgram_api_key = os.getenv("DEEPGRAM_API_KEY")
-    cartesia_api_key = os.getenv("CARTESIA_API_KEY")
-    
-    # Create STT component based on provider selection
-    stt_provider = config.STT_PROVIDER.lower()
-    if stt_provider == "deepgram":
-        stt = create_stt(
-            provider="deepgram",
-            model=config.DEEPGRAM_STT_MODEL,
-            language=config.DEEPGRAM_STT_LANGUAGE,
-            sample_rate=config.DEEPGRAM_STT_SAMPLE_RATE,
-            enable_diarization=config.DEEPGRAM_ENABLE_DIARIZATION,
-            api_key=deepgram_api_key,
-        )
-    elif stt_provider == "cartesia":
-        stt = create_stt(
-            provider="cartesia",
-            model=config.CARTESIA_STT_MODEL,
-            language=config.CARTESIA_STT_LANGUAGE,
-            encoding=config.CARTESIA_STT_ENCODING,
-            sample_rate=config.CARTESIA_STT_SAMPLE_RATE,
-            api_key=cartesia_api_key,
-            base_url=config.CARTESIA_STT_BASE_URL
-        )
-    else:
-        raise ValueError(f"Unknown STT provider: {stt_provider}")
-    
-    # Get LLM configuration based on selected provider
-    llm_config = config.get_llm_config()
-    
-    # Determine model based on provider
-    llm_provider = config.LLM_PROVIDER.lower()
-    if llm_provider == "grok" or llm_provider == "xai":
-        model = config.GROK_MODEL
-    else:
-        model = config.QWEN_MODEL
-    
-    # Create LLM component (OpenAI-compatible plugin)
-    llm = create_llm(
-        model=model,
-        temperature=config.LLM_TEMPERATURE,
-        instructions=get_personality_prompt(llm_provider),
-        max_tokens=config.LLM_MAX_TOKENS,
-        api_key=llm_config["api_key"],
-        base_url=llm_config["base_url"]
-    )
-    
-    # Create TTS component (Cartesia plugin)
-    # Parse emotion from comma-separated string if provided
-    emotion_list = None
-    if config.CARTESIA_TTS_EMOTION:
-        emotion_list = [e.strip() for e in config.CARTESIA_TTS_EMOTION.split(",")]
-    
-    tts = create_tts(
-        model=config.CARTESIA_TTS_MODEL,
-        language=config.CARTESIA_TTS_LANGUAGE,
-        encoding=config.CARTESIA_TTS_ENCODING,
-        voice=config.CARTESIA_TTS_VOICE,
-        speed=config.CARTESIA_TTS_SPEED,
-        emotion=emotion_list,
-        volume=config.CARTESIA_TTS_VOLUME,
-        sample_rate=config.CARTESIA_TTS_SAMPLE_RATE,
-        word_timestamps=config.CARTESIA_TTS_WORD_TIMESTAMPS,
-        api_key=cartesia_api_key,
-        base_url=config.CARTESIA_TTS_BASE_URL
-    )
-    
-    return stt, llm, tts
 
 
 async def entrypoint(ctx: JobContext):
@@ -709,20 +606,71 @@ async def entrypoint(ctx: JobContext):
         except Exception as e:
             logger.warning(f"Failed to parse job metadata: {e}")
     
+    # ── Init persona + game mode ──────────────────────────────────────
+    PersonaRegistry.register_defaults()
+    GameModeRegistry.register_defaults()
+
+    persona_id = metadata.get("persona", "trump") if metadata else "trump"
+    mode_id = metadata.get("mode", "roast") if metadata else "roast"
+
+    persona = get_persona(persona_id)
+    game_mode = get_game_mode(mode_id)
+
+    logger.info(f"🎭 Persona: {persona.persona_id} ({persona.display_name}, domain={persona.domain})")
+    logger.info(f"🎮 Game Mode: {game_mode.mode_id} ({game_mode.display_name})")
+
+    # ── Init conversation lifecycle ────────────────────────────────────
+    news_context = None
+    if metadata:
+        news_context = NewsContext(
+            news_id=metadata.get("news_id", ""),
+            title=metadata.get("news_title", ""),
+            summary=metadata.get("news_summary", ""),
+            source=metadata.get("news_source", ""),
+            domain=metadata.get("news_domain", persona.domain),
+            mode=game_mode.mode_id,
+            persona=persona.persona_id,
+        )
+    # ── Memory + Context + Persistence ─────────────────────────────────
+    memory_store = ShortTermMemory()
+    context_assembler = ContextAssembler()
+    mood_provider = MoodProvider()
+
+    # Persistence: PG + Redis when available, console fallback otherwise
+    device_id = metadata.get("device_id", "") if metadata else ""
+    persistence = PersistenceProvider(pg_pool=None, redis_client=None)
+
+    conv_state = ConversationState(
+        persona_id=persona.persona_id,
+        mode_id=game_mode.mode_id,
+        news=news_context,
+        user_id=metadata.get("user_id", "") if metadata else "",
+    )
+    conv_manager = ConversationManager(
+        state=conv_state,
+        persona=persona,
+        game_mode=game_mode,
+        memory_store=memory_store,
+        context_assembler=context_assembler,
+        persistence=persistence,
+        device_id=device_id,
+    )
+    logger.info(f"📋 ConversationManager initialized — session={conv_state.session_id[:8]}...")
+
     # Determine STT model info for logging
     stt_provider = config.STT_PROVIDER.lower()
     if stt_provider == "deepgram":
         stt_info = f"{config.DEEPGRAM_STT_MODEL} (Deepgram, language: {config.DEEPGRAM_STT_LANGUAGE})"
     else:
         stt_info = f"{config.CARTESIA_STT_MODEL} (Cartesia, language: {config.CARTESIA_STT_LANGUAGE})"
-    
+
     # Determine LLM model info for logging
     llm_provider = config.LLM_PROVIDER.lower()
     if llm_provider == "grok" or llm_provider == "xai":
         llm_model_info = f"{config.GROK_MODEL} (Provider: {config.LLM_PROVIDER})"
     else:
         llm_model_info = f"{config.QWEN_MODEL} (Provider: {config.LLM_PROVIDER})"
-    
+
     logger.info("=" * 70)
     logger.info(f"Agent starting for room: {ctx.room.name}")
     logger.info(f"Job ID: {ctx.job.id}")
@@ -756,8 +704,8 @@ async def entrypoint(ctx: JobContext):
         logger.info(f"🔌 [ROOM] Participant disconnected: {participant.identity}")
         ulog.log_step("ROOM", f"Participant disconnected: {participant.identity}")
     
-    # Create agent components
-    stt, llm, tts = create_agent_components()
+    # Create agent components using factory (persona-aware for TTS voice + LLM instructions)
+    stt, llm, tts = create_agent_components(config, persona=persona)
     
     # Get plugin instances for LiveKit Agent
     stt_plugin = stt.get_plugin() if hasattr(stt, 'get_plugin') else stt
@@ -779,17 +727,16 @@ async def entrypoint(ctx: JobContext):
         # Build VAD (Voice Activity Detection) - using Silero for background voice cancellation
         vad = silero.VAD.load()
         
-        # Prepare instructions - use LLM's or fallback to AI_PERSONALITY
+        # Prepare instructions — use persona-aware prompt
+        llm_provider = config.LLM_PROVIDER.lower()
         if hasattr(llm, 'instructions') and llm.instructions:
-            # LLM has custom instructions (system prompt)
             instructions = llm.instructions
-            logger.info("✅ Using LLM's system prompt as instructions")
-            ulog.log_step("CONFIG", "Using LLM's system prompt", level="debug", include_timing=False)
+            logger.info(f"✅ Using LLM's system prompt (persona={persona.persona_id}, provider={llm_provider})")
+            ulog.log_step("CONFIG", f"Using persona '{persona.persona_id}' system prompt", level="debug", include_timing=False)
         else:
-            # Fallback to AI_PERSONALITY instructions
-            instructions = AI_PERSONALITY
-            logger.info("✅ Using AI_PERSONALITY as instructions")
-            ulog.log_step("CONFIG", "Using AI_PERSONALITY instructions", level="debug", include_timing=False)
+            instructions = persona.get_full_prompt(llm_provider)
+            logger.info(f"✅ Using persona '{persona.persona_id}' prompt as fallback")
+            ulog.log_step("CONFIG", f"Using persona '{persona.persona_id}' prompt (fallback)", level="debug", include_timing=False)
         
         # Add metadata context if available
         if metadata:
@@ -797,9 +744,15 @@ async def entrypoint(ctx: JobContext):
             for key, value in metadata.items():
                 instructions += f"- {key}: {value}\n"
         
-        # Add Group Discussion prompt for Mode 3
+        # Add Game Mode system prompt extension
+        instructions += "\n\n" + game_mode.system_prompt_extension
+        logger.info(f"✅ Added game mode prompt: {game_mode.mode_id}")
+        ulog.log_step("CONFIG", f"Game mode: {game_mode.mode_id}", level="debug", include_timing=False)
+
+        # Add Group Discussion prompt for Mode 3 (from persona)
         if config.AGENT_MODE == 3:
-            instructions += GROUP_DISCUSSION_PROMPT
+            gd_prompt = getattr(persona, 'group_discussion_prompt', GROUP_DISCUSSION_PROMPT)
+            instructions += gd_prompt
             logger.info("✅ Added Group Discussion prompt for Mode 3")
             ulog.log_step("CONFIG", "Added Group Discussion prompt for Mode 3", level="debug", include_timing=False)
         
@@ -843,6 +796,9 @@ async def entrypoint(ctx: JobContext):
             llm_model=llm_model_name,
             llm_provider=llm_provider,
             search_adapter=llm.get_search_adapter(),
+            game_mode=game_mode,
+            persona=persona,
+            conv_manager=conv_manager,
             **agent_kwargs
         )
         
@@ -1061,7 +1017,10 @@ async def entrypoint(ctx: JobContext):
                     
                     # Track agent response in speaker tracker
                     speaker_tracker.track_agent_response(text)
-                    
+
+                    # Lifecycle: notify ConversationManager of agent message
+                    conv_manager.on_agent_message(text)
+
                     # Publish agent response to room for frontend display
                     try:
                         trimmed_text = text.strip()
@@ -1483,7 +1442,7 @@ RESPONSE: none"""
         
         # Send greeting if enabled
         if config.ENABLE_WELCOME_GREETING:
-            greeting = config.WELCOME_GREETING
+            greeting = getattr(persona, 'greeting', None) or config.WELCOME_GREETING
             await ctx.room.local_participant.publish_data(
                 greeting.encode('utf-8'),
                 reliable=True

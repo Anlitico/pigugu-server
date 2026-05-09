@@ -14,7 +14,7 @@ from dotenv import load_dotenv
 # Add parent directory to path
 sys.path.insert(0, str(Path(__file__).parent))
 
-from llm import create_llm
+from core.llm import create_llm
 
 # Load environment variables
 load_dotenv()

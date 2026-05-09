@@ -34,9 +34,6 @@ dependencies = [
     "loguru~=0.7",
     "aiohttp~=3.13",
     
-    # Token Server
-    "flask~=3.1",
-    "flask-cors~=5.0",
 ]
 
 [build-system]
@@ -46,17 +43,10 @@ build-backend = "setuptools.build_meta"
 [tool.setuptools]
 py-modules = [
     "main",
-    "config", 
+    "config",
     "stt",
     "llm",
     "search_adapter",
     "perplexity_search",
     "tts",
-    "generate_token",
-    "check_token",
-    "test_deployment",
-    "test_llm_system_prompt",
-    "test_latency_us",
-    "run_latency_test",
-    "terminal_latency_test"
 ]
