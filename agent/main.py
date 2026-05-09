@@ -37,7 +37,7 @@ from livekit.plugins import silero
 # Import our modular components
 from config import get_config
 from core.search_adapter import build_search_messages
-from utils import init_unified_logger, get_unified_logger, SpeakerTracker, ResponseStrategy
+from utils import SpeakerTracker, ResponseStrategy
 from personas import PersonaRegistry, get_persona, GROUP_DISCUSSION_PROMPT
 from roasts import GameModeRegistry, get_game_mode
 from components.factory import create_agent_components, validate_configuration
@@ -687,22 +687,15 @@ async def entrypoint(ctx: JobContext):
     await ctx.connect(auto_subscribe=AutoSubscribe.AUDIO_ONLY)
     
     # Initialize unified logger with room connection
-    ulog = init_unified_logger(ctx.room)
-    ulog.log_step("INIT", "Agent connected to room", include_timing=False)
-    ulog.log_step("CONFIG", f"STT: {stt_info}", include_timing=False)
-    ulog.log_step("CONFIG", f"LLM: {llm_model_info}", include_timing=False)
-    ulog.log_step("CONFIG", f"TTS: {config.CARTESIA_TTS_MODEL} (voice: {config.CARTESIA_TTS_VOICE})", include_timing=False)
     
     # Add room event handlers for connection tracking
     @ctx.room.on("participant_connected")
     def on_participant_connected(participant: rtc.RemoteParticipant):
         logger.info(f"🔗 [ROOM] Participant connected: {participant.identity}")
-        ulog.log_step("ROOM", f"Participant connected: {participant.identity}")
     
     @ctx.room.on("participant_disconnected")
     def on_participant_disconnected(participant: rtc.RemoteParticipant):
         logger.info(f"🔌 [ROOM] Participant disconnected: {participant.identity}")
-        ulog.log_step("ROOM", f"Participant disconnected: {participant.identity}")
     
     # Create agent components using factory (persona-aware for TTS voice + LLM instructions)
     stt, llm, tts = create_agent_components(config, persona=persona)
@@ -716,9 +709,6 @@ async def entrypoint(ctx: JobContext):
     logger.info(f"🔍 [DEBUG] LLM plugin type: {type(llm_plugin).__name__}")
     logger.info(f"🔍 [DEBUG] TTS plugin type: {type(tts_plugin).__name__}")
     
-    ulog.log_step("INIT", f"STT plugin: {type(stt_plugin).__name__}", level="debug", include_timing=False)
-    ulog.log_step("INIT", f"LLM plugin: {type(llm_plugin).__name__}", level="debug", include_timing=False)
-    ulog.log_step("INIT", f"TTS plugin: {type(tts_plugin).__name__}", level="debug", include_timing=False)
     
     # Create voice agent with modular components
     if hasattr(stt, 'get_plugin') and hasattr(llm, 'get_plugin') and hasattr(tts, 'get_plugin'):
@@ -732,11 +722,9 @@ async def entrypoint(ctx: JobContext):
         if hasattr(llm, 'instructions') and llm.instructions:
             instructions = llm.instructions
             logger.info(f"✅ Using LLM's system prompt (persona={persona.persona_id}, provider={llm_provider})")
-            ulog.log_step("CONFIG", f"Using persona '{persona.persona_id}' system prompt", level="debug", include_timing=False)
         else:
             instructions = persona.get_full_prompt(llm_provider)
             logger.info(f"✅ Using persona '{persona.persona_id}' prompt as fallback")
-            ulog.log_step("CONFIG", f"Using persona '{persona.persona_id}' prompt (fallback)", level="debug", include_timing=False)
         
         # Add metadata context if available
         if metadata:
@@ -747,14 +735,12 @@ async def entrypoint(ctx: JobContext):
         # Add Game Mode system prompt extension
         instructions += "\n\n" + game_mode.system_prompt_extension
         logger.info(f"✅ Added game mode prompt: {game_mode.mode_id}")
-        ulog.log_step("CONFIG", f"Game mode: {game_mode.mode_id}", level="debug", include_timing=False)
 
         # Add Group Discussion prompt for Mode 3 (from persona)
         if config.AGENT_MODE == 3:
             gd_prompt = getattr(persona, 'group_discussion_prompt', GROUP_DISCUSSION_PROMPT)
             instructions += gd_prompt
             logger.info("✅ Added Group Discussion prompt for Mode 3")
-            ulog.log_step("CONFIG", "Added Group Discussion prompt for Mode 3", level="debug", include_timing=False)
         
         # Create Agent with all components and instructions
         # Mode 3 uses longer endpointing delays so brief pauses in group
@@ -781,7 +767,6 @@ async def entrypoint(ctx: JobContext):
         if hasattr(llm, 'initial_chat_ctx') and llm.initial_chat_ctx:
             agent_kwargs["chat_ctx"] = llm.initial_chat_ctx
             logger.info("✅ Passing LLM's initial chat context to Agent")
-            ulog.log_step("CONFIG", "Passing LLM's initial chat context", level="debug", include_timing=False)
         
         # Use TrumpAgent which handles speaker attribution + response gating for Mode 3
         llm_config = config.get_llm_config()
@@ -808,25 +793,21 @@ async def entrypoint(ctx: JobContext):
         )
         
         logger.info("✅ Agent and session created with best practices (VAD, interruptions, turn detection)")
-        ulog.log_step("INIT", "Agent and session created with VAD, interruptions, turn detection", include_timing=False)
         
         # Add comprehensive logging to debug the conversation pipeline
         @session.on("user_state_changed")
         def on_user_state_changed(event):
             if event.old_state != "speaking" and event.new_state == "speaking":
                 logger.info("🎤 [DEBUG] User started speaking")
-                ulog.log_step("USER-STATE", "User started speaking")
                 # Reset timing for new turn when user starts speaking
                 reset_turn_timing()
             elif event.old_state == "speaking" and event.new_state != "speaking":
                 logger.info(f"🎤 [DEBUG] User stopped speaking (now {event.new_state})")
-                ulog.log_step("USER-STATE", f"User stopped speaking (now {event.new_state})")
                 # === TIMING: Record T0 - user stopped speaking ===
                 turn_timing["user_stop_speaking"] = time.perf_counter()
                 logger.info(f"⏱️ [TIMING] T0: User stopped speaking at {turn_timing['user_stop_speaking']:.3f}")
             else:
                 logger.info(f"👤 [DEBUG] User state: {event.old_state} → {event.new_state}")
-                ulog.log_step("USER-STATE", f"State changed: {event.old_state} → {event.new_state}", level="debug")
         
         @session.on("user_input_transcribed")
         def on_user_input_transcribed(event):
@@ -854,21 +835,14 @@ async def entrypoint(ctx: JobContext):
                 logger.info(speaker_tracker.get_conversation_mode_summary())
             
             if event.is_final and event.transcript and event.transcript.strip():
-                ulog.log_step("STT", f"User (final): {event.transcript.strip()}{speaker_info}")
                 # === TIMING: Record T1 - final transcript received ===
                 turn_timing["final_transcript"] = time.perf_counter()
                 logger.info(f"⏱️ [TIMING] T1: Final STT transcript at {turn_timing['final_transcript']:.3f}")
-            else:
-                ulog.log_step("STT", f"User (interim): {event.transcript}{speaker_info}", level="debug")
-            
+
             # Reset interaction timer when user speaks to agent
             if event.is_final and event.transcript and event.transcript.strip():
                 last_user_interaction_time = asyncio.get_event_loop().time()
                 logger.debug(f"⏰ [MODE] Interaction timer reset")
-                if config.AGENT_MODE == 2:
-                    ulog.log_step("MODE2", "Interaction timer reset", level="debug")
-                elif config.AGENT_MODE == 3:
-                    ulog.log_step("MODE3", "Interaction timer reset", level="debug")
             
             # Publish user transcript to frontend in real-time (when final)
             if event.is_final and event.transcript and event.transcript.strip():
@@ -882,7 +856,6 @@ async def entrypoint(ctx: JobContext):
                         "speaker_id": speaker_id  # Will be None in Mode 1/2
                     }
                     
-                    ulog.log_step("PUBLISH", "Sending user transcript to web client")
                     asyncio.create_task(
                         ctx.room.local_participant.publish_data(
                             json.dumps(payload).encode('utf-8'),
@@ -893,14 +866,12 @@ async def entrypoint(ctx: JobContext):
                     logger.debug(f"📤 Published user transcript (real-time, speaker: {speaker_id})")
                 except Exception as e:
                     logger.error(f"❌ Error publishing user transcript: {e}")
-                    ulog.log_step("ERROR", f"Failed to publish user transcript: {e}", level="error")
         
         @session.on("agent_state_changed")
         def on_agent_state_changed(event):
             # === TIMING: Capture "thinking" state (LLM processing) ===
             if event.new_state == "thinking" and event.old_state != "thinking":
                 logger.info(f"🤖 [DEBUG] Agent started THINKING (LLM processing)")
-                ulog.log_step("LLM", "Agent started thinking (LLM request)")
                 # Record T2 - agent enters thinking state (LLM request begins)
                 if turn_timing["agent_start_thinking"] is None:
                     turn_timing["agent_start_thinking"] = time.perf_counter()
@@ -908,7 +879,6 @@ async def entrypoint(ctx: JobContext):
             
             if event.old_state != "speaking" and event.new_state == "speaking":
                 logger.info("🤖 [DEBUG] Agent started speaking")
-                ulog.log_step("TTS", "Agent voice started playing")
                 # === TIMING: Record T5 - agent started speaking and log summary ===
                 turn_timing["agent_start_speaking"] = time.perf_counter()
                 # Capture filler yield timestamp from agent if available
@@ -927,25 +897,20 @@ async def entrypoint(ctx: JobContext):
                         )
                     )
                     logger.debug("📤 Published agent_voice_started signal")
-                    ulog.log_step("PUBLISH", "Sent agent_voice_started signal to web client")
                 except Exception as e:
                     logger.error(f"❌ Error publishing voice started signal: {e}")
-                    ulog.log_step("ERROR", f"Failed to publish voice started signal: {e}", level="error")
             elif event.old_state == "speaking" and event.new_state != "speaking":
                 logger.info(f"🤖 [DEBUG] Agent stopped speaking (now {event.new_state})")
-                ulog.log_step("TTS", f"Agent voice stopped (now {event.new_state})")
                 # Reset interrupt timer when agent finishes speaking (Mode 2)
                 nonlocal last_user_interaction_time
                 last_user_interaction_time = asyncio.get_event_loop().time()
                 logger.debug(f"⏰ [MODE 2] Timer reset - agent finished speaking")
             elif event.new_state != "thinking":  # Don't double-log thinking state
                 logger.info(f"🤖 [DEBUG] Agent state: {event.old_state} → {event.new_state}")
-                ulog.log_step("AGENT-STATE", f"State changed: {event.old_state} → {event.new_state}", level="debug")
         
         @session.on("speech_created")
         def on_speech_created(event):
             logger.info(f"🤖 [SPEECH] Speech created - source: {event.source}, user_initiated: {event.user_initiated}")
-            ulog.log_step("TTS", f"Speech synthesis started (source: {event.source})")
             # === TIMING: Record T3 - TTS synthesis started ===
             # Only record first speech_created per turn (avoid overwrites from retries)
             if turn_timing["speech_created"] is None:
@@ -967,7 +932,6 @@ async def entrypoint(ctx: JobContext):
                     first_token_time = time.perf_counter() - metrics.duration + metrics.ttft
                     turn_timing["llm_first_token"] = first_token_time
                     logger.info(f"⏱️ [TIMING] T2.5: LLM first token at {first_token_time:.3f} (TTFT: {metrics.ttft:.3f}s)")
-                    ulog.log_step("LLM-METRICS", f"TTFT: {metrics.ttft:.3f}s, tokens/sec: {metrics.tokens_per_second:.1f}")
                 
                 logger.info(f"📊 [LLM METRICS] TTFT: {metrics.ttft:.3f}s, Duration: {metrics.duration:.3f}s, "
                           f"Tokens: {metrics.prompt_tokens}→{metrics.completion_tokens}, "
@@ -977,7 +941,6 @@ async def entrypoint(ctx: JobContext):
             elif isinstance(metrics, TTSMetrics):
                 logger.info(f"📊 [TTS METRICS] TTFB: {metrics.ttfb:.3f}s, Duration: {metrics.duration:.3f}s, "
                           f"Audio: {metrics.audio_duration:.2f}s, Characters: {metrics.characters_count}")
-                ulog.log_step("TTS-METRICS", f"TTFB: {metrics.ttfb:.3f}s, Audio duration: {metrics.audio_duration:.2f}s", level="debug")
         
         @session.on("conversation_item_added")
         def on_conversation_item_added(event):
@@ -1010,7 +973,6 @@ async def entrypoint(ctx: JobContext):
                 
                 if item.role == "assistant":
                     logger.info(f"🤖 [LLM] Response: {text}")
-                    ulog.log_step("LLM", f"Generated response: {text[:100]}{'...' if len(text) > 100 else ''}")
                     # === TIMING: Record T4 - LLM full response logged ===
                     turn_timing["llm_response_logged"] = time.perf_counter()
                     logger.info(f"⏱️ [TIMING] T4: LLM response complete at {turn_timing['llm_response_logged']:.3f}")
@@ -1024,7 +986,6 @@ async def entrypoint(ctx: JobContext):
                     # Publish agent response to room for frontend display
                     try:
                         trimmed_text = text.strip()
-                        ulog.log_step("PUBLISH", "Sending agent response to web client")
                         asyncio.create_task(
                             ctx.room.local_participant.publish_data(
                                 trimmed_text.encode('utf-8'),
@@ -1035,43 +996,34 @@ async def entrypoint(ctx: JobContext):
                         logger.debug(f"📤 Published agent response to room")
                     except Exception as e:
                         logger.error(f"❌ Error publishing agent response: {e}")
-                        ulog.log_step("ERROR", f"Failed to publish agent response: {e}", level="error")
                 elif item.role == "user":
                     logger.info(f"👤 [USER] Message added to context: {text}")
-                    ulog.log_step("LLM", f"User message added to context: {text[:100]}{'...' if len(text) > 100 else ''}", level="debug")
                     # Note: User transcripts are already published in user_input_transcribed event
         
         @session.on("function_tools_executed")
         def on_function_tools_executed(event):
             for func_call, func_output in event.zipped():
                 logger.info(f"🔧 [TOOL] Executed: {func_call.name}")
-                ulog.log_step("TOOL", f"Executed function: {func_call.name}")
                 if func_output and func_output.result:
                     logger.info(f"🔧 [TOOL] Result: {func_output.result}")
-                    ulog.log_step("TOOL", f"Result: {func_output.result}", level="debug")
         
         # Log any errors
         @session.on("error")
         def on_error(event):
             logger.error(f"❌ [ERROR] Session error: {event.error}")
-            ulog.log_step("ERROR", f"Session error: {event.error}", level="error")
         
         # Log session close events
         @session.on("close")
         def on_close(event):
             logger.info(f"🔌 [SESSION] Session closed - reason: {event.reason}")
-            ulog.log_step("SESSION", f"Session closed - reason: {event.reason}")
             if event.error:
                 logger.error(f"❌ [SESSION] Close error: {event.error}")
-                ulog.log_step("ERROR", f"Session close error: {event.error}", level="error")
         
         logger.info("✅ Starting voice agent session...")
         logger.info(f"🔍 [DEBUG] Agent instructions length: {len(instructions)} chars")
         logger.info(f"🔍 [DEBUG] Room participants: {len(ctx.room.remote_participants)}")
         
-        ulog.log_step("SESSION", f"Instructions: {len(instructions)} chars, Participants: {len(ctx.room.remote_participants)}", level="debug", include_timing=False)
         
-        ulog.log_step("SESSION", "Starting voice agent session")
         
         # Configure room options to keep session alive on disconnect/reconnect
         room_options = room_io.RoomOptions(
@@ -1100,14 +1052,12 @@ async def entrypoint(ctx: JobContext):
         
         logger.info("🎤 Agent is ready and will respond when you speak...")
         
-        ulog.log_step("SESSION", f"Agent ready (agent: {session.agent_state}, user: {session.user_state})")
         
         # Mode 2: Auto-Interrupt Mode - start background task to check for interrupts
         async def interrupt_checker():
             """Background task to check if agent should interrupt"""
             nonlocal last_user_interaction_time
             
-            ulog.log_step("MODE2", "Auto-interrupt checker started")
             
             # Send debug message to frontend
             try:
@@ -1118,7 +1068,6 @@ async def entrypoint(ctx: JobContext):
                 )
             except Exception as e:
                 logger.error(f"❌ Error publishing interrupt debug: {e}")
-                ulog.log_step("ERROR", f"Failed to publish interrupt debug: {e}", level="error")
             
             while True:
                 try:
@@ -1137,13 +1086,11 @@ async def entrypoint(ctx: JobContext):
                         )
                     except Exception as e:
                         logger.error(f"❌ Error publishing status: {e}")
-                        ulog.log_step("ERROR", f"Failed to publish status: {e}", level="error")
                     
                     # If enough time has passed and agent isn't already speaking
                     if time_since_last_interaction >= config.INTERRUPT_INTERVAL_SECONDS:
                         if session.agent_state != "speaking":
                             logger.info(f"⏰ [MODE 2] Auto-interrupt triggered after {time_since_last_interaction:.1f}s")
-                            ulog.log_step("MODE2", f"Auto-interrupt triggered ({time_since_last_interaction:.1f}s elapsed)")
                             
                             # Send interrupt trigger notification to frontend
                             try:
@@ -1154,7 +1101,6 @@ async def entrypoint(ctx: JobContext):
                                 )
                             except Exception as e:
                                 logger.error(f"❌ Error publishing interrupt trigger: {e}")
-                                ulog.log_step("ERROR", f"Failed to publish interrupt trigger: {e}", level="error")
                             
                             # Generate LLM interrupt using LiveKit's ChatChunk structure
                             try:
@@ -1196,7 +1142,6 @@ RULES:
 Your response:"""
 
                                 logger.info(f"🔍 [MODE 2] Calling LLM for interrupt generation")
-                                ulog.log_step("MODE2", "Generating LLM interrupt")
 
                                 # Call LLM
                                 from livekit.agents.llm import ChatContext
@@ -1219,7 +1164,6 @@ Your response:"""
                                 logger.info(f"🔍 [MODE 2] LLM generated interrupt: '{interrupt_msg[:100]}{'...' if len(interrupt_msg) > 100 else ''}'")
                                 
                                 if interrupt_msg:
-                                    ulog.log_step("MODE2", f"LLM interrupt: {interrupt_msg[:80]}{'...' if len(interrupt_msg) > 80 else ''}")
                                     
                                     await ctx.room.local_participant.publish_data(
                                         f"LLM Interrupt: {interrupt_msg}".encode('utf-8'),
@@ -1232,17 +1176,14 @@ Your response:"""
                                     logger.info(f"🤖 [MODE 2] Agent interrupting with LLM: {interrupt_msg[:100]}")
                                 else:
                                     logger.warning(f"⚠️ [MODE 2] LLM returned empty")
-                                    ulog.log_step("MODE2", "LLM returned empty - skipping interrupt", level="warning")
                                 
                             except Exception as e:
                                 logger.error(f"❌ [MODE 2] Error generating interrupt: {e}")
-                                ulog.log_step("ERROR", f"Error generating interrupt: {e}", level="error")
                             
                             # Reset timer after interrupt
                             last_user_interaction_time = current_time
                         else:
                             logger.debug(f"⏰ [MODE 2] Skip interrupt - agent already speaking")
-                            ulog.log_step("MODE2", "Skip interrupt - agent already speaking", level="debug")
                             try:
                                 await ctx.room.local_participant.publish_data(
                                     "Skip interrupt - agent already speaking".encode('utf-8'),
@@ -1251,15 +1192,12 @@ Your response:"""
                                 )
                             except Exception as e:
                                 logger.error(f"❌ Error publishing skip notice: {e}")
-                                ulog.log_step("ERROR", f"Failed to publish skip notice: {e}", level="error")
                 
                 except asyncio.CancelledError:
                     logger.info("⏰ [MODE 2] Interrupt checker stopped")
-                    ulog.log_step("MODE2", "Interrupt checker stopped")
                     break
                 except Exception as e:
                     logger.error(f"❌ [MODE 2] Error in interrupt checker: {e}")
-                    ulog.log_step("ERROR", f"Interrupt checker error: {e}", level="error")
         
         # Mode 3: Group Discussion Mode - LLM decides whether to intervene
         async def should_intervene_group(last_utterance: str) -> tuple[bool, str]:
@@ -1351,7 +1289,6 @@ RESPONSE: none"""
             """Background task for Mode 3 - periodic check if agent should intervene"""
             nonlocal last_user_interaction_time
             
-            ulog.log_step("MODE3", "Group discussion checker started")
             logger.info(f"🎯 [MODE 3] Group discussion mode active (check every {config.GROUP_MODE_SILENCE_CHECK_SECONDS}s)")
             
             while True:
@@ -1376,7 +1313,6 @@ RESPONSE: none"""
                             should_speak, response = await should_intervene_group(last_utterance)
                             
                             if should_speak and response:
-                                ulog.log_step("MODE3", f"LLM decided to speak: {response[:80]}...")
                                 session.say(response, allow_interruptions=True)
                                 logger.info(f"🎯 [MODE 3] Agent intervening: {response[:100]}")
                                 last_user_interaction_time = current_time
@@ -1385,22 +1321,18 @@ RESPONSE: none"""
                 
                 except asyncio.CancelledError:
                     logger.info("🎯 [MODE 3] Group discussion checker stopped")
-                    ulog.log_step("MODE3", "Group discussion checker stopped")
                     break
                 except Exception as e:
                     logger.error(f"❌ [MODE 3] Error in group discussion checker: {e}")
-                    ulog.log_step("ERROR", f"Group discussion checker error: {e}", level="error")
         
         # Start interrupt checker if in Mode 2
         group_mode_task = None
         if config.AGENT_MODE == 2:
             interrupt_task = asyncio.create_task(interrupt_checker())
             logger.info(f"⏰ [MODE 2] Auto-interrupt enabled (every {config.INTERRUPT_INTERVAL_SECONDS}s)")
-            ulog.log_step("MODE2", f"Auto-interrupt enabled (every {config.INTERRUPT_INTERVAL_SECONDS}s)", include_timing=False)
         elif config.AGENT_MODE == 3:
             group_mode_task = asyncio.create_task(group_discussion_checker())
             logger.info(f"🎯 [MODE 3] Group discussion mode enabled (diarization: {config.DEEPGRAM_ENABLE_DIARIZATION})")
-            ulog.log_step("MODE3", f"Group discussion mode enabled", include_timing=False)
         
         # Keep the job alive - the session runs in background tasks
         # Wait forever (until cancelled by job shutdown)
