@@ -4,6 +4,16 @@ from app.models.device import Device
 from app.models.device_provisioning_session import DeviceProvisioningSession
 from app.models.fcm_token import FCMToken
 from app.models.news import News
+from app.models.trump_social_post import TrumpSocialPost
 from app.models.user import User
 
-__all__ = ["User", "Device", "DeviceProvisioningSession", "News", "Conversation", "Achievement", "FCMToken"]
+__all__ = [
+    "Achievement",
+    "Conversation",
+    "Device",
+    "DeviceProvisioningSession",
+    "FCMToken",
+    "News",
+    "TrumpSocialPost",
+    "User",
+]
