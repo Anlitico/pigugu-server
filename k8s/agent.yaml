@@ -33,6 +33,7 @@ spec:
         envFrom:
         - configMapRef:
             name: pigugu-agent-config
+        imagePullPolicy: Always
         env:
         - name: LIVEKIT_URL
           valueFrom:

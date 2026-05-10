@@ -5,7 +5,13 @@ from sqlalchemy import Boolean, DateTime, String, func
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
+from typing import TYPE_CHECKING
 from app.core.database import Base
+
+if TYPE_CHECKING:
+    from app.models.device import Device
+    from app.models.device_provisioning_session import DeviceProvisioningSession
+    from app.models.achievement import Achievement
 
 
 class User(Base):
@@ -22,4 +28,7 @@ class User(Base):
     )
 
     devices: Mapped[list["Device"]] = relationship("Device", back_populates="user")
+    provisioning_sessions: Mapped[list["DeviceProvisioningSession"]] = relationship(
+        "DeviceProvisioningSession", back_populates="user"
+    )
     achievements: Mapped[list["Achievement"]] = relationship("Achievement", back_populates="user")

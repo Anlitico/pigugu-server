@@ -12,9 +12,11 @@ spec:
       labels:
         app: pigugu-api
     spec:
+      serviceAccountName: pigugu-server-sa
       containers:
       - name: api
         image: 537557168531.dkr.ecr.us-west-1.amazonaws.com/pigugu-api:latest
+        imagePullPolicy: Always
         ports:
         - containerPort: 8000
         env:
@@ -28,16 +30,50 @@ spec:
             secretKeyRef:
               name: pigugu-secrets
               key: REDIS_URL
+        - name: JWT_SECRET_KEY
+          valueFrom:
+            secretKeyRef:
+              name: pigugu-secrets
+              key: JWT_SECRET_KEY
+        - name: MQTT_BROKER_URI
+          valueFrom:
+            secretKeyRef:
+              name: pigugu-secrets
+              key: MQTT_BROKER_URI
+        - name: APP_ENV
+          value: "production"
+        - name: AWS_REGION
+          value: "us-west-1"
+        - name: AWS_IOT_ENDPOINT
+          valueFrom:
+            secretKeyRef:
+              name: pigugu-secrets
+              key: AWS_IOT_ENDPOINT
+        - name: AWS_IOT_WEBHOOK_SECRET
+          valueFrom:
+            secretKeyRef:
+              name: pigugu-secrets
+              key: AWS_IOT_WEBHOOK_SECRET
+
 ---
 apiVersion: v1
 kind: Service
 metadata:
   name: pigugu-api-service
+  annotations:
+    service.beta.kubernetes.io/aws-load-balancer-ssl-cert: arn:aws:acm:us-west-1:537557168531:certificate/4a84c383-f015-4961-b56c-b3a0a20166c1
+    service.beta.kubernetes.io/aws-load-balancer-ssl-ports: "443"
+    service.beta.kubernetes.io/aws-load-balancer-backend-protocol: "http"
 spec:
   type: LoadBalancer
   selector:
     app: pigugu-api
   ports:
-    - protocol: TCP
+    - name: http
+      protocol: TCP
       port: 80
+      targetPort: 8000
+    - name: https
+      protocol: TCP
+      port: 443
       targetPort: 8000

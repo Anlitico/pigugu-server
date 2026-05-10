@@ -7,9 +7,10 @@ class Settings(BaseSettings):
     database_url: str = "postgresql+asyncpg://pigugu:pigugu@localhost:5432/pigugu"
     redis_url: str = "redis://localhost:6379/0"
 
-    jwt_secret_key: str = "change-me"
+    jwt_secret_key: str = ""
     jwt_algorithm: str = "HS256"
     jwt_access_token_expire_minutes: int = 60
+    jwt_refresh_token_expire_minutes: int = 60 * 24 * 30  # 30 days
 
     livekit_url: str = ""
     livekit_api_key: str = ""
@@ -18,6 +19,16 @@ class Settings(BaseSettings):
     anthropic_api_key: str = ""
 
     firebase_credentials_path: str = "./firebase-credentials.json"
+
+    aws_region: str = "us-west-1"
+    aws_access_key_id: str = ""
+    aws_secret_access_key: str = ""
+    aws_iot_endpoint: str = "agktqmnw53qnj-ats.iot.us-west-1.amazonaws.com"
+    aws_iot_webhook_secret: str = ""
+
+    # MQTT mTLS (X.509 client certificate)
+    mqtt_broker_uri: str = "mqtts://agktqmnw53qnj-ats.iot.us-west-1.amazonaws.com:8883"
+    aws_iot_policy_name: str = "pigugu_device_policy"
 
     app_env: str = "development"
     log_level: str = "INFO"
