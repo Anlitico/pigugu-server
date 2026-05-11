@@ -100,6 +100,7 @@ jobs:
         JWT_SECRET_KEY: ${{ secrets.JWT_SECRET_KEY }}
         AWS_IOT_WEBHOOK_SECRET: ${{ secrets.AWS_IOT_WEBHOOK_SECRET }}
         MQTT_BROKER_URI: ${{ secrets.MQTT_BROKER_URI }}
+        BRIGHTDATA_API_KEY: ${{ secrets.BRIGHTDATA_API_KEY }}
       run: |
         # Inject real database URL into secrets.yaml
         sed -i "s|__DATABASE_URL__|postgresql+asyncpg://${DATABASE_USER}:${DB_PASSWORD}@${DATABASE_HOST}:${DATABASE_PORT}/${DATABASE_NAME}|g" k8s/secrets.yaml
@@ -114,6 +115,7 @@ jobs:
 
         for key in (
             "REDIS_URL",
+            "BRIGHTDATA_API_KEY",
             "JWT_SECRET_KEY",
             "LIVEKIT_URL",
             "LIVEKIT_API_KEY",

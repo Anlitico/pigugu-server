@@ -1,6 +1,8 @@
+import os
 import logging
 import time
 from datetime import date, datetime, timezone
+from urllib.parse import urlencode
 
 from curl_cffi import requests
 
@@ -8,6 +10,37 @@ logger = logging.getLogger(__name__)
 
 TRUTH_BASE = "https://truthsocial.com"
 TRUTH_ACCOUNT = "realDonaldTrump"
+WEB_UNLOCKER_URL = "https://api.brightdata.com/request"
+
+
+def _api_key() -> str:
+    key = os.environ.get("BRIGHTDATA_API_KEY", "")
+    if not key:
+        raise RuntimeError("BRIGHTDATA_API_KEY environment variable is not set")
+    return key
+
+
+def _unlock(url: str, params: dict | None = None) -> dict:
+    """Fetch a URL through Bright Data Web Unlocker; returns parsed JSON."""
+    full_url = url
+    if params:
+        full_url = f"{url}?{urlencode(params)}"
+
+    resp = requests.post(
+        WEB_UNLOCKER_URL,
+        headers={
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {_api_key()}",
+        },
+        json={
+            "zone": "web_unlocker1",
+            "url": full_url,
+            "format": "raw",
+        },
+        timeout=60,
+    )
+    resp.raise_for_status()
+    return resp.json()
 
 
 def fetch_truthsocial(target_date: date, backfill: bool = False) -> list[dict]:
@@ -26,28 +59,21 @@ def fetch_truthsocial(target_date: date, backfill: bool = False) -> list[dict]:
 
 
 def _ts_lookup(handle: str) -> str:
-    resp = requests.get(
+    data = _unlock(
         f"{TRUTH_BASE}/api/v1/accounts/lookup",
         params={"acct": handle},
-        impersonate="chrome110",
-        timeout=15,
     )
-    resp.raise_for_status()
-    return resp.json()["id"]
+    return data["id"]
 
 
 def _ts_fetch_page(account_id: str, max_id: str | None = None) -> list[dict]:
     params = {}
     if max_id:
         params["max_id"] = max_id
-    resp = requests.get(
+    return _unlock(
         f"{TRUTH_BASE}/api/v1/accounts/{account_id}/statuses",
         params=params,
-        impersonate="chrome110",
-        timeout=30,
     )
-    resp.raise_for_status()
-    return resp.json()
 
 
 def _ts_fetch_all_since(account_id: str, target_date: date) -> list[dict]:
