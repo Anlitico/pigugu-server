@@ -1,0 +1,36 @@
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: trump-crawler
+spec:
+  schedule: "0 10 * * *"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          restartPolicy: OnFailure
+          containers:
+            - name: crawler
+              image: 537557168531.dkr.ecr.us-west-1.amazonaws.com/pigugu-api:latest
+              command:
+                - python
+                - -m
+                - app.jobs.trump_social_crawler
+                - --platform
+                - all
+              env:
+                - name: DATABASE_URL
+                  valueFrom:
+                    secretKeyRef:
+                      name: pigugu-secrets
+                      key: DATABASE_URL
+              resources:
+                requests:
+                  memory: "128Mi"
+                  cpu: "250m"
+                limits:
+                  memory: "256Mi"
+                  cpu: "500m"
