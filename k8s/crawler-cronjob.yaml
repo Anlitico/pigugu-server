@@ -27,6 +27,11 @@ spec:
                     secretKeyRef:
                       name: pigugu-secrets
                       key: DATABASE_URL
+                - name: BRIGHTDATA_API_KEY
+                  valueFrom:
+                    secretKeyRef:
+                      name: pigugu-secrets
+                      key: BRIGHTDATA_API_KEY
               resources:
                 requests:
                   memory: "128Mi"
