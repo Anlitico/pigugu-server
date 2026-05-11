@@ -137,6 +137,7 @@ jobs:
         kubectl apply -f k8s/secrets.yaml
         kubectl apply -f k8s/api.yaml
         kubectl apply -f k8s/agent.yaml
+        kubectl apply -f k8s/crawler-cronjob.yaml
         
         # Update image
         kubectl set image deployment/pigugu-api api=$ECR_REGISTRY/$ECR_REPOSITORY_API:$IMAGE_TAG
