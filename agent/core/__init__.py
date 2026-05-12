@@ -1,16 +1,27 @@
 # agent/core/__init__.py
-"""Core AI pipeline components — STT, LLM, TTS, and search."""
+"""Core AI pipeline components — STT, LLM, TTS."""
 
 from .stt import create_stt, STTProvider
-from .llm import create_llm, LLMProvider
 from .tts import create_tts, TTSProvider
-from .search_adapter import build_search_messages, create_search_adapter
-from .perplexity_search import web_search as perplexity_web_search
+
+from .llm import (
+    Message, ChatResponse, ChatDelta, ToolCall,
+    ModelCapability, ModelInfo, ToolSpec,
+    LLMProvider, OpenAIChatProvider, QwenProvider, VolcengineProvider,
+    ModelRegistry, load_models, list_providers,
+)
+from .search import (
+    build_search_messages, create_search_adapter, perplexity_web_search,
+)
+from .pigagent import PigAgent, AgentConfig, AgentHook
 
 __all__ = [
     "create_stt", "STTProvider",
-    "create_llm", "LLMProvider",
     "create_tts", "TTSProvider",
-    "build_search_messages", "create_search_adapter",
-    "perplexity_web_search",
+    "Message", "ChatResponse", "ChatDelta", "ToolCall",
+    "ModelCapability", "ModelInfo", "ToolSpec",
+    "LLMProvider", "OpenAIChatProvider", "QwenProvider", "VolcengineProvider",
+    "ModelRegistry", "load_models", "list_providers",
+    "PigAgent", "AgentConfig", "AgentHook",
+    "build_search_messages", "create_search_adapter", "perplexity_web_search",
 ]

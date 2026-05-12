@@ -1,6 +1,6 @@
 # agent/components/factory.py
 """
-Component factory: creates STT, LLM, TTS instances from configuration.
+Component factory: creates STT, PigAgent, TTS instances from configuration.
 
 Extracted from main.py to keep the entrypoint slim and testable.
 """
@@ -11,8 +11,8 @@ from loguru import logger
 
 from config import get_config
 from core.stt import create_stt
-from core.llm import create_llm
 from core.tts import create_tts
+from core.pigagent import PigAgent, AgentConfig
 
 
 def validate_configuration(config=None):
@@ -43,16 +43,15 @@ def validate_configuration(config=None):
         errors.append("CARTESIA_API_KEY required in .env file for Cartesia TTS")
 
     # Check LLM API key based on provider
+    from core.llm.registry import get_provider_config
+
     llm_provider = config.LLM_PROVIDER.lower()
-    if llm_provider == "qwen-us":
-        if not os.getenv("DASHSCOPE_US_API_KEY"):
-            errors.append("DASHSCOPE_US_API_KEY required in .env file for Qwen US LLM")
-    elif llm_provider in ("grok", "xai"):
-        if not os.getenv("XAI_API_KEY"):
-            errors.append("XAI_API_KEY required in .env file for Grok LLM")
+    cfg = get_provider_config(llm_provider)
+    if cfg:
+        if not os.getenv(cfg.env):
+            errors.append(f"{cfg.env} required in .env file for {llm_provider} LLM")
     else:
-        if not os.getenv("DASHSCOPE_API_KEY"):
-            errors.append("DASHSCOPE_API_KEY required in .env file for Qwen LLM")
+        errors.append(f"Unknown LLM provider: {llm_provider}")
 
     # Check LiveKit credentials
     if not os.getenv("LIVEKIT_API_KEY"):
@@ -85,14 +84,14 @@ def validate_configuration(config=None):
 
 
 def create_agent_components(config=None, persona=None):
-    """Create STT, LLM, and TTS components based on configuration.
+    """Create STT, PigAgent, and TTS components based on configuration.
 
     Args:
         config: AgentConfig instance. If None, loads from get_config().
         persona: Persona instance for TTS voice override. If None, uses config defaults.
 
     Returns:
-        Tuple of (stt, llm, tts) provider instances.
+        Tuple of (stt, pig_agent, tts) instances.
     """
     if config is None:
         config = get_config()
@@ -126,33 +125,26 @@ def create_agent_components(config=None, persona=None):
     else:
         raise ValueError(f"Unknown STT provider: {stt_provider}")
 
-    # ── LLM ────────────────────────────────────────────────────────────
+    # ── LLM Provider + PigAgent ─────────────────────────────────────────
 
-    llm_config = config.get_llm_config()
-    llm_provider = config.LLM_PROVIDER.lower()
+    provider = config.create_provider()
 
-    if llm_provider in ("grok", "xai"):
-        model = config.GROK_MODEL
-    else:
-        model = config.QWEN_MODEL
-
-    # Build instructions from persona if available, otherwise fall back to
-    # config-level defaults (backward compat during migration).
+    # Build instructions from persona
+    llm_provider_id = config.LLM_PROVIDER.lower()
     if persona is not None and hasattr(persona, "get_full_prompt"):
-        instructions = persona.get_full_prompt(llm_provider)
+        instructions = persona.get_full_prompt(llm_provider_id)
     else:
-        # Fallback: use legacy config-level prompt
         from config import get_personality_prompt
-        instructions = get_personality_prompt(llm_provider)
+        instructions = get_personality_prompt(llm_provider_id)
 
-    llm = create_llm(
-        model=model,
-        temperature=config.LLM_TEMPERATURE,
+    pig_agent = PigAgent(AgentConfig(
+        provider=provider,
         instructions=instructions,
+        temperature=config.LLM_TEMPERATURE,
         max_tokens=config.LLM_MAX_TOKENS,
-        api_key=llm_config["api_key"],
-        base_url=llm_config["base_url"],
-    )
+    ))
+
+    logger.info(f"[Factory] PigAgent created with model={provider.model}")
 
     # ── TTS ────────────────────────────────────────────────────────────
 
@@ -186,4 +178,4 @@ def create_agent_components(config=None, persona=None):
         base_url=config.CARTESIA_TTS_BASE_URL,
     )
 
-    return stt, llm, tts
+    return stt, pig_agent, tts

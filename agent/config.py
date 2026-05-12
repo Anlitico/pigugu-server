@@ -115,39 +115,60 @@ class AgentConfig(BaseSettings):
     CARTESIA_TTS_WORD_TIMESTAMPS: bool = Field(default_factory=lambda: get_bool_config_value("CARTESIA_TTS_WORD_TIMESTAMPS", True))
     CARTESIA_TTS_BASE_URL: str = Field(default_factory=lambda: get_config_value("CARTESIA_TTS_BASE_URL", "https://api.cartesia.ai"))
     
-    # LLM Configuration (Qwen via OpenAI plugin)
+    # LLM Configuration
+    # LLM_PROVIDER: provider ID used to resolve api_key / base_url
+    #   ("qwen", "qwen-us", "grok", "xai", "deepseek", etc.)
     LLM_PROVIDER: str = Field(default_factory=lambda: get_config_value("LLM_PROVIDER", "qwen"))
+
+    # LLM_MODEL: unified model field — when set, takes priority over QWEN_MODEL/GROK_MODEL
+    LLM_MODEL: str = Field(default_factory=lambda: get_config_value("LLM_MODEL", ""))
+
+    # Legacy per-provider model fields (still supported)
     QWEN_MODEL: str = Field(default_factory=lambda: get_config_value("QWEN_MODEL", "qwen-plus"))
     GROK_MODEL: str = Field(default_factory=lambda: get_config_value("GROK_MODEL", "grok-4-fast-reasoning"))
-    
+
     # LLM Settings
     LLM_TEMPERATURE: float = Field(default_factory=lambda: float(get_config_value("LLM_TEMPERATURE", 0.8)))
     LLM_MAX_TOKENS: Optional[int] = Field(default_factory=lambda: int(get_config_value("LLM_MAX_TOKENS")) if get_config_value("LLM_MAX_TOKENS") else None)
-    
-    def get_llm_config(self) -> dict:
+
+    def resolve_model(self) -> str:
+        """Resolve the effective model name.
+
+        Priority: LLM_MODEL > provider-specific field (QWEN_MODEL / GROK_MODEL)
         """
-        Get LLM configuration based on selected provider
-        
-        Returns:
-            dict with 'api_key' and 'base_url' for the selected provider
-        """
+        if self.LLM_MODEL:
+            return self.LLM_MODEL
         provider = self.LLM_PROVIDER.lower()
-        
-        if provider == "qwen-us":
-            return {
-                "api_key": os.getenv("DASHSCOPE_US_API_KEY"),
-                "base_url": "https://dashscope-us.aliyuncs.com/compatible-mode/v1"
-            }
-        elif provider == "grok" or provider == "xai":
-            return {
-                "api_key": os.getenv("XAI_API_KEY"),
-                "base_url": "https://api.x.ai/v1"
-            }
-        else:  # default to "qwen"
-            return {
-                "api_key": os.getenv("DASHSCOPE_API_KEY"),
-                "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1"
-            }
+        if provider in ("grok", "xai"):
+            return self.GROK_MODEL
+        return self.QWEN_MODEL
+
+    def create_provider(self):
+        """Return a pre-built LLMProvider from the pool.
+
+        All provider instances are created once at startup via core.llm._build_pool().
+        Switching models reuses a different instance from the same pool.
+        """
+        from core.llm import get_llm
+
+        model = self.resolve_model()
+        config_logger.info(f"Getting LLM provider for model={model}")
+        return get_llm(model)
+
+    def get_llm_config(self) -> dict:
+        """Backward-compat wrapper. New code should use create_provider()."""
+        provider = self.LLM_PROVIDER.lower()
+        model = self.resolve_model()
+
+        from core.llm.registry import resolve_provider
+        base_url, api_key, _ = resolve_provider(provider)
+
+        return {
+            "model": model,
+            "api_key": api_key,
+            "base_url": base_url,
+            "provider": provider,
+        }
     
     # Agent Settings
     AGENT_WORKERS: int = Field(default_factory=lambda: int(get_config_value("AGENT_WORKERS", 2)))

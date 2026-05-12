@@ -36,7 +36,8 @@ from livekit.plugins import silero
 
 # Import our modular components
 from config import get_config
-from core.search_adapter import build_search_messages
+from core.llm.types import Message, ModelCapability
+from core.search.adapter import build_search_messages
 from utils import SpeakerTracker, ResponseStrategy
 from personas import PersonaRegistry, get_persona, GROUP_DISCUSSION_PROMPT
 from roasts import GameModeRegistry, get_game_mode
@@ -90,7 +91,7 @@ from personas.trump import TRUMP_FILLERS
 
 
 # Import perplexity search for tool-based web search (only used when POLICY_SEARCH_BACKEND = "perplexity")
-from core.perplexity_search import web_search as perplexity_web_search
+from core.search.perplexity import web_search as perplexity_web_search
 
 
 class TrumpAgent(Agent):
@@ -101,11 +102,11 @@ class TrumpAgent(Agent):
     decides whether to respond based on talk-show guest heuristics.
     """
     
-    def __init__(self, speaker_tracker: SpeakerTracker, agent_mode: int, agent_config=None,
-                 llm_api_key: str = "", llm_base_url: str = "", llm_model: str = "",
-                 llm_provider: str = "", search_adapter=None, game_mode=None, persona=None,
-                 conv_manager=None, **kwargs):
+    def __init__(self, pig_agent, *, speaker_tracker: SpeakerTracker, agent_mode: int,
+                 agent_config=None, game_mode=None, persona=None, conv_manager=None,
+                 search_adapter=None, **kwargs):
         super().__init__(**kwargs)
+        self._pig_agent = pig_agent         # 我们自己的 Agent 引擎
         self._speaker_tracker = speaker_tracker
         self._agent_mode = agent_mode
         self._config = agent_config
@@ -113,13 +114,11 @@ class TrumpAgent(Agent):
         self._filler_yielded_at = None
         self._use_search = False
         self._use_perplexity_tool = False
-        # LLM connection info for direct search-enabled calls
-        self._llm_api_key = llm_api_key
-        self._llm_base_url = llm_base_url
-        self._llm_model = llm_model
-        self._llm_provider = llm_provider
+        # 供 search adapter 使用
         self._search_adapter = search_adapter
-        # Persona + Game Mode + Lifecycle (Phase 1-3)
+        self._llm_provider = self._pig_agent.provider.provider_name if hasattr(self._pig_agent, 'provider') else ""
+        self._llm_model = self._pig_agent.provider.model if hasattr(self._pig_agent, 'provider') else ""
+        # Persona + Game Mode + Lifecycle
         self._game_mode = game_mode
         self._persona = persona
         self._conv_manager = conv_manager
@@ -269,7 +268,7 @@ class TrumpAgent(Agent):
     
     async def _search_llm_stream(self, chat_ctx):
         """Stream LLM response with web search enabled (bypasses LiveKit plugin).
-        
+
         For Qwen: uses enable_search=True via extra_body on the Chat Completions API.
         For Grok: uses the Responses API with web_search tool.
         """
@@ -278,45 +277,39 @@ class TrumpAgent(Agent):
         force_search = bool(self._config and self._config.FORCE_POLICY_SEARCH)
         adapter_name = type(self._search_adapter).__name__ if self._search_adapter else "None"
 
+        provider = self._pig_agent.provider
+
         logger.info(
-            f"🔍 [SEARCH] Sending {len(messages)} messages to {self._llm_provider} "
-            f"(model={self._llm_model}, adapter={adapter_name}, "
-            f"has_system={has_system}, force_search={force_search})"
+            f"🔍 [SEARCH] Sending {len(messages)} messages to {provider.model} "
+            f"(adapter={adapter_name}, has_system={has_system}, force_search={force_search})"
         )
         for i, m in enumerate(messages):
             preview = m["content"][:80] if m["content"] else "(empty)"
             logger.info(f"🔍 [SEARCH]   msg[{i}] role={m['role']} content={preview!r}")
-        
+
         try:
             if not self._search_adapter:
-                raise RuntimeError(f"No search adapter configured for provider={self._llm_provider}")
+                raise RuntimeError(f"No search adapter configured for provider={provider.model}")
 
             async for chunk in self._search_adapter.stream_with_search(
                 messages=messages,
-                model=self._llm_model,
-                api_key=self._llm_api_key,
-                base_url=self._llm_base_url,
+                model=provider.model,
+                api_key=provider._api_key,
+                base_url=provider.base_url,
                 temperature=self._config.LLM_TEMPERATURE if self._config else 0.8,
                 force_search=force_search,
             ):
                 yield chunk
         except Exception as e:
-            logger.error(f"🔍 [SEARCH] Search API error ({self._llm_provider}): {e}")
+            logger.error(f"🔍 [SEARCH] Search API error: {e}")
             raise
     
     async def llm_node(self, chat_ctx, tools, model_settings):
-        """Override to yield filler before LLM stream and route policy questions
-        through search-enabled LLM calls.
+        """Override: 用自己的 PigAgent 引擎，不再走 LiveKit 的 LLM 管道。
 
-        When filler is pending:
-        1. Yield filler text immediately (TTS synthesizes right away thanks to period)
-        2. Start LLM in background (processes in parallel while filler plays)
-        3. Hold back LLM output for ~3s so filler audio finishes first
-        4. Then yield buffered + streaming LLM chunks
-
-        When search is enabled (_use_search):
-        - POLICY_SEARCH_BACKEND="built_in": uses _search_llm_stream (provider-native search)
-        - POLICY_SEARCH_BACKEND="perplexity": uses normal LLM flow with web_search tool available
+        Search 路径保持不变：
+        - built_in: _search_llm_stream (provider-native search)
+        - perplexity: 暂留 LiveKit tool loop（后续迁移到 PigAgent tool system）
         """
         # ── Dynamic context assembly ──────────────────────────────────
         if self._conv_manager:
@@ -333,17 +326,31 @@ class TrumpAgent(Agent):
 
         if use_search:
             if use_perplexity_tool:
-                logger.info(f"🔍 [SEARCH] Using Perplexity tool-based search")
+                logger.info("🔍 [SEARCH] Using Perplexity tool-based search")
             else:
-                logger.info(f"🔍 [SEARCH] Using built-in provider-native search ({self._llm_provider})")
+                logger.info(f"🔍 [SEARCH] Using built-in search ({self._llm_provider})")
 
         def _get_llm_gen():
             if use_search and not use_perplexity_tool:
-                # Built-in search: bypass normal LLM flow and use provider-native search API
                 return self._search_llm_stream(chat_ctx)
-            # Normal LLM flow (either no search or Perplexity tool-based)
-            # For Perplexity, the web_search tool is available via @ai_callable decorator
-            return Agent.default.llm_node(self, chat_ctx, tools, model_settings)
+
+            if use_perplexity_tool:
+                # Perplexity tool search — 暂留 LiveKit tool loop
+                return Agent.default.llm_node(self, chat_ctx, tools, model_settings)
+
+            # Normal path: 委托给 PigAgent
+            messages = build_search_messages(chat_ctx.items)
+            wrapped = [Message(role=m["role"], content=m["content"]) for m in messages]
+
+            async def _pig_agent_stream():
+                try:
+                    async for text in self._pig_agent.run(wrapped):
+                        yield text
+                except Exception as e:
+                    logger.error(f"[PigAgent] run failed: {e}")
+                    raise
+
+            return _pig_agent_stream()
 
         if filler:
             self._filler_yielded_at = time.perf_counter()
@@ -359,9 +366,13 @@ class TrumpAgent(Agent):
                     async for chunk in _get_llm_gen():
                         await queue.put(chunk)
                 except Exception as e:
-                    logger.error(f"🔍 [SEARCH] Search LLM stream failed: {e}")
+                    logger.error(f"[LLM] Stream failed: {e}")
                 finally:
                     await queue.put(None)
+
+            llm_task = asyncio.create_task(_buffer_llm())
+
+            await asyncio.sleep(3.0)
 
             llm_task = asyncio.create_task(_buffer_llm())
 
@@ -697,102 +708,93 @@ async def entrypoint(ctx: JobContext):
     def on_participant_disconnected(participant: rtc.RemoteParticipant):
         logger.info(f"🔌 [ROOM] Participant disconnected: {participant.identity}")
     
-    # Create agent components using factory (persona-aware for TTS voice + LLM instructions)
-    stt, llm, tts = create_agent_components(config, persona=persona)
-    
-    # Get plugin instances for LiveKit Agent
-    stt_plugin = stt.get_plugin() if hasattr(stt, 'get_plugin') else stt
-    llm_plugin = llm.get_plugin() if hasattr(llm, 'get_plugin') else llm
-    tts_plugin = tts.get_plugin() if hasattr(tts, 'get_plugin') else tts
-    
-    logger.info(f"🔍 [DEBUG] STT plugin type: {type(stt_plugin).__name__}")
-    logger.info(f"🔍 [DEBUG] LLM plugin type: {type(llm_plugin).__name__}")
-    logger.info(f"🔍 [DEBUG] TTS plugin type: {type(tts_plugin).__name__}")
-    
-    
-    # Create voice agent with modular components
-    if hasattr(stt, 'get_plugin') and hasattr(llm, 'get_plugin') and hasattr(tts, 'get_plugin'):
-        # All components support LiveKit plugins - use Agent with best practices
-        
-        # Build VAD (Voice Activity Detection) - using Silero for background voice cancellation
-        vad = silero.VAD.load()
-        
-        # Prepare instructions — use persona-aware prompt
-        llm_provider = config.LLM_PROVIDER.lower()
-        if hasattr(llm, 'instructions') and llm.instructions:
-            instructions = llm.instructions
-            logger.info(f"✅ Using LLM's system prompt (persona={persona.persona_id}, provider={llm_provider})")
-        else:
-            instructions = persona.get_full_prompt(llm_provider)
-            logger.info(f"✅ Using persona '{persona.persona_id}' prompt as fallback")
-        
-        # Add metadata context if available
-        if metadata:
-            instructions += f"\n\nContext:\n"
-            for key, value in metadata.items():
-                instructions += f"- {key}: {value}\n"
-        
-        # Add Game Mode system prompt extension
-        instructions += "\n\n" + game_mode.system_prompt_extension
-        logger.info(f"✅ Added game mode prompt: {game_mode.mode_id}")
+    # Create agent components using factory
+    stt, pig_agent, tts = create_agent_components(config, persona=persona)
 
-        # Add Group Discussion prompt for Mode 3 (from persona)
-        if config.AGENT_MODE == 3:
-            gd_prompt = getattr(persona, 'group_discussion_prompt', GROUP_DISCUSSION_PROMPT)
-            instructions += gd_prompt
-            logger.info("✅ Added Group Discussion prompt for Mode 3")
-        
-        # Create Agent with all components and instructions
-        # Mode 3 uses longer endpointing delays so brief pauses in group
-        # talk don't trigger turn-ends (talk-show guest behavior)
-        if config.AGENT_MODE == 3:
-            min_ep = config.GROUP_MIN_ENDPOINTING_DELAY
-            max_ep = config.GROUP_MAX_ENDPOINTING_DELAY
-        else:
-            min_ep = 0.5
-            max_ep = 2.0
-        
-        agent_kwargs = {
-            "instructions": instructions,
-            "stt": stt_plugin,
-            "llm": llm_plugin,
-            "tts": tts_plugin,
-            "vad": vad,
-            "allow_interruptions": config.ENABLE_INTERRUPTIONS,
-            "min_endpointing_delay": min_ep,
-            "max_endpointing_delay": max_ep,
-        }
-        
-        # If LLM has initial chat context with system prompt, pass it to the Agent
-        if hasattr(llm, 'initial_chat_ctx') and llm.initial_chat_ctx:
-            agent_kwargs["chat_ctx"] = llm.initial_chat_ctx
-            logger.info("✅ Passing LLM's initial chat context to Agent")
-        
-        # Use TrumpAgent which handles speaker attribution + response gating for Mode 3
-        llm_config = config.get_llm_config()
-        llm_provider = config.LLM_PROVIDER.lower()
-        llm_model_name = config.GROK_MODEL if llm_provider in ("grok", "xai") else config.QWEN_MODEL
-        agent = TrumpAgent(
-            speaker_tracker=speaker_tracker,
-            agent_mode=config.AGENT_MODE,
-            agent_config=config,
-            llm_api_key=llm_config["api_key"],
-            llm_base_url=llm_config["base_url"],
-            llm_model=llm_model_name,
-            llm_provider=llm_provider,
-            search_adapter=llm.get_search_adapter(),
-            game_mode=game_mode,
-            persona=persona,
-            conv_manager=conv_manager,
-            **agent_kwargs
-        )
-        
-        # Create AgentSession (manages the runtime)
-        session = AgentSession(
-            preemptive_generation=config.ENABLE_PREEMPTIVE_SYNTHESIS,
-        )
-        
-        logger.info("✅ Agent and session created with best practices (VAD, interruptions, turn detection)")
+    # Get STT/TTS plugin instances for LiveKit
+    stt_plugin = stt.get_plugin() if hasattr(stt, 'get_plugin') else stt
+    tts_plugin = tts.get_plugin() if hasattr(tts, 'get_plugin') else tts
+
+    # LLM plugin not needed — TrumpAgent overrides llm_node() with PigAgent
+    # We pass a dummy to satisfy LiveKit AgentSession type check (never called)
+    from livekit.plugins import openai as _lk_openai
+    _dummy_llm = _lk_openai.LLM(model="gpt-4.1", api_key="unused")
+
+    logger.info(f"[DEBUG] STT plugin: {type(stt_plugin).__name__}")
+    logger.info(f"[DEBUG] TTS plugin: {type(tts_plugin).__name__}")
+    logger.info(f"[DEBUG] LLM: PigAgent with {pig_agent.provider.model}")
+
+    # Build VAD (Voice Activity Detection)
+    vad = silero.VAD.load()
+
+    # Build instructions from persona
+    llm_provider_id = config.LLM_PROVIDER.lower()
+    instructions = persona.get_full_prompt(llm_provider_id)
+    logger.info(f"Using persona '{persona.persona_id}' prompt (provider={llm_provider_id})")
+
+    # Add metadata context
+    if metadata:
+        instructions += "\n\nContext:\n"
+        for key, value in metadata.items():
+            instructions += f"- {key}: {value}\n"
+
+    # Add Game Mode system prompt extension
+    instructions += "\n\n" + game_mode.system_prompt_extension
+    logger.info(f"Added game mode prompt: {game_mode.mode_id}")
+
+    # Add Group Discussion prompt for Mode 3
+    if config.AGENT_MODE == 3:
+        gd_prompt = getattr(persona, 'group_discussion_prompt', GROUP_DISCUSSION_PROMPT)
+        instructions += gd_prompt
+        logger.info("Added Group Discussion prompt for Mode 3")
+
+    # Mode 3 endpointing delays
+    if config.AGENT_MODE == 3:
+        min_ep = config.GROUP_MIN_ENDPOINTING_DELAY
+        max_ep = config.GROUP_MAX_ENDPOINTING_DELAY
+    else:
+        min_ep = 0.5
+        max_ep = 2.0
+
+    agent_kwargs = {
+        "instructions": instructions,
+        "stt": stt_plugin,
+        "llm": _dummy_llm,          # 不会被用 — llm_node() override 了
+        "tts": tts_plugin,
+        "vad": vad,
+        "allow_interruptions": config.ENABLE_INTERRUPTIONS,
+        "min_endpointing_delay": min_ep,
+        "max_endpointing_delay": max_ep,
+    }
+
+    # Build search adapter
+    search_adapter = None
+    if pig_agent.provider.supports(ModelCapability.WEB_SEARCH):
+        from core.search.adapter import create_search_adapter
+        search_adapter = create_search_adapter(llm_provider_id)
+    else:
+        # 没有 web search 能力的 provider 走 Perplexity 工具搜索
+        logger.info("Provider doesn't support web_search, will use perplexity tool search")
+
+    # Create TrumpAgent — our LiveKit adapter wrapping PigAgent
+    agent = TrumpAgent(
+        pig_agent=pig_agent,
+        speaker_tracker=speaker_tracker,
+        agent_mode=config.AGENT_MODE,
+        agent_config=config,
+        search_adapter=search_adapter,
+        game_mode=game_mode,
+        persona=persona,
+        conv_manager=conv_manager,
+        **agent_kwargs
+    )
+
+    # Create AgentSession (manages the runtime)
+    session = AgentSession(
+        preemptive_generation=config.ENABLE_PREEMPTIVE_SYNTHESIS,
+    )
+
+    logger.info("Agent and session created (VAD + PigAgent + LiveKit pipeline)")
         
         # Add comprehensive logging to debug the conversation pipeline
         @session.on("user_state_changed")
@@ -1143,22 +1145,13 @@ Your response:"""
 
                                 logger.info(f"🔍 [MODE 2] Calling LLM for interrupt generation")
 
-                                # Call LLM
-                                from livekit.agents.llm import ChatContext
-                                
-                                interrupt_ctx = ChatContext()
-                                interrupt_ctx.add_message(role="user", content=interrupt_prompt)
-                                
-                                llm_plugin = llm.get_plugin() if hasattr(llm, 'get_plugin') else llm
-                                llm_stream = llm_plugin.chat(chat_ctx=interrupt_ctx)
-                                
+                                # Call LLM using PigAgent's provider
+                                provider = pig_agent.provider
+                                messages = [Message.user(interrupt_prompt)]
                                 interrupt_msg = ""
-                                
-                                # LiveKit ChatChunk structure: chunk.delta.content
-                                async for chunk in llm_stream:
-                                    if hasattr(chunk, 'delta') and chunk.delta:
-                                        if hasattr(chunk.delta, 'content') and chunk.delta.content:
-                                            interrupt_msg += chunk.delta.content
+                                async for delta in provider.chat_stream(messages):
+                                    if delta.content:
+                                        interrupt_msg += delta.content
                                 
                                 interrupt_msg = interrupt_msg.strip()
                                 logger.info(f"🔍 [MODE 2] LLM generated interrupt: '{interrupt_msg[:100]}{'...' if len(interrupt_msg) > 100 else ''}'")
@@ -1252,19 +1245,13 @@ REASON: They're having a back-and-forth, I'd be interrupting.
 RESPONSE: none"""
 
             try:
-                from livekit.agents.llm import ChatContext
-                
-                decision_ctx = ChatContext()
-                decision_ctx.add_message(role="user", content=decision_prompt)
-                
-                llm_plugin = llm.get_plugin() if hasattr(llm, 'get_plugin') else llm
-                llm_stream = llm_plugin.chat(chat_ctx=decision_ctx)
-                
+                # Use PigAgent's provider directly
+                provider = pig_agent.provider
+                messages = [Message.user(decision_prompt)]
                 decision_text = ""
-                async for chunk in llm_stream:
-                    if hasattr(chunk, 'delta') and chunk.delta:
-                        if hasattr(chunk.delta, 'content') and chunk.delta.content:
-                            decision_text += chunk.delta.content
+                async for delta in provider.chat_stream(messages):
+                    if delta.content:
+                        decision_text += delta.content
                 
                 decision_text = decision_text.strip()
                 logger.info(f"🎯 [MODE 3] LLM decision: {decision_text[:150]}...")
@@ -1353,43 +1340,15 @@ RESPONSE: none"""
                 except asyncio.CancelledError:
                     pass
         
-    else:
-        # Custom implementation for providers without LiveKit plugins (e.g., Qwen)
-        logger.info("Using custom agent implementation for non-plugin providers")
-        
-        # Set up data channel for text-based communication
-        @ctx.room.on("data_received")
-        def on_data_received(data: bytes, participant):
-            try:
-                message = data.decode('utf-8')
-                logger.info(f"👤 User ({participant.identity}): {message}")
-                
-                # Process message with LLM
-                asyncio.create_task(handle_text_message(llm, ctx, message))
-                
-            except Exception as e:
-                logger.error(f"Error processing data: {e}")
-        
-        logger.info("✅ Text-based agent is active and listening...")
-        
-        # Send greeting if enabled
-        if config.ENABLE_WELCOME_GREETING:
-            greeting = getattr(persona, 'greeting', None) or config.WELCOME_GREETING
-            await ctx.room.local_participant.publish_data(
-                greeting.encode('utf-8'),
-                reliable=True
-            )
-            logger.info(f"🤖 Agent: {greeting}")
-    
     # Keep agent running
     logger.info("Agent session started. Press Ctrl+C to stop.")
 
 
-async def handle_text_message(llm, ctx: JobContext, message: str):
-    """Handle text messages for custom LLM implementations"""
+async def handle_text_message(pig_agent, ctx: JobContext, message: str):
+    """Handle text messages via PigAgent"""
     try:
-        # Get response from LLM
-        response = await llm.chat(message)
+        messages = [Message.user(message)]
+        response = await pig_agent.run_once(messages)
         
         # Send response back
         await ctx.room.local_participant.publish_data(
