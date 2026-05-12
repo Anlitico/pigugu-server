@@ -1,0 +1,27 @@
+# Pigugu Agent — Model configuration
+# Add new models by appending a [[models]] block
+# Format: id = unique identifier under provider/namespace
+
+[[models]]
+id = "qwen-plus"
+provider = "qwen-us"
+display = "Qwen Plus"
+context = 1000000
+output = 32768
+capabilities = ["text", "streaming", "tool_use", "web_search"]
+thinking = true
+search = true
+temperature = 0.8
+
+
+[[models]]
+id = "doubao-seed-1-6-251015"
+provider = "volcengine"
+display = "Doubao Seed 1.6"
+context = 256000
+output = 16384
+capabilities = ["text", "streaming", "tool_use"]
+thinking = true
+search = false
+temperature = 0.8
+
