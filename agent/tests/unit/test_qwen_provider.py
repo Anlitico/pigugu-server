@@ -3,7 +3,7 @@
 
 import pytest
 
-from core.llm.registry import ModelRegistry
+from core.llm.registry import ModelRegistry, load_models
 from core.llm.providers.qwen import QwenProvider
 from core.llm.types import (
     Message, ModelInfo, ModelCapability, ToolCall, TokenUsage, ChatResponse
@@ -33,50 +33,53 @@ class TestQwenValidation:
     def setup_method(self):
         ModelRegistry._models.clear()
 
+    def teardown_method(self):
+        load_models()
+
     def test_thinking_supported(self):
         _register_model("qwen-plus", thinking=True)
-        p = QwenProvider(model="qwen-plus", api_key="sk-test")
-        p._validate(tools=None, thinking={"enabled": True}, search=None)
+        p = QwenProvider(api_key="sk-test")
+        p._validate(tools=None, thinking={"enabled": True}, search=None, model="qwen-plus")
 
     def test_thinking_not_supported_raises(self):
         _register_model("qwen-turbo", thinking=False)
-        p = QwenProvider(model="qwen-turbo", api_key="sk-test")
+        p = QwenProvider(api_key="sk-test")
         with pytest.raises(ValueError, match="does not support thinking"):
-            p._validate(tools=None, thinking={"enabled": True}, search=None)
+            p._validate(tools=None, thinking={"enabled": True}, search=None, model="qwen-turbo")
 
     def test_thinking_disabled_does_not_raise(self):
         _register_model("qwen-turbo", thinking=False)
-        p = QwenProvider(model="qwen-turbo", api_key="sk-test")
-        p._validate(tools=None, thinking={"enabled": False}, search=None)
+        p = QwenProvider(api_key="sk-test")
+        p._validate(tools=None, thinking={"enabled": False}, search=None, model="qwen-turbo")
 
     def test_search_supported(self):
         _register_model("qwen-plus", search=True)
-        p = QwenProvider(model="qwen-plus", api_key="sk-test")
-        p._validate(tools=None, thinking=None, search={"enabled": True})
+        p = QwenProvider(api_key="sk-test")
+        p._validate(tools=None, thinking=None, search={"enabled": True}, model="qwen-plus")
 
     def test_search_not_supported_raises(self):
         _register_model("qwen-turbo", search=False)
-        p = QwenProvider(model="qwen-turbo", api_key="sk-test")
+        p = QwenProvider(api_key="sk-test")
         with pytest.raises(ValueError, match="does not support web search"):
-            p._validate(tools=None, thinking=None, search={"enabled": True})
+            p._validate(tools=None, thinking=None, search={"enabled": True}, model="qwen-turbo")
 
     def test_tool_use_supported(self):
         _register_model("qwen-plus", caps={ModelCapability.TEXT, ModelCapability.TOOL_USE})
-        p = QwenProvider(model="qwen-plus", api_key="sk-test")
+        p = QwenProvider(api_key="sk-test")
         p._validate(tools=[{"type": "function", "function": {"name": "test"}}],
-                    thinking=None, search=None)
+                    thinking=None, search=None, model="qwen-plus")
 
     def test_tool_use_not_supported_raises(self):
         _register_model("qwen-turbo", caps={ModelCapability.TEXT})
-        p = QwenProvider(model="qwen-turbo", api_key="sk-test")
+        p = QwenProvider(api_key="sk-test")
         with pytest.raises(ValueError, match="does not support tool_use"):
-            p._validate(tools=[{"type": "function"}], thinking=None, search=None)
+            p._validate(tools=[{"type": "function"}], thinking=None, search=None, model="qwen-turbo")
 
     def test_all_none_passes(self):
         _register_model("qwen-turbo", thinking=False, search=False,
                         caps={ModelCapability.TEXT})
-        p = QwenProvider(model="qwen-turbo", api_key="sk-test")
-        p._validate(tools=None, thinking=None, search=None)
+        p = QwenProvider(api_key="sk-test")
+        p._validate(tools=None, thinking=None, search=None, model="qwen-turbo")
 
 
 # -- Parameter mapping tests --------------------------------------------------
@@ -86,15 +89,18 @@ class TestQwenBuildParams:
         ModelRegistry._models.clear()
         _register_model("qwen-plus")
 
-    def _make_provider(self, **kwargs):
-        return QwenProvider(model="qwen-plus", api_key="sk-test", **kwargs)
+    def teardown_method(self):
+        load_models()
+
+    def _make_provider(self):
+        return QwenProvider(api_key="sk-test")
 
     def test_basic_params(self):
         p = self._make_provider()
         params = p._build_params(
             [Message.user("hi")], None, None, True,
             0.7, None, 512, None, None, None, None, None,
-            stream=False,
+            model="qwen-plus", stream=False,
         )
         assert params["model"] == "qwen-plus"
         assert params["temperature"] == 0.7
@@ -106,7 +112,7 @@ class TestQwenBuildParams:
         params = p._build_params(
             [Message.user("hi")], None, None, True,
             None, None, None, None, None, None, None, None,
-            stream=True,
+            model="qwen-plus", stream=True,
         )
         assert params["stream"]
         assert params["stream_options"] == {"include_usage": True}
@@ -117,7 +123,7 @@ class TestQwenBuildParams:
         params = p._build_params(
             [Message.user("hi")], tools, None, False,
             None, None, None, None, None, None, None, None,
-            stream=False,
+            model="qwen-plus", stream=False,
         )
         assert params["tools"] == tools
         assert not params["parallel_tool_calls"]
@@ -127,7 +133,7 @@ class TestQwenBuildParams:
         params = p._build_params(
             [Message.user("hi")], [{"type": "function"}], "required", True,
             None, None, None, None, None, None, None, None,
-            stream=False,
+            model="qwen-plus", stream=False,
         )
         assert params["tool_choice"] == "required"
 
@@ -137,7 +143,7 @@ class TestQwenBuildParams:
             [Message.user("hi")], None, None, True,
             None, None, None, None, None,
             {"enabled": True, "budget": 4096}, None, None,
-            stream=False,
+            model="qwen-plus", stream=False,
         )
         assert params["extra_body"]["enable_thinking"] is True
         assert params["extra_body"]["thinking_budget"] == 4096
@@ -148,7 +154,7 @@ class TestQwenBuildParams:
             [Message.user("hi")], None, None, True,
             None, None, None, None, None, None,
             {"enabled": True, "force": False}, None,
-            stream=False,
+            model="qwen-plus", stream=False,
         )
         assert params["extra_body"]["enable_search"] is True
         assert "search_options" not in params["extra_body"]
@@ -159,7 +165,7 @@ class TestQwenBuildParams:
             [Message.user("hi")], None, None, True,
             None, None, None, None, None, None,
             {"enabled": True, "force": True}, None,
-            stream=False,
+            model="qwen-plus", stream=False,
         )
         assert params["extra_body"]["enable_search"] is True
         assert params["extra_body"]["search_options"] == {"search_strategy": "agent"}
@@ -170,7 +176,7 @@ class TestQwenBuildParams:
         params = p._build_params(
             [Message.user("hi")], None, None, True,
             None, None, None, None, None, None, None, fmt,
-            stream=False,
+            model="qwen-plus", stream=False,
         )
         assert params["response_format"] == fmt
 
@@ -179,17 +185,17 @@ class TestQwenBuildParams:
         params = p._build_params(
             [Message.user("hi")], None, None, True,
             None, None, None, ["END"], 42, None, None, None,
-            stream=False,
+            model="qwen-plus", stream=False,
         )
         assert params["stop"] == ["END"]
         assert params["seed"] == 42
 
-    def test_default_max_tokens(self):
-        p = self._make_provider(max_tokens=2048)
+    def test_max_tokens_passthrough(self):
+        p = self._make_provider()
         params = p._build_params(
             [Message.user("hi")], None, None, True,
-            None, None, None, None, None, None, None, None,
-            stream=False,
+            None, None, 2048, None, None, None, None, None,
+            model="qwen-plus", stream=False,
         )
         assert params["max_tokens"] == 2048
 
@@ -198,7 +204,7 @@ class TestQwenBuildParams:
         params = p._build_params(
             [Message.user("hi")], None, None, True,
             None, None, None, None, None, None, None, None,
-            stream=False, custom_param="value",
+            model="qwen-plus", stream=False, custom_param="value",
         )
         assert params["extra_body"]["custom_param"] == "value"
 
@@ -207,27 +213,27 @@ class TestQwenBuildParams:
 
 class TestQwenSerialization:
     def test_partial_assistant(self):
-        p = QwenProvider(model="qwen-plus", api_key="sk-test")
+        p = QwenProvider(api_key="sk-test")
         msg = Message(role="assistant", content="prefix...", partial=True)
         d = p._serialize_message(msg)
         assert d["partial"] is True
         assert d["role"] == "assistant"
 
     def test_normal_assistant(self):
-        p = QwenProvider(model="qwen-plus", api_key="sk-test")
+        p = QwenProvider(api_key="sk-test")
         msg = Message(role="assistant", content="complete")
         d = p._serialize_message(msg)
         assert "partial" not in d
 
     def test_user_message(self):
-        p = QwenProvider(model="qwen-plus", api_key="sk-test")
+        p = QwenProvider(api_key="sk-test")
         msg = Message(role="user", content="hello")
         d = p._serialize_message(msg)
         assert d["role"] == "user"
         assert d["content"] == "hello"
 
     def test_tool_calls(self):
-        p = QwenProvider(model="qwen-plus", api_key="sk-test")
+        p = QwenProvider(api_key="sk-test")
         msg = Message(role="assistant", content="",
                       tool_calls=[ToolCall(id="c1", name="search", arguments='{"q":"test"}')])
         d = p._serialize_message(msg)

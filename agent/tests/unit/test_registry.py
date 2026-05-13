@@ -109,7 +109,6 @@ output = 32768
 capabilities = ["text", "streaming", "tool_use"]
 thinking = true
 search = true
-temperature = 0.8
 
 [[models]]
 id = "test-basic"
@@ -120,13 +119,16 @@ output = 1024
 capabilities = ["text"]
 thinking = false
 search = false
-temperature = 1.0
 """
 
 
 class TestLoadModels:
     def setup_method(self):
         ModelRegistry._models.clear()
+
+    def teardown_method(self):
+        # Restore real models so other tests aren't affected
+        load_models()
 
     def test_load_from_file(self):
         with tempfile.NamedTemporaryFile(suffix=".toml", delete=False) as f:

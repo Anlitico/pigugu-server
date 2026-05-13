@@ -1,6 +1,8 @@
 # agent/core/llm/__init__.py
 """LLM package — Types, Provider, Registry"""
 
+from loguru import logger
+
 from .types import (
     Message,
     TokenUsage,
@@ -12,66 +14,58 @@ from .types import (
     ToolSpec,
 )
 from .provider import LLMProvider
-from .providers.openai import OpenAIChatProvider
 from .providers.qwen import QwenProvider
 from .providers.volcengine import VolcengineProvider
 from .registry import ModelRegistry, get_provider_config, resolve_provider, load_models, list_providers
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# Provider instance pool — pre-built at import time, keyed by model_id
+# Provider instance pool — pre-built at import time, keyed by provider_id
 # ═══════════════════════════════════════════════════════════════════════════════
 
 _pool: dict[str, LLMProvider] = {}
 
 
 def _build_pool() -> None:
-    """Create one provider instance per model from models.toml."""
+    """Create one provider instance per backend (not per model).
+
+    Models are selected per-call via the ``model`` parameter on chat/chat_stream.
+    """
+    seen: set[str] = set()
     for info in ModelRegistry.list():
-        cfg = get_provider_config(info.provider)
+        pid = info.provider
+        if pid in seen:
+            continue
+        seen.add(pid)
+
+        cfg = get_provider_config(pid)
         if cfg is None:
             continue
 
-        provider_id = info.provider
-        model_id = info.model_id
-
-        if provider_id in ("qwen", "qwen-us"):
-            _pool[model_id] = QwenProvider(
-                model=model_id,
-                base_url=cfg.base_url,
-                temperature=info.temperature,
-                max_tokens=info.max_output_tokens or None,
-            )
-        elif provider_id == "volcengine":
-            _pool[model_id] = VolcengineProvider(
-                model=model_id,
-                base_url=cfg.base_url,
-                temperature=info.temperature,
-                max_tokens=info.max_output_tokens or None,
-            )
+        if pid in ("qwen", "qwen-us"):
+            _pool[pid] = QwenProvider(base_url=cfg.base_url)
+        elif pid == "volcengine":
+            _pool[pid] = VolcengineProvider(base_url=cfg.base_url)
         else:
-            _, api_key, _ = resolve_provider(provider_id)
-            _pool[model_id] = OpenAIChatProvider(
-                model=model_id,
-                api_key=api_key,
-                base_url=cfg.base_url,
-                temperature=info.temperature,
-                max_tokens=info.max_output_tokens or None,
-            )
+            _, api_key, _ = resolve_provider(pid)
+            _pool[pid] = QwenProvider(base_url=cfg.base_url)
+            logger.warning(f"[Pool] Unknown provider '{pid}', using QwenProvider as fallback")
 
 
 def get_llm(model: str = "qwen-plus") -> LLMProvider:
-    """Return a pre-built provider instance for the given model.
+    """Return the provider instance for the given model.
 
-    All instances are created once at import time. Switching models
-    returns a different instance from the same pool — no new connections.
+    Resolves model → provider backend via ModelRegistry, then returns
+    the pre-built instance for that backend.
     """
-    if model not in _pool:
+    info = ModelRegistry.get(model)
+    pid = info.provider
+    if pid not in _pool:
         raise KeyError(
-            f"Model '{model}' not found in provider pool. "
+            f"Provider '{pid}' (for model '{model}') not found in pool. "
             f"Available: {list(_pool)}"
         )
-    return _pool[model]
+    return _pool[pid]
 
 
 def create_llm(
@@ -86,7 +80,6 @@ __all__ = [
     "Message", "TokenUsage", "ChatResponse", "ChatDelta", "ToolCall",
     "ModelCapability", "ModelInfo", "ToolSpec",
     "LLMProvider",
-    "OpenAIChatProvider",
     "QwenProvider",
     "VolcengineProvider",
     "ModelRegistry", "get_provider_config", "resolve_provider", "load_models", "list_providers",

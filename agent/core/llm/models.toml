@@ -11,7 +11,27 @@ output = 32768
 capabilities = ["text", "streaming", "tool_use", "web_search"]
 thinking = true
 search = true
-temperature = 0.8
+
+
+[[models]]
+id = "qwen3.6-flash"
+provider = "qwen-us"
+display = "Qwen 3.6 Flash"
+context = 1000000
+output = 65536
+capabilities = ["text", "streaming", "tool_use", "web_search"]
+thinking = true
+search = true
+
+[[models]]
+id = "qwen3.6-plus"
+provider = "qwen-us"
+display = "Qwen 3.6 Plus"
+context = 1000000
+output = 65536
+capabilities = ["text", "streaming", "tool_use", "web_search"]
+thinking = true
+search = true
 
 
 [[models]]
@@ -23,5 +43,4 @@ output = 16384
 capabilities = ["text", "streaming", "tool_use"]
 thinking = true
 search = false
-temperature = 0.8
 

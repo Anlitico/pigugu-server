@@ -46,7 +46,6 @@ Communication style:
     try:
         llm = create_llm(
             model="qwen-plus",
-            temperature=0.8,
             instructions=custom_prompt,
             api_key=os.getenv("DASHSCOPE_API_KEY"),
             base_url="https://dashscope.aliyuncs.com/compatible-mode/v1"
@@ -90,7 +89,6 @@ def test_llm_without_system_prompt():
     try:
         llm = create_llm(
             model="qwen-plus",
-            temperature=0.8,
             instructions="",  # Empty instructions
             api_key=os.getenv("DASHSCOPE_API_KEY"),
             base_url="https://dashscope.aliyuncs.com/compatible-mode/v1"

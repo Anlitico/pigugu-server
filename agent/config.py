@@ -128,7 +128,10 @@ class AgentConfig(BaseSettings):
     GROK_MODEL: str = Field(default_factory=lambda: get_config_value("GROK_MODEL", "grok-4-fast-reasoning"))
 
     # LLM Settings
-    LLM_TEMPERATURE: float = Field(default_factory=lambda: float(get_config_value("LLM_TEMPERATURE", 0.8)))
+    # Lightweight model for background tasks (segment end detection, compression)
+    SEGMENT_DETECT_MODEL: str = Field(default_factory=lambda: get_config_value("SEGMENT_DETECT_MODEL", "qwen-flash"))
+
+    LLM_TEMPERATURE: float = Field(default_factory=lambda: float(get_config_value("LLM_TEMPERATURE", 0.6)))
     LLM_MAX_TOKENS: Optional[int] = Field(default_factory=lambda: int(get_config_value("LLM_MAX_TOKENS")) if get_config_value("LLM_MAX_TOKENS") else None)
 
     def resolve_model(self) -> str:
@@ -147,7 +150,7 @@ class AgentConfig(BaseSettings):
         """Return a pre-built LLMProvider from the pool.
 
         All provider instances are created once at startup via core.llm._build_pool().
-        Switching models reuses a different instance from the same pool.
+        Model is selected per-call via chat(model=...).
         """
         from core.llm import get_llm
 

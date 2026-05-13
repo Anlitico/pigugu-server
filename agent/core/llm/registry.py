@@ -131,7 +131,6 @@ def load_models(path: str | Path | None = None) -> int:
             max_output_tokens=entry.get("output", 0),
             thinking=entry.get("thinking", False),
             search=entry.get("search", False),
-            temperature=entry.get("temperature", 0.8),
         )
         ModelRegistry.register(info)
         count += 1

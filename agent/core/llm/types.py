@@ -128,7 +128,6 @@ class ModelInfo:
     max_output_tokens: int = 0
     thinking: bool = False          # 是否支持 thinking 模式
     search: bool = False            # 是否支持内置搜索
-    temperature: float = 0.8        # 默认温度
 
 
 # ═══════════════════════════════════════════════════════════════════════════════

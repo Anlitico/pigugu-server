@@ -134,7 +134,7 @@ CARTESIA_TTS_SPEED = 1.0  # Optional: 0.6-2.0
 ```toml
 QWEN_MODEL = "qwen-plus"  # or qwen-turbo, qwen-max, qwen-long
 QWEN_BASE_URL = "https://dashscope.aliyuncs.com/compatible-mode/v1"
-LLM_TEMPERATURE = 0.8
+LLM_TEMPERATURE = 0.6
 LLM_MAX_TOKENS = ""  # Optional
 ```
 

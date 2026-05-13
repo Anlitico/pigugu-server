@@ -133,7 +133,6 @@ class TestModelInfo:
         assert info.max_output_tokens == 0
         assert info.thinking is False
         assert info.search is False
-        assert info.temperature == 0.8
         assert len(info.capabilities) == 0
 
 

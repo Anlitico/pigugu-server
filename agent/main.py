@@ -37,6 +37,7 @@ from livekit.plugins import silero
 # Import our modular components
 from config import get_config
 from core.llm.types import Message, ModelCapability
+from core.llm.registry import ModelRegistry
 from core.search.adapter import build_search_messages
 from utils import SpeakerTracker, ResponseStrategy
 from personas import PersonaRegistry, get_persona, GROUP_DISCUSSION_PROMPT
@@ -117,7 +118,7 @@ class TrumpAgent(Agent):
         # 供 search adapter 使用
         self._search_adapter = search_adapter
         self._llm_provider = self._pig_agent.provider.provider_name if hasattr(self._pig_agent, 'provider') else ""
-        self._llm_model = self._pig_agent.provider.model if hasattr(self._pig_agent, 'provider') else ""
+        self._llm_model = self._pig_agent.config.model if hasattr(self._pig_agent, 'config') else ""
         # Persona + Game Mode + Lifecycle
         self._game_mode = game_mode
         self._persona = persona
@@ -279,8 +280,9 @@ class TrumpAgent(Agent):
 
         provider = self._pig_agent.provider
 
+        search_model = self._config.resolve_model() if self._config else "unknown"
         logger.info(
-            f"🔍 [SEARCH] Sending {len(messages)} messages to {provider.model} "
+            f"🔍 [SEARCH] Sending {len(messages)} messages to {search_model} "
             f"(adapter={adapter_name}, has_system={has_system}, force_search={force_search})"
         )
         for i, m in enumerate(messages):
@@ -289,14 +291,14 @@ class TrumpAgent(Agent):
 
         try:
             if not self._search_adapter:
-                raise RuntimeError(f"No search adapter configured for provider={provider.model}")
+                raise RuntimeError(f"No search adapter configured for provider={search_model}")
 
             async for chunk in self._search_adapter.stream_with_search(
                 messages=messages,
-                model=provider.model,
+                model=search_model,
                 api_key=provider._api_key,
                 base_url=provider.base_url,
-                temperature=self._config.LLM_TEMPERATURE if self._config else 0.8,
+                temperature=self._config.LLM_TEMPERATURE if self._config else 0.6,
                 force_search=force_search,
             ):
                 yield chunk
@@ -722,7 +724,7 @@ async def entrypoint(ctx: JobContext):
 
     logger.info(f"[DEBUG] STT plugin: {type(stt_plugin).__name__}")
     logger.info(f"[DEBUG] TTS plugin: {type(tts_plugin).__name__}")
-    logger.info(f"[DEBUG] LLM: PigAgent with {pig_agent.provider.model}")
+    logger.info(f"[DEBUG] LLM: PigAgent with {pig_agent.config.model}")
 
     # Build VAD (Voice Activity Detection)
     vad = silero.VAD.load()
@@ -769,7 +771,8 @@ async def entrypoint(ctx: JobContext):
 
     # Build search adapter
     search_adapter = None
-    if pig_agent.provider.supports(ModelCapability.WEB_SEARCH):
+    model_info = ModelRegistry.get(pig_agent.config.model)
+    if ModelCapability.WEB_SEARCH in model_info.capabilities:
         from core.search.adapter import create_search_adapter
         search_adapter = create_search_adapter(llm_provider_id)
     else:
@@ -1149,7 +1152,7 @@ Your response:"""
                                 provider = pig_agent.provider
                                 messages = [Message.user(interrupt_prompt)]
                                 interrupt_msg = ""
-                                async for delta in provider.chat_stream(messages):
+                                async for delta in provider.chat_stream(messages, model=pig_agent.config.model):
                                     if delta.content:
                                         interrupt_msg += delta.content
                                 
@@ -1249,7 +1252,7 @@ RESPONSE: none"""
                 provider = pig_agent.provider
                 messages = [Message.user(decision_prompt)]
                 decision_text = ""
-                async for delta in provider.chat_stream(messages):
+                async for delta in provider.chat_stream(messages, model=pig_agent.config.model):
                     if delta.content:
                         decision_text += delta.content
                 

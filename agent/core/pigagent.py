@@ -38,10 +38,11 @@ ToolHandler = Callable[[ToolCall], Any]
 class AgentConfig:
     """PigAgent 配置"""
     provider: LLMProvider
+    model: str
     instructions: str = ""
     tools: list[ToolSpec] = field(default_factory=list)
     tool_handlers: dict[str, ToolHandler] = field(default_factory=dict)
-    temperature: float = 0.8
+    temperature: float = 0.6
     max_tokens: int | None = None
     max_tool_iterations: int = 5
 
@@ -87,7 +88,7 @@ class PigAgent:
 
     用法：
         agent = PigAgent(AgentConfig(
-            provider=OpenAIChatProvider.with_grok(),
+            provider=get_llm("qwen-plus"),
             instructions="You are Trump...",
             tools=[ToolSpec(name="search", description="...", parameters={...})],
             tool_handlers={"search": do_search},
@@ -145,6 +146,7 @@ class PigAgent:
 
             async for delta in self.provider.chat_stream(
                 messages,
+                model=self.config.model,
                 tools=self._tool_schemas,
                 temperature=temp,
                 max_tokens=max_tok,

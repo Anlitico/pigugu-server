@@ -3,7 +3,7 @@
 
 import pytest
 
-from core.llm.registry import ModelRegistry
+from core.llm.registry import ModelRegistry, load_models
 from core.llm.providers.volcengine import VolcengineProvider
 from core.llm.types import Message, ModelInfo, ModelCapability, ToolCall
 
@@ -31,28 +31,31 @@ class TestVolcengineValidation:
     def setup_method(self):
         ModelRegistry._models.clear()
 
+    def teardown_method(self):
+        load_models()
+
     def test_thinking_supported(self):
         _register_model(thinking=True)
-        p = VolcengineProvider(model="doubao-test", api_key="sk-test")
-        p._validate(tools=None, thinking={"enabled": True}, search=None)
+        p = VolcengineProvider(api_key="sk-test")
+        p._validate(tools=None, thinking={"enabled": True}, search=None, model="doubao-test")
 
     def test_thinking_not_supported_raises(self):
         _register_model(thinking=False)
-        p = VolcengineProvider(model="doubao-test", api_key="sk-test")
+        p = VolcengineProvider(api_key="sk-test")
         with pytest.raises(ValueError, match="does not support thinking"):
-            p._validate(tools=None, thinking={"enabled": True}, search=None)
+            p._validate(tools=None, thinking={"enabled": True}, search=None, model="doubao-test")
 
     def test_search_not_supported_raises(self):
         _register_model(search=False)
-        p = VolcengineProvider(model="doubao-test", api_key="sk-test")
+        p = VolcengineProvider(api_key="sk-test")
         with pytest.raises(ValueError, match="does not support web search"):
-            p._validate(tools=None, thinking=None, search={"enabled": True})
+            p._validate(tools=None, thinking=None, search={"enabled": True}, model="doubao-test")
 
     def test_tool_use_not_supported_raises(self):
         _register_model(caps={ModelCapability.TEXT})
-        p = VolcengineProvider(model="doubao-test", api_key="sk-test")
+        p = VolcengineProvider(api_key="sk-test")
         with pytest.raises(ValueError, match="does not support tool_use"):
-            p._validate(tools=[{"type": "function"}], thinking=None, search=None)
+            p._validate(tools=[{"type": "function"}], thinking=None, search=None, model="doubao-test")
 
 
 # -- Thinking parameter format (Volcengine-specific) --------------------------
@@ -62,8 +65,11 @@ class TestVolcengineThinkingFormat:
         ModelRegistry._models.clear()
         _register_model()
 
+    def teardown_method(self):
+        load_models()
+
     def _make_provider(self):
-        return VolcengineProvider(model="doubao-test", api_key="sk-test")
+        return VolcengineProvider(api_key="sk-test")
 
     def test_thinking_enabled(self):
         p = self._make_provider()
@@ -71,7 +77,7 @@ class TestVolcengineThinkingFormat:
             [Message.user("hi")], None, None, True,
             None, None, None, None, None,
             {"enabled": True}, None, None,
-            stream=False,
+            model="doubao-test", stream=False,
         )
         assert params["extra_body"]["thinking"] == {"type": "enabled"}
 
@@ -81,7 +87,7 @@ class TestVolcengineThinkingFormat:
             [Message.user("hi")], None, None, True,
             None, None, None, None, None,
             {"enabled": True, "budget": 16000}, None, None,
-            stream=False,
+            model="doubao-test", stream=False,
         )
         assert params["extra_body"]["thinking"] == {
             "type": "enabled",
@@ -94,7 +100,7 @@ class TestVolcengineThinkingFormat:
             [Message.user("hi")], None, None, True,
             None, None, None, None, None,
             {"enabled": True, "effort": "high"}, None, None,
-            stream=False,
+            model="doubao-test", stream=False,
         )
         assert params["extra_body"]["thinking"]["reasoning_effort"] == "high"
 
@@ -104,7 +110,7 @@ class TestVolcengineThinkingFormat:
             [Message.user("hi")], None, None, True,
             None, None, None, None, None,
             {"enabled": True, "budget": 32000, "effort": "medium"}, None, None,
-            stream=False,
+            model="doubao-test", stream=False,
         )
         assert params["extra_body"]["thinking"] == {
             "type": "enabled",
@@ -118,7 +124,7 @@ class TestVolcengineThinkingFormat:
             [Message.user("hi")], None, None, True,
             None, None, None, None, None,
             {"enabled": False}, None, None,
-            stream=False,
+            model="doubao-test", stream=False,
         )
         assert "extra_body" not in params
 
@@ -127,19 +133,19 @@ class TestVolcengineThinkingFormat:
 
 class TestVolcengineSerialization:
     def test_prefix_on_partial_assistant(self):
-        p = VolcengineProvider(model="doubao-test", api_key="sk-test")
+        p = VolcengineProvider(api_key="sk-test")
         msg = Message(role="assistant", content="prefix...", partial=True)
         d = p._serialize_message(msg)
         assert d["prefix"] is True
 
     def test_no_prefix_on_normal_message(self):
-        p = VolcengineProvider(model="doubao-test", api_key="sk-test")
+        p = VolcengineProvider(api_key="sk-test")
         msg = Message(role="assistant", content="complete")
         d = p._serialize_message(msg)
         assert "prefix" not in d
 
     def test_no_prefix_on_user_message(self):
-        p = VolcengineProvider(model="doubao-test", api_key="sk-test")
+        p = VolcengineProvider(api_key="sk-test")
         msg = Message(role="user", content="hello", partial=True)
         d = p._serialize_message(msg)
         assert "prefix" not in d

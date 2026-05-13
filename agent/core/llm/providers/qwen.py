@@ -16,16 +16,10 @@ class QwenProvider(LLMProvider):
 
     def __init__(
         self,
-        model: str = "qwen-plus",
         *,
         api_key: str | None = None,
         base_url: str = "https://dashscope-us.aliyuncs.com/compatible-mode/v1",
-        temperature: float = 0.8,
-        max_tokens: int | None = None,
     ):
-        self._model = model
-        self._temperature = temperature
-        self._max_tokens = max_tokens
         self._base_url = base_url.rstrip("/")
         self._api_key = api_key or os.getenv("DASHSCOPE_US_API_KEY", "")
 
@@ -44,10 +38,6 @@ class QwenProvider(LLMProvider):
     # ── Properties ──
 
     @property
-    def model(self) -> str:
-        return self._model
-
-    @property
     def base_url(self) -> str:
         return self._base_url
 
@@ -57,6 +47,7 @@ class QwenProvider(LLMProvider):
         self,
         messages: list[Message],
         *,
+        model: str,
         tools: list[dict] | None = None,
         tool_choice: str | None = None,
         parallel_tool_calls: bool = True,
@@ -70,12 +61,12 @@ class QwenProvider(LLMProvider):
         response_format: dict | None = None,
         **kwargs,
     ) -> ChatResponse:
-        self._validate(tools, thinking, search)
+        self._validate(tools, thinking, search, model=model)
         params = self._build_params(
             messages, tools, tool_choice, parallel_tool_calls,
             temperature, top_p, max_tokens, stop, seed,
             thinking, search, response_format,
-            stream=False, **kwargs,
+            model=model, stream=False, **kwargs,
         )
         completion = await self._client.chat.completions.create(**params)
 
@@ -98,6 +89,7 @@ class QwenProvider(LLMProvider):
         self,
         messages: list[Message],
         *,
+        model: str,
         tools: list[dict] | None = None,
         tool_choice: str | None = None,
         parallel_tool_calls: bool = True,
@@ -111,12 +103,12 @@ class QwenProvider(LLMProvider):
         response_format: dict | None = None,
         **kwargs,
     ) -> AsyncIterator[ChatDelta]:
-        self._validate(tools, thinking, search)
+        self._validate(tools, thinking, search, model=model)
         params = self._build_params(
             messages, tools, tool_choice, parallel_tool_calls,
             temperature, top_p, max_tokens, stop, seed,
             thinking, search, response_format,
-            stream=True, **kwargs,
+            model=model, stream=True, **kwargs,
         )
         stream = await self._client.chat.completions.create(**params)
 
@@ -167,28 +159,30 @@ class QwenProvider(LLMProvider):
         tools: list[dict] | None,
         thinking: dict | None,
         search: dict | None,
+        *,
+        model: str,
     ) -> None:
         """Raise before API call if the model does not support a requested feature."""
-        info = ModelRegistry.get(self._model)
+        info = ModelRegistry.get(model)
 
         if tools and ModelCapability.TOOL_USE not in info.capabilities:
             available = [m.model_id for m in ModelRegistry.list(capability=ModelCapability.TOOL_USE)]
             raise ValueError(
-                f"Model '{self._model}' does not support tool_use. "
+                f"Model '{model}' does not support tool_use. "
                 f"Available: {available}"
             )
 
         if thinking and thinking.get("enabled") and not info.thinking:
             available = [m.model_id for m in ModelRegistry.list() if m.thinking]
             raise ValueError(
-                f"Model '{self._model}' does not support thinking. "
+                f"Model '{model}' does not support thinking. "
                 f"Available: {available}"
             )
 
         if search and search.get("enabled") and not info.search:
             available = [m.model_id for m in ModelRegistry.list() if m.search]
             raise ValueError(
-                f"Model '{self._model}' does not support web search. "
+                f"Model '{model}' does not support web search. "
                 f"Available: {available}"
             )
 
@@ -209,17 +203,19 @@ class QwenProvider(LLMProvider):
         search: dict | None,
         response_format: dict | None,
         stream: bool,
+        *,
+        model: str,
         **kwargs,
     ) -> dict:
         body: dict = {
-            "model": self._model,
+            "model": model,
             "messages": [self._serialize_message(m) for m in messages],
-            "temperature": temperature if temperature is not None else self._temperature,
+            "temperature": temperature if temperature is not None else 0.6,
             "stream": stream,
         }
 
-        if max_tokens is not None or self._max_tokens is not None:
-            body["max_tokens"] = max_tokens or self._max_tokens
+        if max_tokens is not None:
+            body["max_tokens"] = max_tokens
         if top_p is not None:
             body["top_p"] = top_p
         if stop:

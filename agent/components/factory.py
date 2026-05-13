@@ -137,14 +137,16 @@ def create_agent_components(config=None, persona=None):
         from config import get_personality_prompt
         instructions = get_personality_prompt(llm_provider_id)
 
+    model = config.resolve_model()
     pig_agent = PigAgent(AgentConfig(
         provider=provider,
+        model=model,
         instructions=instructions,
         temperature=config.LLM_TEMPERATURE,
         max_tokens=config.LLM_MAX_TOKENS,
     ))
 
-    logger.info(f"[Factory] PigAgent created with model={provider.model}")
+    logger.info(f"[Factory] PigAgent created with model={model}")
 
     # ── TTS ────────────────────────────────────────────────────────────
 

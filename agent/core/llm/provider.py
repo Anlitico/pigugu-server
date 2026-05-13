@@ -6,8 +6,7 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from typing import AsyncIterator
 
-from .types import Message, ChatResponse, ChatDelta, ModelCapability, ModelInfo
-from .registry import ModelRegistry
+from .types import Message, ChatResponse, ChatDelta
 
 
 class LLMProvider(ABC):
@@ -114,6 +113,7 @@ class LLMProvider(ABC):
         self,
         messages: list[Message],
         *,
+        model: str,
         tools: list[dict] | None = None,
         tool_choice: str | None = None,
         parallel_tool_calls: bool = True,
@@ -134,6 +134,7 @@ class LLMProvider(ABC):
         self,
         messages: list[Message],
         *,
+        model: str,
         tools: list[dict] | None = None,
         tool_choice: str | None = None,
         parallel_tool_calls: bool = True,
@@ -151,17 +152,5 @@ class LLMProvider(ABC):
 
     @property
     @abstractmethod
-    def model(self) -> str:
-        """模型标识"""
-
-    @property
-    def model_info(self) -> ModelInfo:
-        return ModelRegistry.get(self.model)
-
-    @property
-    def context_window(self) -> int:
-        """Max context window in tokens — PigAgent uses this for history compression."""
-        return self.model_info.context_window
-
-    def supports(self, capability: ModelCapability) -> bool:
-        return capability in self.model_info.capabilities
+    def base_url(self) -> str:
+        """Provider API base URL."""
