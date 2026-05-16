@@ -129,7 +129,7 @@ class AgentConfig(BaseSettings):
 
     # LLM Settings
     # Lightweight model for background tasks (segment end detection, compression)
-    SEGMENT_DETECT_MODEL: str = Field(default_factory=lambda: get_config_value("SEGMENT_DETECT_MODEL", "qwen-flash"))
+    SEGMENT_DETECT_MODEL: str = Field(default_factory=lambda: get_config_value("SEGMENT_DETECT_MODEL", "qwen3.6-flash"))
 
     LLM_TEMPERATURE: float = Field(default_factory=lambda: float(get_config_value("LLM_TEMPERATURE", 0.6)))
     LLM_MAX_TOKENS: Optional[int] = Field(default_factory=lambda: int(get_config_value("LLM_MAX_TOKENS")) if get_config_value("LLM_MAX_TOKENS") else None)
