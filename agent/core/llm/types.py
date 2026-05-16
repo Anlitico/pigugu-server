@@ -47,6 +47,37 @@ class Message:
     def tool(cls, call_id: str, name: str, content: str) -> "Message":
         return cls(role="tool", content=content, tool_call_id=call_id, name=name)
 
+    def to_dict(self) -> dict:
+        """Full serialization for Redis/PG storage (includes all fields)."""
+        d: dict = {"role": self.role, "content": self.content}
+        if self.partial:
+            d["partial"] = True
+        if self.tool_calls:
+            d["tool_calls"] = [
+                {"id": tc.id, "name": tc.name, "arguments": tc.arguments}
+                for tc in self.tool_calls
+            ]
+        if self.tool_call_id:
+            d["tool_call_id"] = self.tool_call_id
+        if self.name:
+            d["name"] = self.name
+        return d
+
+    @classmethod
+    def from_dict(cls, d: dict) -> "Message":
+        """Deserialize from Redis/PG JSON dict."""
+        tool_calls = None
+        if d.get("tool_calls"):
+            tool_calls = [ToolCall(**tc) for tc in d["tool_calls"]]
+        return cls(
+            role=d["role"],
+            content=d["content"],
+            partial=d.get("partial", False),
+            tool_calls=tool_calls,
+            tool_call_id=d.get("tool_call_id"),
+            name=d.get("name"),
+        )
+
     def to_openai_dict(self) -> dict:
         """转为 OpenAI API 兼容的 dict"""
         d: dict = {"role": self.role, "content": self.content}

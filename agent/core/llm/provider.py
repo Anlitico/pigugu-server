@@ -150,6 +150,34 @@ class LLMProvider(ABC):
     ) -> AsyncIterator[ChatDelta]:
         """流式调用"""
 
+    def count_tokens(self, text: str, model: str = "") -> int:
+        """Fast offline token count via tiktoken. For runtime hot path (< 1ms).
+
+        Falls back to character heuristic if tiktoken is unavailable.
+        """
+        if not text:
+            return 0
+        try:
+            enc = self._get_encoding()
+            return len(enc.encode(text))
+        except Exception:
+            cjk = sum(1 for c in text if '一' <= c <= '鿿' or '　' <= c <= '〿')
+            other = len(text) - cjk
+            return int(cjk * 1.5 + other / 3.5)
+
+    def _get_encoding(self):
+        """Override per-provider. Returns a tiktoken Encoding (lazy-loaded, cached)."""
+        import tiktoken
+        return tiktoken.get_encoding("cl100k_base")
+
+    async def count_tokens_async(self, text: str, model: str = "") -> int:
+        """Accurate token count via provider's tokenizer API. For background compression.
+
+        Default: falls back to offline count_tokens(). Override per-provider
+        to call the provider's native tokenizer endpoint.
+        """
+        return self.count_tokens(text, model)
+
     @property
     @abstractmethod
     def base_url(self) -> str:

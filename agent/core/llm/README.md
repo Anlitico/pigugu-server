@@ -138,6 +138,34 @@ Both `QwenProvider` and `VolcengineProvider` validate requested features against
 2. Add provider entry to `providers.toml`
 3. Add routing in `_build_pool()` in `__init__.py`
 
+## Token Counting
+
+Two methods per provider — fast (offline) for runtime, accurate (API) for background:
+
+```python
+provider = get_llm("qwen3.6-flash")
+
+# Fast — tiktoken cl100k_base, < 1ms, for hot path / budget enforcement
+tokens = provider.count_tokens("hello world 你好世界")
+
+# Accurate — provider's native tokenizer API, for background compression
+tokens = await provider.count_tokens_async("hello world 你好世界", model="qwen3.6-flash")
+```
+
+| Method | Scenario | QwenProvider | VolcengineProvider |
+|--------|----------|-------------|-------------------|
+| `count_tokens(text)` | Runtime hot path | tiktoken `cl100k_base` | tiktoken `cl100k_base` |
+| `count_tokens_async(text, model)` | Background compression | DashScope tokenizer API | Ark tokenizer API |
+
+Both providers use `cl100k_base` offline (Qwen's tokenizer is GPT-4-family). API calls fall back to offline tiktoken on failure. Override `_get_encoding()` in new providers to swap the encoding.
+
+```python
+class MyProvider(LLMProvider):
+    def _get_encoding(self):
+        import tiktoken
+        return tiktoken.get_encoding("o200k_base")  # newer models
+```
+
 ## Querying Models
 
 ```python
