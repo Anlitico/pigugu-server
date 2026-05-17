@@ -23,43 +23,43 @@ MODE_ABBREV = {
     "breaking_bomb": "bomb",
 }
 
-_markdown_template = """你是一个内容分类器。下面是一条特朗普在 {platform} 上的社交媒体帖子。
+_markdown_template = """You are a content classifier. Below is a Trump social media post on {platform}.
 
-帖子内容：{content}
-发布时间：{created_at}
-标签：{tags}
+Post content: {content}
+Posted at: {created_at}
+Tags: {tags}
 
-请判断这条帖适合 Pigugu 的哪些游戏模式，并为每个适合的模式生成游戏场景文本（prompt）。
+Determine which Pigugu game modes this post fits, and for each match generate a game scenario prompt in English.
 
-四种模式：
-- poison_opinion：帖子有争议性或槽点 → 生成毒观点场景
-  场景文本必须包含：帖文内容 + 争议角度标签（如 TRUMP_POLL_BRAG / TARIFF_BLAME / DIPLOMACY_THREAT / ELECTION_FRAUD_HINT / PERSONAL_ATTACK 等）+ 矛盾钩子（帖子最站不住脚的那个点）
+Four modes:
+- poison_opinion: The post has controversy or a hot-take angle → generate a poison scenario.
+  The prompt MUST include: the post content + a controversy angle tag (one of: TRUMP_POLL_BRAG / TARIFF_BLAME / DIPLOMACY_THREAT / ELECTION_FRAUD_HINT / PERSONAL_ATTACK) + a hook (the single weakest, most questionable point in the post).
 
-- debate：帖子包含明确主张/观点 → 生成来辩场景
-  场景文本必须包含：帖文内容 + 核心主张 + Pigugu 挑衅立场（选用户最可能不同意的角度）+ 帖子本身的论据强处 + 帖子本身的论据弱处
+- debate: The post makes a clear claim/argument → generate a debate scenario.
+  The prompt MUST include: the post content + the core claim + Pigugu's provocative stance (pick the angle the user is MOST likely to disagree with) + the post's argument strength + the post's argument weakness.
 
-- prediction：帖子包含可验证预测/截止日期 → 生成预测场景
-  场景文本必须包含：帖文内容 + 预测目标 + 截止时间 + 揭晓标准
+- prediction: The post contains a verifiable prediction or deadline → generate a prediction scenario.
+  The prompt MUST include: the post content + the prediction target + the deadline + the resolution criteria (how to judge correct/wrong when the deadline arrives).
 
-- breaking_bomb：帖子是重大突发事件 → 生成突发场景
-  场景文本必须包含：帖文内容 + 紧急原因。is_urgent 仅当涉及战争/军事/重大灾难时为 true
+- breaking_bomb: The post is a major breaking event → generate a breaking scenario.
+  The prompt MUST include: the post content + the urgency reason. is_urgent is true ONLY for war/military/major disaster.
 
-对每条适合的模式，生成一个对象，包含：
-- roast_id: "{{mode_abbrev}}_{{date}}_{{3位序号}}"（date 用帖子日期的 YYYY-MM-DD，序号从 001 开始）
-- game_mode: 模式名
-- prompt: 自然语言游戏场景描述，≤500 tokens，用中文写，便于 Agent 直接引用
-- expires_at: ISO 8601 格式的过期时间
-  - poison_opinion / debate: 帖子发布时间 + 48h
-  - prediction: 截止时间
-  - breaking_bomb: 帖子发布时间 + 2h
+For each matching mode, generate an object with:
+- roast_id: "{{mode_abbrev}}_{{date}}_{{3-digit-seq}}" (date = YYYY-MM-DD from post date, seq starts at 001)
+- game_mode: the mode name
+- prompt: natural language game scenario description in English, <=500 tokens, formatted for direct Agent consumption
+- expires_at: ISO 8601 expiry time
+  - poison_opinion / debate: post time + 48h
+  - prediction: the deadline
+  - breaking_bomb: post time + 2h
 
-返回 JSON。只返回适合的模式，不适合的不返回：
+Return JSON. Only return modes that actually fit — skip unfit modes:
 {{
   "modes": [
     {{
       "roast_id": "poison_2026-05-17_001",
       "game_mode": "poison_opinion",
-      "prompt": "[毒观点场景]\\n特朗普刚刚在 Truth Social...",
+      "prompt": "[POISON SCENARIO]\\nTrump just posted on Truth Social: ...",
       "expires_at": "2026-05-19T01:36:21Z"
     }}
   ]
@@ -128,10 +128,10 @@ def _fallback_poison(post: dict) -> list[dict]:
 
     roast_id = f"poison_{date_str}_fallback"
     prompt = (
-        f"[毒观点场景]\n"
-        f"特朗普刚刚发帖：\"{content}\"\n"
-        f"争议角度：GENERIC — 帖子内容有潜在争议性。\n"
-        f"游戏钩子：引导玩家讨论——你对这条帖怎么看？"
+        f"[POISON SCENARIO]\n"
+        f"Trump just posted: \"{content}\"\n"
+        f"Angle: GENERIC — the post content is potentially controversial.\n"
+        f"Hook: prompt the player — what do you make of this?"
     )
     return [
         dict(
