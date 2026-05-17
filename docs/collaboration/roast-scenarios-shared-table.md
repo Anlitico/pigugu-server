@@ -52,18 +52,18 @@ Agent 的 LLM 上下文按以下顺序组装：
 ```python
 from core.llm import get_llm, Message
 
-llm = get_llm("qwen3.6-plus")
+llm = get_llm("deepseek-chat")
 resp = await llm.chat(
     messages=[Message.user(CLASSIFIER_PROMPT)],
-    model="qwen3.6-plus",
+    model="deepseek-chat",
     response_format={"type": "json_object"},
     temperature=0.1,
 )
 ```
 
-- 推荐模型 `qwen3.6-plus`（类 GPT-4 级别，分类 + 提取够用，成本低于 plus）
-- 已封装重试、超时、fallback，不需自己管理 HTTP client
-- API key 从环境变量 `DASHSCOPE_US_API_KEY` 读取（provider 池已配置）
+- 推荐模型 `deepseek-chat`（DeepSeek V4 fast — 分类 + 提取够用，成本低）
+- 已封装重试、超时、fallback（默认 60s 超时，2 次重试），不需自己管理 HTTP client
+- API key 从环境变量 `DEEPSEEK_API_KEY` 读取（provider 池已配置）
 
 ## 5. 开发接口约定
 
@@ -81,10 +81,10 @@ from core.llm import get_llm, Message
 
 async def classify_and_store(post: dict) -> None:
     # 1. 调用 LLM 分类 + 生成 prompt
-    llm = get_llm("qwen3.6-plus")
+    llm = get_llm("deepseek-chat")
     resp = await llm.chat(
         messages=[Message.user(build_classifier_prompt(post))],
-        model="qwen3.6-plus",
+        model="deepseek-chat",
         response_format={"type": "json_object"},
     )
     data = json.loads(resp.content)
@@ -114,4 +114,4 @@ async def load_roast_prompt(roast_id: str) -> str:
 - `expires_at` 的过期策略由你决定（48h / 按 mode 不同 / 手动）？
 - `game_mode` 的值列表是否定稿（poison_opinion | debate | prediction | breaking_bomb）？
 - 是否需要 `metadata JSONB` 字段存放 mode-specific 结构化数据（如 debate 的 weakness/strength），供 Agent 工具调用时查询？
-- 分类器用 `qwen3.6-plus` 是否满足精度要求？如需更强推理可换 `qwen-plus`
+- 分类器用 `deepseek-chat` 是否满足精度要求？如需更强推理可换 `deepseek-reasoner`
