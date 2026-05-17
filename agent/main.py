@@ -46,7 +46,7 @@ from components.factory import create_agent_components, validate_configuration
 from lifecycle import ConversationManager, PersistenceProvider
 from models import ConversationState, NewsContext
 from memory import ShortTermMemory
-from context import ContextAssembler, MoodProvider
+from personas.mood_provider import MoodProvider
 
 load_dotenv()
 

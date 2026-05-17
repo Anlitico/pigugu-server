@@ -261,26 +261,19 @@ class VolcengineProvider(LLMProvider):
 
     # ── Token Counting ──
 
-    def _get_encoding(self):
-        """Doubao has no public offline tokenizer → best available is cl100k_base."""
-        import tiktoken
-        return tiktoken.get_encoding("cl100k_base")
-
-    async def count_tokens_async(self, text: str, model: str = "") -> int:
-        """Accurate via Ark tokenizer API. For background compression.
-        Ref: https://www.volcengine.com/docs/82379/1528728 (分词 API)
-        """
+    async def _tokenize(self, text: str) -> int:
+        """Ark tokenizer API."""
         if not text:
             return 0
         try:
             resp = await self._client.post(
                 f"{self._base_url}/tokenizer",
-                json={"model": model or "doubao-seed-1-6-251015", "input": text},
+                json={"model": "doubao-seed-1-6-251015", "input": text},
             )
             data = resp.json()
-            return data.get("total_tokens", self.count_tokens(text, model))
+            return data.get("total_tokens", await super()._tokenize(text))
         except Exception:
-            return self.count_tokens(text, model)
+            return await super()._tokenize(text)
 
     def _serialize_message(self, m: Message) -> dict:
         d = m.to_openai_dict()

@@ -260,24 +260,19 @@ class QwenProvider(LLMProvider):
 
     # ── Token Counting ──
 
-    def _get_encoding(self):
-        """Qwen models use a GPT-4-family BPE tokenizer → cl100k_base."""
-        import tiktoken
-        return tiktoken.get_encoding("cl100k_base")
-
-    async def count_tokens_async(self, text: str, model: str = "") -> int:
-        """Accurate via DashScope tokenizer API. For background compression."""
+    async def _tokenize(self, text: str) -> int:
+        """DashScope tokenizer API."""
         if not text:
             return 0
         try:
             resp = await self._client.post(
                 f"{self._base_url}/tokenizer",
-                json={"model": model or "qwen-plus", "input": text},
+                json={"model": "qwen-plus", "input": text},
             )
             data = resp.json()
-            return data.get("total_tokens", self.count_tokens(text, model))
+            return data.get("total_tokens", await super()._tokenize(text))
         except Exception:
-            return self.count_tokens(text, model)
+            return await super()._tokenize(text)
 
     def _serialize_message(self, m: Message) -> dict:
         d = m.to_openai_dict()

@@ -36,6 +36,11 @@ dependencies = [
 
 ]
 
+[tool.pytest.ini_options]
+markers = [
+    "integration: marks tests that call real LLM APIs (deselect with '-m \"not integration\"')",
+]
+
 [build-system]
 requires = ["setuptools>=61.0", "wheel"]
 build-backend = "setuptools.build_meta"

@@ -140,30 +140,41 @@ Both `QwenProvider` and `VolcengineProvider` validate requested features against
 
 ## Token Counting
 
-Two methods per provider — fast (offline) for runtime, accurate (API) for background:
+Single async entry point. Counts per-message overhead + content + tool_calls + tool_call_id + name.
 
 ```python
 provider = get_llm("qwen3.6-flash")
 
-# Fast — tiktoken cl100k_base, < 1ms, for hot path / budget enforcement
-tokens = provider.count_tokens("hello world 你好世界")
-
-# Accurate — provider's native tokenizer API, for background compression
-tokens = await provider.count_tokens_async("hello world 你好世界", model="qwen3.6-flash")
+# Accepts Message, list[Message], or plain str
+tokens = await provider.count_tokens([Message.user("Hello"), Message.assistant("Hi")])
+tokens = await provider.count_tokens("plain text")
 ```
 
-| Method | Scenario | QwenProvider | VolcengineProvider |
-|--------|----------|-------------|-------------------|
-| `count_tokens(text)` | Runtime hot path | tiktoken `cl100k_base` | tiktoken `cl100k_base` |
-| `count_tokens_async(text, model)` | Background compression | DashScope tokenizer API | Ark tokenizer API |
+**Architecture** — base class orchestrates WHAT to count, subclasses define HOW:
 
-Both providers use `cl100k_base` offline (Qwen's tokenizer is GPT-4-family). API calls fall back to offline tiktoken on failure. Override `_get_encoding()` in new providers to swap the encoding.
+```
+provider.py
+├── count_tokens(message) ← async, orchestrates: overhead + content + tool_calls …
+│   └── _tokenize(text)    ← per-text-piece, override in subclass
+│
+qwen.py
+└── _tokenize(text)        ← DashScope tokenizer API
+volcengine.py
+└── _tokenize(text)        ← Ark tokenizer API
+```
+
+| Provider | `_tokenize` implementation | Fallback |
+|----------|---------------------------|----------|
+| Base (LLMProvider) | tiktoken `cl100k_base` | Character heuristic |
+| QwenProvider | DashScope `/tokenizer` API | → base `_tokenize` |
+| VolcengineProvider | Ark `/tokenizer` API | → base `_tokenize` |
+
+Override `_tokenize()` in new providers to use a custom tokenizer:
 
 ```python
 class MyProvider(LLMProvider):
-    def _get_encoding(self):
-        import tiktoken
-        return tiktoken.get_encoding("o200k_base")  # newer models
+    async def _tokenize(self, text: str) -> int:
+        return len(text) // 4  # your custom logic
 ```
 
 ## Querying Models

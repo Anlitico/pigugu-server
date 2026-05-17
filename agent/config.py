@@ -178,6 +178,11 @@ class AgentConfig(BaseSettings):
     AGENT_LOG_CONVERSATIONS: bool = Field(default_factory=lambda: get_bool_config_value("AGENT_LOG_CONVERSATIONS", True))
     ENABLE_INTERRUPTIONS: bool = Field(default_factory=lambda: get_bool_config_value("ENABLE_INTERRUPTIONS", True))
     SILENCE_THRESHOLD: float = Field(default_factory=lambda: float(get_config_value("SILENCE_THRESHOLD", 30.0)))
+
+    # Context Module — compression / extraction tuning
+    CONTEXT_RAW_TURN_COUNT: int = Field(default_factory=lambda: int(get_config_value("CONTEXT_RAW_TURN_COUNT", 5)))
+    CONTEXT_HOT_WINDOW_SIZE: int = Field(default_factory=lambda: int(get_config_value("CONTEXT_HOT_WINDOW_SIZE", 100)))
+    CONTEXT_TOKEN_BUDGET_CAP: int = Field(default_factory=lambda: int(get_config_value("CONTEXT_TOKEN_BUDGET_CAP", 200_000)))
     
     # Welcome Greeting
     ENABLE_WELCOME_GREETING: bool = Field(default_factory=lambda: get_bool_config_value("ENABLE_WELCOME_GREETING", True))

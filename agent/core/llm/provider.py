@@ -150,33 +150,61 @@ class LLMProvider(ABC):
     ) -> AsyncIterator[ChatDelta]:
         """流式调用"""
 
-    def count_tokens(self, text: str, model: str = "") -> int:
-        """Fast offline token count via tiktoken. For runtime hot path (< 1ms).
+    # ── Token Counting ───────────────────────────────────────────────
+    #
+    # count_tokens = WHAT to count  (common logic, provider-agnostic)
+    # _tokenize    = HOW to count   (per-provider, override in subclass)
 
-        Falls back to character heuristic if tiktoken is unavailable.
+    _PER_MESSAGE_OVERHEAD = 4  # role marker: <|start|>role\n
+
+    async def count_tokens(
+        self, message: Message | list[Message] | str, model: str = "qwen3.6-plus",
+    ) -> int:
+        """Token count. Accepts Message | list[Message] | str.
+
+        Counts: per-message overhead + content + tool_calls + tool_call_id + name.
+        Default uses offline tiktoken. Override for provider-specific tokenizer API.
         """
+        from .types import Message as M
+        if not message:
+            return 0
+
+        if isinstance(message, list):
+            total = 0
+            for m in message:
+                total += await self.count_tokens(m, model=model)
+            return total
+
+        if isinstance(message, M):
+            total = self._PER_MESSAGE_OVERHEAD
+            total += await self._tokenize(message.content)
+
+            if message.tool_calls:
+                import json
+                for tc in message.tool_calls:
+                    total += await self._tokenize(json.dumps(
+                        {"id": tc.id, "name": tc.name, "arguments": tc.arguments}
+                    ))
+            if message.tool_call_id:
+                total += await self._tokenize(message.tool_call_id)
+            if message.name:
+                total += await self._tokenize(message.name)
+
+            return total
+
+        return await self._tokenize(str(message))
+
+    async def _tokenize(self, text: str) -> int:
+        """Tokenize plain text. Override in subclass for provider-specific tokenizer."""
         if not text:
             return 0
         try:
-            enc = self._get_encoding()
-            return len(enc.encode(text))
+            import tiktoken
+            return len(tiktoken.get_encoding("cl100k_base").encode(text))
         except Exception:
             cjk = sum(1 for c in text if '一' <= c <= '鿿' or '　' <= c <= '〿')
             other = len(text) - cjk
             return int(cjk * 1.5 + other / 3.5)
-
-    def _get_encoding(self):
-        """Override per-provider. Returns a tiktoken Encoding (lazy-loaded, cached)."""
-        import tiktoken
-        return tiktoken.get_encoding("cl100k_base")
-
-    async def count_tokens_async(self, text: str, model: str = "") -> int:
-        """Accurate token count via provider's tokenizer API. For background compression.
-
-        Default: falls back to offline count_tokens(). Override per-provider
-        to call the provider's native tokenizer endpoint.
-        """
-        return self.count_tokens(text, model)
 
     @property
     @abstractmethod
