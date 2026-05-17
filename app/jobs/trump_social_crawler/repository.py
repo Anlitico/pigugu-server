@@ -2,7 +2,6 @@ import logging
 from datetime import datetime, timezone
 
 from sqlalchemy import select
-from sqlalchemy.dialects.postgresql import insert
 
 from app.core.database import AsyncSessionLocal
 from app.models.trump_social_post import TrumpSocialPost
@@ -10,13 +9,21 @@ from app.models.trump_social_post import TrumpSocialPost
 logger = logging.getLogger(__name__)
 
 
-async def upsert_posts(posts: list[dict]) -> int:
+async def upsert_posts(posts: list[dict]) -> dict:
+    """Upsert posts into trump_social_posts.
+
+    Returns:
+        {"total": int, "inserted": int, "updated": int,
+         "new_posts": list[dict]}  — new_posts includes the DB-assigned id
+    """
     if not posts:
-        return 0
+        return {"total": 0, "inserted": 0, "updated": 0, "new_posts": []}
 
     async with AsyncSessionLocal() as session:
         inserted = 0
         updated = 0
+        new_posts: list[dict] = []
+
         for p in posts:
             post_id = p["post_id"]
             platform = p["platform"]
@@ -61,11 +68,21 @@ async def upsert_posts(posts: list[dict]) -> int:
                     raw_payload=p.get("raw_payload"),
                 )
                 session.add(row)
+                await session.flush()  # assign row.id before commit
                 inserted += 1
+                # Build dict with DB-assigned id for downstream classifier
+                post_with_id = dict(p)
+                post_with_id["id"] = str(row.id)
+                new_posts.append(post_with_id)
 
         await session.commit()
         logger.info("DB: %d inserted, %d updated", inserted, updated)
-        return inserted + updated
+        return {
+            "total": inserted + updated,
+            "inserted": inserted,
+            "updated": updated,
+            "new_posts": new_posts,
+        }
 
 
 def _parse_dt(value: str | None) -> datetime | None:
