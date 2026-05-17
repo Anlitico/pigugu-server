@@ -24,7 +24,7 @@
 [ContextLoader 查询] ─── 用户进入玩法时按 roast_id 读取 prompt，注入 L4 上下文
 ```
 
-**核心原则**：爬虫只管数据采集，玩法分类是独立后处理。分类失败不影响爬虫写入。
+**核心原则**：爬虫只管数据采集，玩法分类是独立后处理。分类失败不影响爬虫写入。分类与爬虫在同一 CronJob 执行（upsert 后同步调用 classifier），分类失败有模板兜底，不会丢失数据。
 
 ---
 
@@ -37,7 +37,7 @@ CREATE TABLE IF NOT EXISTS roast_scenarios (
     roast_id        TEXT PRIMARY KEY,                  -- "poison_2026-05-17_001"
     game_mode       TEXT NOT NULL,                     -- poison_opinion | debate | prediction | breaking_bomb
     prompt          TEXT NOT NULL,                     -- L4 context 注入文本（建议 ≤500 tokens）
-    news_id         TEXT DEFAULT '',                   -- 来源 post_id
+    news_id         TEXT DEFAULT '',                   -- 来源 trump_social_posts.id（UUID）
     tags            JSONB DEFAULT '[]',                -- 分类标签，可扩展
     status          TEXT NOT NULL DEFAULT 'active',    -- active | expired
     created_at      TIMESTAMPTZ DEFAULT NOW(),
@@ -63,44 +63,44 @@ CREATE INDEX IF NOT EXISTS idx_roast_scenarios_mode
 
 ### 2.2 `prompt` 字段内容（按模式）
 
-**管线生成的是自然语言游戏场景描述，不是结构化 JSON。ContextLoader 直接将此文本注入 Agent 的 L4 上下文。**
+**管线生成的是英文自然语言游戏场景描述，不是结构化 JSON。ContextLoader 直接将此文本注入 Agent 的 L4 上下文。**
 
-**毒观点 (`poison_opinion`)** — 场景文本应包含：帖文内容 + 争议角度 + 矛盾钩子：
-
-```
-[毒观点场景]
-特朗普刚刚在 Truth Social 发帖："Excellent Poll Numbers. Thank you!"
-争议角度：TRUMP_POLL_BRAG — 他声称民调极好，但帖子未引用任何具体数据或来源。
-游戏钩子：引导玩家质疑——哪个民调？多少样本？误差多少？什么都没有就"极好"？
-```
-
-**来辩 (`debate`)** — 场景文本应包含：帖文内容 + 核心主张 + Pigugu 挑衅立场 + 帖子论据的强弱之处：
+**毒观点 (`poison_opinion`)** — 场景文本包含：帖文内容 + 争议角度标签 + 矛盾钩子：
 
 ```
-[来辩场景]
-特朗普发帖声称关税对中国造成了巨大伤害，并引用了美国贸易代表办公室的官方声明。
-核心主张：关税政策正在成功打击中国经济。
-Pigugu 立场：替他辩护——"伤害确实发生了，伤害程度不重要，方向是对的。你来证明方向错了。"
-帖子强处：引用了官方机构声明作为背书。
-帖子弱处：只说"伤害很大"，没有给出具体伤害数据或机制。
+[POISON SCENARIO]
+Trump just posted on Truth Social: "Excellent Poll Numbers. Thank you!"
+Controversy angle: TRUMP_POLL_BRAG
+Hook: He cites no specific poll — the claim is unverifiable.
 ```
 
-**预测混乱 (`prediction`)** — 场景文本应包含：帖文内容 + 预测目标 + 截止时间 + 揭晓标准：
+**来辩 (`debate`)** — 场景文本包含：帖文内容 + 核心主张 + Pigugu 挑衅立场 + 论据强处 + 论据弱处：
 
 ```
-[预测场景]
-特朗普发帖："We will have a deal with Iran by Friday, mark my words!"
-预测目标：特朗普是否会在周五前与伊朗达成协议。
-截止时间：2026-05-16T16:00:00Z。
-揭晓标准：北京时间 5/16 16:00 前，是否有美伊双方官方宣布的协议。
+[DEBATE SCENARIO]
+Trump posted: "China has been hit so hard by our Tariffs..."
+Core claim: Tariffs have severely damaged China while boosting the US.
+Pigugu's provocative stance: Tariffs actually hurt US consumers — China is still growing.
+Argument strength: Strong absolute language, appeals to nationalist sentiment.
+Argument weakness: No data cited, ignores tariff costs on the US side.
 ```
 
-**突发炸弹 (`breaking_bomb`)** — 场景文本应包含：帖文内容 + 紧急程度 + 紧急原因：
+**预测混乱 (`prediction`)** — 场景文本包含：帖文内容 + 预测目标 + 截止时间 + 揭晓标准：
 
 ```
-[突发场景 - 紧急]
-特朗普刚刚发帖，直接表态涉及军事行动。
-紧急原因：涉及战争/军事行动的直接表态，需立刻通知玩家。
+[PREDICTION SCENARIO]
+Trump posted: "We will have a deal with Iran by Friday..."
+Prediction target: A deal with Iran by Friday.
+Deadline: 2026-05-15T23:59:59Z
+Resolution criteria: Formal agreement or public announcement by the deadline.
+```
+
+**突发炸弹 (`breaking_bomb`)** — 场景文本包含：帖文内容 + 紧急原因：
+
+```
+[BREAKING SCENARIO]
+Trump just posted authorizing precision strikes in Syria.
+Urgency reason: Major military action — ongoing strikes with immediate geopolitical implications.
 ```
 
 ---
@@ -109,21 +109,21 @@ Pigugu 立场：替他辩护——"伤害确实发生了，伤害程度不重要
 
 ### 3.1 触发时机
 
-爬虫 `upsert_posts()` 之后，拿到本次**新插入**的 post 列表（`updated` 的跳过，不重复分类）。对每条新帖调用 LLM 进行分类。
+爬虫 `upsert_posts()` 之后，拿到本次**新插入**的 post 列表（`updated` 的跳过，不重复分类）。对每条新帖同步调用 LLM 进行分类。分类与爬虫在同一 CronJob 进程内执行，无额外调度。
 
 ### 3.2 LLM 调用
 
-分类器使用项目已有的 `core.llm` provider 池，不需要单独创建 HTTP client：
+分类器使用项目已有的 `core.llm` provider 池，通过 DeepSeek API（OpenAI 兼容）：
 
 ```python
 import json
 from core.llm import get_llm, Message
 
 async def classify_and_store(post: dict) -> None:
-    llm = get_llm("qwen3.6-plus")
+    llm = get_llm("deepseek-chat")
     resp = await llm.chat(
         messages=[Message.user(build_classifier_prompt(post))],
-        model="qwen3.6-plus",
+        model="deepseek-chat",
         response_format={"type": "json_object"},
         temperature=0.1,
     )
@@ -138,47 +138,38 @@ async def classify_and_store(post: dict) -> None:
         )
 ```
 
-- 推荐模型 `qwen3.6-plus`（分类 + 提取够用，成本低）
-- 已封装重试、超时、fallback，API key 从环境变量 `DASHSCOPE_US_API_KEY` 读取
+- 模型 `deepseek-chat`（DeepSeek V4 fast）
+- 同步 OpenAI client + `asyncio.to_thread`（跨平台可靠）
+- 超时 60s，重试 2 次
+- API key 从环境变量 `DEEPSEEK_API_KEY` 读取
 
 ### 3.3 分类 Prompt
 
 ```
-你是一个内容分类器。下面是一条特朗普在 {platform} 上的社交媒体帖子。
+You are a content classifier. Below is a Trump social media post on {platform}.
 
-帖子内容：{content}
-发布时间：{created_at}
-标签：{tags}
+Post content: {content}
+Posted at: {created_at}
+Tags: {tags}
 
-请判断这条帖适合 Pigugo 的哪些游戏模式，并为每个适合的模式生成游戏场景文本（prompt）。
+Determine which Pigugu game modes this post fits, and for each match
+generate a game scenario prompt in English.
 
-四种模式：
-- poison_opinion：帖子有争议性或槽点 → 生成毒观点场景（帖文 + 争议角度 + 钩子）
-- debate：帖子包含明确主张/观点 → 生成来辩场景（帖文 + 核心主张 + Pigugu 挑衅立场 + 帖子强弱处）
-- prediction：帖子包含可验证预测/截止日期 → 生成预测场景（帖文 + 预测目标 + 截止时间 + 揭晓标准）
-- breaking_bomb：帖子是重大突发事件 → 生成突发场景（帖文 + 紧急原因）
+Four modes:
+- poison_opinion: The post has controversy or a hot-take angle → poison scenario
+  MUST include: post content + controversy angle tag + hook (weakest point)
 
-对每条 scenariol 生成:
-- roast_id: "{mode_abbrev}_{date}_{3位序号}" (如 poison_2026-05-17_001)
-- prompt: 自然语言游戏场景描述，≤500 tokens，结构见模式说明
+- debate: The post makes a clear claim/argument → debate scenario
+  MUST include: post content + core claim + Pigugu's provocative stance
+  (pick the angle the user is MOST likely to disagree with) + argument strength + weakness
 
-返回 JSON。只返回适合的模式，不适合的不返回：
-{
-  "modes": [
-    {
-      "roast_id": "poison_2026-05-17_001",
-      "game_mode": "poison_opinion",
-      "prompt": "[毒观点场景]\n特朗普刚刚在 Truth Social...",
-      "expires_at": "2026-05-19T01:36:21Z"
-    },
-    {
-      "roast_id": "debate_2026-05-17_001",
-      "game_mode": "debate",
-      "prompt": "[来辩场景]\n特朗普发帖声称...",
-      "expires_at": "2026-05-19T01:36:21Z"
-    }
-  ]
-}
+- prediction: The post contains a verifiable prediction/deadline → prediction scenario
+  MUST include: post content + prediction target + deadline + resolution criteria
+
+- breaking_bomb: The post is a major breaking event → breaking scenario
+  MUST include: post content + urgency reason. is_urgent true ONLY for war/military/major disaster.
+
+Return JSON. Only return modes that actually fit — skip unfit modes.
 ```
 
 ### 3.4 过滤与入库
@@ -193,9 +184,9 @@ async def classify_and_store(post: dict) -> None:
 ### 3.5 调度策略
 
 - **同步执行**：爬虫进程内串行调用 LLM 分类，每个 post 一次 API 调用。
-- **成本控制**：使用 `qwen3.6-plus`，纯分类任务，token 极少。
-- **去重**：`roast_id` 为主键，同一条 post 同一种 mode 不会重复生成（通过 roast_id 中的日期+序号控制）。
-- **兜底**：LLM 调用失败 → 至少生成一条 `poison_opinion` scenario（该模式只需帖文内容，可用模板生成，不需要 LLM）。
+- **成本控制**：使用 `deepseek-chat`，纯分类任务，token 极少。
+- **去重**：`roast_id` 为主键，同一条 post 同一种 mode 不会重复生成。入库前检查 roast_id 是否存在，冲突时追加后缀。
+- **兜底**：LLM 调用失败 → 至少生成一条 `poison_opinion` scenario（模板生成，不需要 LLM）。
 
 ---
 
@@ -243,12 +234,12 @@ prompt 作为 user 角色消息注入到 Agent 的 L4 上下文层：
 
 ## 5. 实现优先级
 
-| 阶段 | 内容 |
-|---|---|
-| **Phase 1** | `roast_scenarios` 表 + 迁移 |
-| **Phase 2** | 分类器（LLM prompt 模板 + 解析 + 入库） |
-| **Phase 3** | 爬虫管线集成（upsert 后自动触发分类） |
-| **Phase 4** | 联调 ContextLoader（验证 prompt 读取 + L4 注入） |
+| 阶段 | 内容 | 状态 |
+|---|---|---|
+| **Phase 1** | `roast_scenarios` 表 + 迁移 | done |
+| **Phase 2** | 分类器（LLM prompt 模板 + 解析 + 入库） | done |
+| **Phase 3** | 爬虫管线集成（upsert 后自动触发分类） | done |
+| **Phase 4** | 联调 ContextLoader（验证 prompt 读取 + L4 注入） | pending |
 
 ---
 
@@ -272,13 +263,13 @@ prompt 作为 user 角色消息注入到 Agent 的 L4 上下文层：
     {
       "roast_id": "poison_2026-05-11_001",
       "game_mode": "poison_opinion",
-      "prompt": "[毒观点场景]\n特朗普刚刚在 Truth Social 发帖：\"Excellent Poll Numbers. Thank you!\"（点赞 9789，转发 1871）\n争议角度：TRUMP_POLL_BRAG — 他声称民调极好，但帖子未引用任何具体数据或来源。\n游戏钩子：引导玩家质疑——哪个民调？多少样本？误差多少？什么都没有就\"极好\"？",
+      "prompt": "[POISON SCENARIO]\nTrump just posted on Truth Social: \"Excellent Poll Numbers. Thank you!\" This is a classic Trump poll brag. The weakest point: he doesn't cite any specific poll, leaving the claim unverifiable. Controversy angle: TRUMP_POLL_BRAG. Hook: The post lacks any source or context, making it a hollow boast.",
       "expires_at": "2026-05-13T01:36:21Z"
     },
     {
       "roast_id": "debate_2026-05-11_001",
       "game_mode": "debate",
-      "prompt": "[来辩场景]\n特朗普发帖：\"Excellent Poll Numbers. Thank you!\"\n核心主张：特朗普的民调支持率正在大幅领先。\nPigugu 挑衅立场：替他辩护——\"极好\"是一种情感表达而非数据声明，他有权对他的支持者说他们想听的话。你来证明他说错了。\n帖子强处：措辞自信，感谢粉丝暗示有群众基础。\n帖子弱处：未引用任何具体民调来源、样本量或误差范围——\"极好\"没有可验证的定义。",
+      "prompt": "[DEBATE SCENARIO]\nTrump posted: \"Excellent Poll Numbers. Thank you!\"\nCore claim: His poll numbers are excellent and he deserves thanks.\nPigugu's provocative stance: Good poll numbers don't mean good leadership — they may just reflect a partisan echo chamber.\nArgument strength: Poll numbers are objective data that resonate with supporters.\nArgument weakness: No specific poll cited — the numbers are unverifiable.",
       "expires_at": "2026-05-13T01:36:21Z"
     }
   ]
@@ -289,13 +280,34 @@ prompt 作为 user 角色消息注入到 Agent 的 L4 上下文层：
 
 ### Agent 拿到 prompt 后自己发挥（示意，不是管线生成的）
 
-- **毒观点**: "他说民调'极好'。哪个民调？多少样本？误差多少？什么都没说，就'极好'。你怎么看？"
-- **来辩**: "我来替他辩护。'极好'可以是形容词不是数据，他在描述感觉，感觉不需要来源。来，反驳我。"
+- **毒观点**: "He says 'Excellent Poll Numbers.' Which poll? What sample size? What margin of error? Nothing — just 'Excellent.' What do you think?"
+- **来辩**: "Let me defend him. 'Excellent' is an adjective, not a data point. He's describing a feeling, and feelings don't need sources. Go ahead, prove me wrong."
 
 管线只给了游戏场景描述，Agent 自己组织语言。管线没写 Pigugu 的台词。
 
 ---
 
-## 7. 关于 X/Twitter 来源
+## 7. 部署配置
+
+### 环境变量
+
+| 变量 | 说明 |
+|---|---|
+| `DEEPSEEK_API_KEY` | DeepSeek API Key |
+| `DEEPSEEK_BASE_URL` | (可选) 默认 `https://api.deepseek.com/v1` |
+
+### 推送链路
+
+```
+本地 shell / .env
+    → GitHub Secret (DEEPSEEK_API_KEY)
+    → .github/workflows/deploy.yml (env + Python 替换脚本)
+    → k8s/secrets.yaml (占位符 → 实际值)
+    → K8s CronJob Pod 环境变量
+```
+
+---
+
+## 8. 关于 X/Twitter 来源
 
 X 和 Truth Social 的帖子对分类器完全透明——都走同一条 `trump_social_posts → LLM 分类 → roast_scenarios` 管线。X 爬取恢复后无需额外开发。
