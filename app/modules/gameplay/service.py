@@ -1,4 +1,4 @@
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -11,6 +11,9 @@ async def list_active_scenarios(
     mode: str | None = None,
 ) -> list[dict]:
     """Return active scenarios (14-day window, no prompt field)."""
+    now = datetime.now(timezone.utc)
+    cutoff = now - timedelta(days=14)
+
     query = (
         select(
             RoastScenario.roast_id,
@@ -28,12 +31,9 @@ async def list_active_scenarios(
         .where(RoastScenario.headline != "")
         .where(
             (RoastScenario.expires_at.is_(None))
-            | (RoastScenario.expires_at > datetime.now(timezone.utc))
+            | (RoastScenario.expires_at > now)
         )
-        .where(
-            RoastScenario.created_at
-            > datetime.now(timezone.utc) - text("INTERVAL '14 days'")
-        )
+        .where(RoastScenario.created_at > cutoff)
         .order_by(
             text(
                 "CASE game_mode "
