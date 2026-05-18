@@ -37,6 +37,11 @@ CREATE TABLE IF NOT EXISTS roast_scenarios (
     roast_id        TEXT PRIMARY KEY,                  -- "poison_2026-05-17_001"
     game_mode       TEXT NOT NULL,                     -- poison_opinion | debate | prediction | breaking_bomb
     prompt          TEXT NOT NULL,                     -- L4 context 注入文本（建议 ≤500 tokens）
+    headline        TEXT NOT NULL DEFAULT '',          -- 卡片标题（≤120 chars）
+    source          TEXT NOT NULL DEFAULT '',          -- 来源平台：truthsocial / x
+    source_url      TEXT NOT NULL DEFAULT '',          -- 原始帖子链接
+    teaser          TEXT NOT NULL DEFAULT '',          -- Pigugu teaser（≤150 chars）
+    is_urgent       BOOLEAN NOT NULL DEFAULT FALSE,    -- 紧急标记
     news_id         TEXT DEFAULT '',                   -- 来源 trump_social_posts.id（UUID）
     tags            JSONB DEFAULT '[]',                -- 分类标签，可扩展
     status          TEXT NOT NULL DEFAULT 'active',    -- active | expired

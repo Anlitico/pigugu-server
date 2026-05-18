@@ -1,6 +1,6 @@
 from datetime import datetime
 
-from sqlalchemy import DateTime, Index, String, Text, func, text
+from sqlalchemy import Boolean, DateTime, Index, String, Text, func, text
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -13,6 +13,21 @@ class RoastScenario(Base):
     roast_id: Mapped[str] = mapped_column(String, primary_key=True)
     game_mode: Mapped[str] = mapped_column(String(20), nullable=False)
     prompt: Mapped[str] = mapped_column(Text, nullable=False)
+    headline: Mapped[str] = mapped_column(
+        Text, nullable=False, server_default=text("''")
+    )
+    source: Mapped[str] = mapped_column(
+        Text, nullable=False, server_default=text("''")
+    )
+    source_url: Mapped[str] = mapped_column(
+        Text, nullable=False, server_default=text("''")
+    )
+    teaser: Mapped[str] = mapped_column(
+        Text, nullable=False, server_default=text("''")
+    )
+    is_urgent: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default=text("FALSE")
+    )
     news_id: Mapped[str] = mapped_column(
         String, nullable=False, server_default=text("''")
     )

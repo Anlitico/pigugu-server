@@ -1,7 +1,7 @@
 """
 玩法分类器 — 分析特朗普新帖，生成游戏场景 prompt 并写入 roast_scenarios 表。
 
-每条新帖调用一次 LLM，返回该帖适合的所有 mode + prompt。
+每条新帖调用一次 LLM，返回该帖适合的所有 mode + headline + teaser + prompt。
 """
 
 import json
@@ -29,7 +29,7 @@ Post content: {content}
 Posted at: {created_at}
 Tags: {tags}
 
-Determine which Pigugu game modes this post fits, and for each match generate a game scenario prompt in English.
+Determine which Pigugu game modes this post fits, and for each match generate a game scenario in English.
 
 Four modes:
 - poison_opinion: The post has controversy or a hot-take angle → generate a poison scenario.
@@ -47,6 +47,8 @@ Four modes:
 For each matching mode, generate an object with:
 - roast_id: "{{mode_abbrev}}_{{date}}_{{3-digit-seq}}" (date = YYYY-MM-DD from post date, seq starts at 001)
 - game_mode: the mode name
+- headline: a short display title (the core news, <=120 chars) for the app card
+- teaser: Pigugu's provocative teaser line (<=150 chars) — sarcastic, hooks the user to tap the card and start the game
 - prompt: natural language game scenario description in English, <=500 tokens, formatted for direct Agent consumption
 - expires_at: ISO 8601 expiry time
   - poison_opinion / debate: post time + 48h
@@ -59,6 +61,8 @@ Return JSON. Only return modes that actually fit — skip unfit modes:
     {{
       "roast_id": "poison_2026-05-17_001",
       "game_mode": "poison_opinion",
+      "headline": "Trump Boasts About Poll Numbers",
+      "teaser": "Excellent by what metric exactly? Tap in if you think this is all hot air.",
       "prompt": "[POISON SCENARIO]\\nTrump just posted on Truth Social: ...",
       "expires_at": "2026-05-19T01:36:21Z"
     }}
@@ -74,7 +78,7 @@ async def classify_and_store(
 ) -> list[dict]:
     """Classify a single post and store results into roast_scenarios.
 
-    Returns the list of stored scenario dicts (roast_id, game_mode, prompt).
+    Returns the list of stored scenario dicts.
     """
     content = _build_classifier_prompt(post)
     llm = get_llm(model)
@@ -90,7 +94,6 @@ async def classify_and_store(
         modes = data.get("modes", [])
     except (json.JSONDecodeError, KeyError) as e:
         logger.error("Classifier LLM response parse error: %s", e)
-        # Fallback: generate a poison_opinion scenario from template
         modes = _fallback_poison(post)
     except Exception:
         logger.exception("Classifier LLM call failed, using fallback")
@@ -100,7 +103,7 @@ async def classify_and_store(
         logger.info("No modes matched for post %s", post.get("post_id"))
         return []
 
-    stored = await _store_scenarios(modes, news_id=str(post.get("id", "")))
+    stored = await _store_scenarios(modes, post=post)
     logger.info(
         "Classified post %s → %d modes: %s",
         post.get("post_id"),
@@ -126,18 +129,21 @@ def _fallback_poison(post: dict) -> list[dict]:
     date_str = _extract_date(created_at)
     expires = _add_hours(created_at, 48)
 
+    headline = (content[:117] + "...") if len(content) > 120 else content
     roast_id = f"poison_{date_str}_fallback"
-    prompt = (
-        f"[POISON SCENARIO]\n"
-        f"Trump just posted: \"{content}\"\n"
-        f"Angle: GENERIC — the post content is potentially controversial.\n"
-        f"Hook: prompt the player — what do you make of this?"
-    )
+
     return [
         dict(
             roast_id=roast_id,
             game_mode="poison_opinion",
-            prompt=prompt,
+            headline=headline,
+            teaser="Trump just posted. What do you make of this?",
+            prompt=(
+                f"[POISON SCENARIO]\n"
+                f"Trump just posted: \"{content}\"\n"
+                f"Angle: GENERIC — the post content is potentially controversial.\n"
+                f"Hook: prompt the player — what do you make of this?"
+            ),
             expires_at=expires,
         )
     ]
@@ -145,34 +151,47 @@ def _fallback_poison(post: dict) -> list[dict]:
 
 async def _store_scenarios(
     modes: list[dict],
-    news_id: str,
+    post: dict,
 ) -> list[dict]:
     """Insert into roast_scenarios, skipping duplicates (by roast_id PK)."""
+    source = post.get("platform", "")
+    source_url = post.get("url", "")
+    news_id = str(post.get("id", ""))
+
     stored = []
     async with AsyncSessionLocal() as session:
         for m in modes:
             roast_id = m.get("roast_id", "")
             game_mode = m.get("game_mode", "")
             prompt = m.get("prompt", "")
+            headline = m.get("headline", "")
+            teaser = m.get("teaser", "")
+            is_urgent = bool(m.get("is_urgent", False))
             expires_at = _parse_dt(m.get("expires_at"))
 
             if not roast_id or not game_mode or not prompt:
                 logger.warning("Skipping incomplete mode entry: %s", m)
                 continue
 
-            # Ensure roast_id uniqueness by appending a counter if needed
             roast_id = await _deduplicate_roast_id(session, roast_id)
 
             try:
                 await session.execute(
                     text(
                         "INSERT INTO roast_scenarios "
-                        "(roast_id, game_mode, prompt, news_id, expires_at) "
-                        "VALUES (:roast_id, :game_mode, :prompt, :news_id, :expires_at)"
+                        "(roast_id, game_mode, headline, source, source_url, "
+                        "teaser, is_urgent, prompt, news_id, expires_at) "
+                        "VALUES (:roast_id, :game_mode, :headline, :source, :source_url, "
+                        ":teaser, :is_urgent, :prompt, :news_id, :expires_at)"
                     ),
                     dict(
                         roast_id=roast_id,
                         game_mode=game_mode,
+                        headline=headline,
+                        source=source,
+                        source_url=source_url,
+                        teaser=teaser,
+                        is_urgent=is_urgent,
                         prompt=prompt,
                         news_id=news_id,
                         expires_at=expires_at,
@@ -204,7 +223,6 @@ async def _deduplicate_roast_id(session, roast_id: str) -> str:
         if result.fetchone() is None:
             return candidate
 
-    # After 99 attempts, fall back to timestamp suffix
     ts = datetime.now(timezone.utc).strftime("%H%M%S")
     return f"{roast_id}_{ts}"
 

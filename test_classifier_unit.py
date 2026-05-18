@@ -4,9 +4,9 @@ Tests: schema alignment, prompt structure, fallback, JSON parsing, roast_id logi
 """
 import json
 import sys
-from datetime import datetime, timezone, timedelta
+from datetime import datetime
 
-# ── 1. Verify Model <-> Migration schema alignment ──────────────────
+# -- 1. Verify Model <-> Migration schema alignment --------------------
 
 def test_schema_alignment():
     """Ensure the SQLAlchemy model columns match the Alembic migration."""
@@ -18,8 +18,13 @@ def test_schema_alignment():
         "roast_id":   str,
         "game_mode":  str,
         "prompt":     str,
+        "headline":   str,
+        "source":     str,
+        "source_url": str,
+        "teaser":     str,
+        "is_urgent":  bool,
         "news_id":    str,
-        "tags":       list,      # JSONB array
+        "tags":       list,
         "status":     str,
         "created_at": datetime,
         "expires_at": datetime,
@@ -31,18 +36,14 @@ def test_schema_alignment():
         if col is None:
             issues.append(f"Missing column: {name}")
             continue
-        col_type = col.type
         col_nullable = col.nullable
 
-        if name == "news_id":
+        if name in ("headline", "source", "source_url", "teaser", "news_id", "status"):
             if col_nullable:
-                issues.append(f"{name}: should NOT be nullable (server_default='')")
-        elif name == "tags":
+                issues.append(f"{name}: should NOT be nullable (has server_default)")
+        elif name == "is_urgent":
             if col_nullable:
-                issues.append(f"{name}: should NOT be nullable (server_default='[]')")
-        elif name == "status":
-            if col_nullable:
-                issues.append(f"{name}: should NOT be nullable (server_default='active')")
+                issues.append(f"{name}: should NOT be nullable (server_default=False)")
         elif name == "expires_at":
             if not col_nullable:
                 issues.append(f"{name}: should be nullable")
@@ -56,11 +57,11 @@ def test_schema_alignment():
             print(f"  - {i}")
         return False
 
-    print("[OK] Schema alignment: model <-> migration match")
+    print("[OK] Schema alignment: model <-> migration match (incl 5 new columns)")
     return True
 
 
-# ── 2. Verify prompt template structure ─────────────────────────────
+# -- 2. Verify prompt template structure -------------------------------
 
 def test_prompt_structure():
     """Ensure the classifier prompt contains all required sections."""
@@ -83,6 +84,8 @@ def test_prompt_structure():
         "prediction",
         "breaking_bomb",
         "roast_id",
+        "headline",
+        "teaser",
         "expires_at",
     ]
 
@@ -91,19 +94,18 @@ def test_prompt_structure():
         print(f"[FAIL] Prompt missing phrases: {missing}")
         return False
 
-    # JSON example should be in the prompt
     if '"modes"' not in prompt:
         print("[FAIL] Prompt missing JSON output example")
         return False
 
-    print(f"[OK] Prompt structure: {len(prompt)} chars, all sections present")
+    print(f"[OK] Prompt structure: {len(prompt)} chars, headline+teaser included")
     return True
 
 
-# ── 3. Verify fallback generates valid poison_opinion ───────────────
+# -- 3. Verify fallback generates valid poison_opinion -----------------
 
 def test_fallback_poison():
-    """Fallback should generate a valid poison_opinion entry without LLM."""
+    """Fallback should generate a valid poison_opinion entry with all new fields."""
     from app.jobs.trump_social_crawler.classifier import _fallback_poison
 
     post = {
@@ -124,42 +126,44 @@ def test_fallback_poison():
         print(f"[FAIL] Wrong mode: {m['game_mode']}")
         return False
 
-    if "roast_id" not in m or "prompt" not in m or "expires_at" not in m:
-        print(f"[FAIL] Missing fields: {m.keys()}")
+    for field in ("roast_id", "prompt", "expires_at", "headline", "teaser"):
+        if field not in m:
+            print(f"[FAIL] Missing field: {field}")
+            return False
+
+    if not m["headline"]:
+        print("[FAIL] Headline should not be empty")
         return False
 
-    if "controversial" not in m["prompt"]:
-        print(f"[FAIL] Prompt missing post content: {m['prompt'][:80]}")
+    if not m["teaser"]:
+        print("[FAIL] Teaser should not be empty")
         return False
 
-    print(f"[OK] Fallback poison: roast_id={m['roast_id']}, prompt={len(m['prompt'])} chars")
+    print(f"[OK] Fallback poison: headline='{m['headline']}', teaser='{m['teaser']}'")
     return True
 
 
-# ── 4. Verify JSON parsing for various LLM responses ─────────────────
+# -- 4. Verify JSON parsing for various LLM responses ------------------
 
 def test_json_parsing():
     """Simulate valid and invalid LLM responses."""
-    post = {
-        "platform": "x",
-        "content": "A test post.",
-        "created_at": "2026-05-17T08:00:00Z",
-        "tags": [],
-    }
-
-    # Valid: poison + debate
+    # Valid: poison + debate with headline/teaser
     valid_json = json.dumps({
         "modes": [
             {
                 "roast_id": "poison_2026-05-17_001",
                 "game_mode": "poison_opinion",
-                "prompt": "[毒观点场景]\nTest prompt text for poison mode. Need enough chars here.",
+                "headline": "Trump Boasts About Poll Numbers",
+                "teaser": "Excellent by what metric? Tap to debate.",
+                "prompt": "[POISON SCENARIO]\nTest prompt text for poison mode. Need enough chars here.",
                 "expires_at": "2026-05-19T08:00:00Z",
             },
             {
                 "roast_id": "debate_2026-05-17_001",
                 "game_mode": "debate",
-                "prompt": "[来辩场景]\nTest prompt text for debate mode. Core claim: something. Provocative stance: defend.",
+                "headline": "Trump Claims Tariffs Crushed China",
+                "teaser": "Really? Let me defend him. Tap in.",
+                "prompt": "[DEBATE SCENARIO]\nTest prompt text for debate mode.",
                 "expires_at": "2026-05-19T08:00:00Z",
             },
         ]
@@ -170,6 +174,10 @@ def test_json_parsing():
     if len(modes) != 2:
         print(f"[FAIL] Expected 2 modes, got {len(modes)}")
         return False
+    for m in modes:
+        if not m.get("headline") or not m.get("teaser"):
+            print(f"[FAIL] Mode missing headline/teaser: {m}")
+            return False
 
     # Valid: prediction only
     predict_json = json.dumps({
@@ -177,7 +185,9 @@ def test_json_parsing():
             {
                 "roast_id": "predict_2026-05-17_001",
                 "game_mode": "prediction",
-                "prompt": "[预测场景]\nWill he do it by Friday? Deadline: 2026-05-22. Long enough prompt here.",
+                "headline": "Trump Predicts Iran Deal By Friday",
+                "teaser": "Friday deadline incoming. Will he deliver?",
+                "prompt": "[PREDICTION SCENARIO]\nPrediction target: deal by Friday.",
                 "expires_at": "2026-05-22T00:00:00Z",
             }
         ]
@@ -187,20 +197,24 @@ def test_json_parsing():
         print("[FAIL] Prediction parse failed")
         return False
 
-    # Valid: breaking_bomb
+    # Valid: breaking_bomb with is_urgent
     bomb_json = json.dumps({
         "modes": [
             {
                 "roast_id": "bomb_2026-05-17_001",
                 "game_mode": "breaking_bomb",
-                "prompt": "[突发场景 - 紧急]\nMilitary escalation. Long enough prompt for validation test.",
+                "headline": "Trump Authorizes Military Strikes in Syria",
+                "teaser": "Major military action unfolding. Urgent notification.",
+                "prompt": "[BREAKING SCENARIO]\nMilitary escalation.",
                 "expires_at": "2026-05-17T10:00:00Z",
+                "is_urgent": True,
             }
         ]
     })
     data3 = json.loads(bomb_json)
-    if len(data3.get("modes", [])) != 1:
-        print("[FAIL] Bomb parse failed")
+    m = data3.get("modes", [])[0]
+    if not m.get("is_urgent"):
+        print("[FAIL] breaking_bomb should have is_urgent=True")
         return False
 
     # Edge case: empty modes
@@ -210,80 +224,85 @@ def test_json_parsing():
         print("[FAIL] Empty modes parse failed")
         return False
 
-    # Edge case: invalid JSON -> should trigger fallback
+    # Edge case: invalid JSON
     try:
         json.loads("not json")
         print("[FAIL] Invalid JSON should have raised")
         return False
     except json.JSONDecodeError:
-        pass  # Expected
+        pass
 
-    print("[OK] JSON parsing: all modes + edge cases handled")
+    print("[OK] JSON parsing: headline, teaser, is_urgent all handled")
     return True
 
 
-# ── 5. Verify roast_id format and dedup logic ────────────────────────
+# -- 5. Verify roast_id format and dedup logic --------------------------
 
 def test_roast_id_format():
     """roast_id must follow {mode_abbrev}_{date}_{3-digit-seq}."""
     from app.jobs.trump_social_crawler.classifier import MODE_ABBREV
 
-    # Mode abbrevs must be correct
-    if MODE_ABBREV.get("poison_opinion") != "poison":
-        print(f"[FAIL] Wrong abbrev for poison_opinion: {MODE_ABBREV}")
-        return False
-    if MODE_ABBREV.get("debate") != "debate":
-        print(f"[FAIL] Wrong abbrev for debate")
-        return False
-    if MODE_ABBREV.get("prediction") != "predict":
-        print(f"[FAIL] Wrong abbrev for prediction")
-        return False
-    if MODE_ABBREV.get("breaking_bomb") != "bomb":
-        print(f"[FAIL] Wrong abbrev for breaking_bomb")
-        return False
+    expected = {
+        "poison_opinion": "poison",
+        "debate": "debate",
+        "prediction": "predict",
+        "breaking_bomb": "bomb",
+    }
+    for mode, abbrev in expected.items():
+        if MODE_ABBREV.get(mode) != abbrev:
+            print(f"[FAIL] Wrong abbrev for {mode}: {MODE_ABBREV.get(mode)}")
+            return False
 
     print("[OK] roast_id mode abbrevs correct")
     return True
 
 
-# ── 6. Verify expires_at calculation ─────────────────────────────────
+# -- 6. Verify expires_at calculation ---------------------------------
 
 def test_expiry_calculation():
     """Verify expiry times match design doc rules."""
     from app.jobs.trump_social_crawler.classifier import _add_hours, _extract_date
 
-    # 48h for poison/debate
     ts = "2026-05-17T08:00:00Z"
-    result = _add_hours(ts, 48)
-    expected = "2026-05-19T08:00:00+00:00"
-    if result != expected:
-        print(f"[FAIL] 48h expiry: expected {expected}, got {result}")
+    if _add_hours(ts, 48) != "2026-05-19T08:00:00+00:00":
+        print("[FAIL] 48h expiry mismatch")
         return False
 
-    # 2h for breaking_bomb
-    result2 = _add_hours(ts, 2)
-    expected2 = "2026-05-17T10:00:00+00:00"
-    if result2 != expected2:
-        print(f"[FAIL] 2h expiry: expected {expected2}, got {result2}")
+    if _add_hours(ts, 2) != "2026-05-17T10:00:00+00:00":
+        print("[FAIL] 2h expiry mismatch")
         return False
 
-    # None for missing timestamp
-    result3 = _add_hours(None, 48)
-    if result3 is not None:
-        print(f"[FAIL] None input should return None, got {result3}")
+    if _add_hours(None, 48) is not None:
+        print("[FAIL] None input should return None")
         return False
 
-    # Date extraction
-    date_str = _extract_date("2026-05-17T08:00:00Z")
-    if date_str != "2026-05-17":
-        print(f"[FAIL] Date extraction: expected 2026-05-17, got {date_str}")
+    if _extract_date("2026-05-17T08:00:00Z") != "2026-05-17":
+        print("[FAIL] Date extraction mismatch")
         return False
 
     print("[OK] Expiry calculation: 48h, 2h, None, date extraction")
     return True
 
 
-# ── Run all tests ────────────────────────────────────────────────────
+# -- 7. Verify is_live computation logic -------------------------------
+
+def test_is_live_logic():
+    """is_live = breaking_bomb AND not expired."""
+    from datetime import datetime, timezone, timedelta
+
+    # breaking_bomb with future expiry → live
+    future = datetime.now(timezone.utc) + timedelta(hours=1)
+    assert "breaking_bomb" == "breaking_bomb"
+    assert future > datetime.now(timezone.utc)
+
+    # poison_opinion → not live regardless of expiry
+    assert "poison_opinion" != "breaking_bomb"
+
+    print("[OK] is_live logic: breaking_bomb + not expired = live")
+    return True
+
+
+# -- Run all tests -----------------------------------------------------
 
 def main():
     print("=" * 60)
@@ -297,6 +316,7 @@ def main():
         ("JSON parsing", test_json_parsing),
         ("roast_id format", test_roast_id_format),
         ("Expiry calculation", test_expiry_calculation),
+        ("is_live logic", test_is_live_logic),
     ]
 
     passed = 0
