@@ -49,6 +49,7 @@ For each matching mode, generate an object with:
 - game_mode: the mode name
 - headline: a short display title (the core news, <=120 chars) for the app card
 - teaser: Pigugu's provocative teaser line (<=150 chars) — sarcastic, hooks the user to tap the card and start the game
+- tags: array of classification tags for this scenario. For poison_opinion, include the controversy angle tag (TRUMP_POLL_BRAG / TARIFF_BLAME / DIPLOMACY_THREAT / ELECTION_FRAUD_HINT / PERSONAL_ATTACK). For other modes, include relevant keyword tags.
 - prompt: natural language game scenario description in English, <=500 tokens, formatted for direct Agent consumption
 - expires_at: ISO 8601 expiry time
   - poison_opinion / debate: post time + 48h
@@ -63,6 +64,7 @@ Return JSON. Only return modes that actually fit — skip unfit modes:
       "game_mode": "poison_opinion",
       "headline": "Trump Boasts About Poll Numbers",
       "teaser": "Excellent by what metric exactly? Tap in if you think this is all hot air.",
+      "tags": ["TRUMP_POLL_BRAG"],
       "prompt": "[POISON SCENARIO]\\nTrump just posted on Truth Social: ...",
       "expires_at": "2026-05-19T01:36:21Z"
     }}
@@ -138,6 +140,7 @@ def _fallback_poison(post: dict) -> list[dict]:
             game_mode="poison_opinion",
             headline=headline,
             teaser="Trump just posted. What do you make of this?",
+            tags=["GENERIC"],
             prompt=(
                 f"[POISON SCENARIO]\n"
                 f"Trump just posted: \"{content}\"\n"
@@ -166,6 +169,9 @@ async def _store_scenarios(
             prompt = m.get("prompt", "")
             headline = m.get("headline", "")
             teaser = m.get("teaser", "")
+            tags = m.get("tags", [])
+            if not isinstance(tags, list):
+                tags = []
             is_urgent = bool(m.get("is_urgent", False))
             expires_at = _parse_dt(m.get("expires_at"))
 
@@ -180,9 +186,9 @@ async def _store_scenarios(
                     text(
                         "INSERT INTO roast_scenarios "
                         "(roast_id, game_mode, headline, source, source_url, "
-                        "teaser, is_urgent, prompt, news_id, expires_at) "
+                        "teaser, tags, is_urgent, prompt, news_id, expires_at) "
                         "VALUES (:roast_id, :game_mode, :headline, :source, :source_url, "
-                        ":teaser, :is_urgent, :prompt, :news_id, :expires_at)"
+                        ":teaser, :tags::jsonb, :is_urgent, :prompt, :news_id, :expires_at)"
                     ),
                     dict(
                         roast_id=roast_id,
@@ -191,6 +197,7 @@ async def _store_scenarios(
                         source=source,
                         source_url=source_url,
                         teaser=teaser,
+                        tags=json.dumps(tags),
                         is_urgent=is_urgent,
                         prompt=prompt,
                         news_id=news_id,
