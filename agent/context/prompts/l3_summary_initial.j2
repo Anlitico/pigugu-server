@@ -1,0 +1,32 @@
+You are summarizing a conversation segment for an AI agent's context window.
+Your summary will REPLACE the raw conversation — the agent will see ONLY your summary, not the original messages.
+
+STEP 1 — ANALYZE (this reasoning will be discarded, keep the output only):
+Go through the conversation chronologically. For each turn, note:
+- What the user asked or said
+- What the assistant responded or did
+- Any tool calls, their results, and decisions made
+- Any facts, preferences, or signals from the user
+- Any decisions, conclusions, or unresolved topics
+
+STEP 2 — OUTPUT (structured summary, under {{max_words}} words):
+
+[Topics & Themes]
+Core topics, themes, and context of this conversation segment.
+
+[User Signals]
+Facts, preferences, opinions, or personality traits the user revealed. Include emotional cues and communication style observations.
+
+[Decisions & Outcomes]
+Decisions made, conclusions reached, actions taken, and their results.
+
+[Recent Conversation]
+Detailed reconstruction of the most recent exchanges — what the user asked, what the assistant replied, key reactions. Preserve as much detail as possible for the newest turns.
+
+[Pending]
+Unresolved questions, open topics, or follow-ups the assistant should be aware of.
+
+CONVERSATION:
+{{turns_text}}
+
+SUMMARY:

@@ -1,5 +1,5 @@
-# agent/context/validation.py
-"""Tool call completeness validation and token estimation fallback."""
+# agent/context/sanitize.py
+"""Message list sanitization before LLM input — tool call cleanup, token fallback."""
 
 
 def _len_fallback(text: str) -> int:
@@ -8,11 +8,10 @@ def _len_fallback(text: str) -> int:
 
 
 def validate_tool_calls(messages: list) -> list:
-    """Filter out incomplete tool calls before sending to LLM.
+    """Remove incomplete (dangling) tool calls before sending to LLM.
 
-    LangGraph-style: every assistant tool_call must have a matching tool
-    response with the same tool_call_id. Dangling calls (no response yet)
-    are removed to avoid LLM API errors.
+    Every assistant tool_call must have a matching tool response with the same
+    tool_call_id. Dangling calls (no response yet) are removed to avoid API errors.
     """
     if not messages:
         return messages

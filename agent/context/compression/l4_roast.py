@@ -5,6 +5,10 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from config import get_config
+
+_cfg = get_config()
+
 from core.llm.types import Message
 
 _PROMPTS_DIR = Path(__file__).parent.parent / "prompts"
@@ -35,13 +39,17 @@ async def compress_roast(
     if existing_summary:
         existing_body = existing_summary.split("\n---\n", 1)[-1] if "\n---\n" in existing_summary else existing_summary
         merge_prompt = (
-            f"Existing game summary:\n{existing_body}\n\n"
-            f"New gameplay:\n{turns_text}\n\n"
-            f"Merge into a single summary under 250 words. "
-            f"Preserve character state, plot points, and game decisions."
+            _load("l4_merge_roast.j2")
+            .replace("{{existing_summary}}", existing_body)
+            .replace("{{turns_text}}", turns_text)
+            .replace("{{max_words}}", str(_cfg.CONTEXT_L4_ROAST_MAX_WORDS))
         )
     else:
-        merge_prompt = _load("summarize_roast.j2").replace("{{turns_text}}", turns_text)
+        merge_prompt = (
+            _load("l4_roast_initial.j2")
+            .replace("{{turns_text}}", turns_text)
+            .replace("{{max_words}}", str(_cfg.CONTEXT_L4_ROAST_MAX_WORDS))
+        )
 
     from core.llm import get_llm, Message as M
     try:

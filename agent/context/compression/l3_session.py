@@ -5,6 +5,10 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from config import get_config
+
+_cfg = get_config()
+
 from core.llm.types import Message
 
 _PROMPTS_DIR = Path(__file__).parent.parent / "prompts"
@@ -15,12 +19,12 @@ def _load(name: str) -> str:
     return path.read_text(encoding="utf-8") if path.exists() else ""
 
 
-async def compress_tier_1(turns: list[Message], model: str = "qwen3.6-plus") -> str:
+async def compress_turns(turns: list[Message], model: str = "qwen3.6-plus") -> str:
     """First compression: turns → summary."""
     if not turns:
         return ""
     turns_text = "\n".join(f"[{t.role}]: {t.content}" for t in turns)
-    prompt = _load("summarize_tier_1.j2").replace("{{turns_text}}", turns_text)
+    prompt = _load("l3_summary_initial.j2").replace("{{turns_text}}", turns_text).replace("{{max_words}}", str(_cfg.CONTEXT_L3_COMPRESS_MAX_WORDS))
 
     from core.llm import get_llm, Message as M
     try:
@@ -31,16 +35,17 @@ async def compress_tier_1(turns: list[Message], model: str = "qwen3.6-plus") -> 
         return ""
 
 
-async def compress_tier_2(existing_summary: str, new_turns: list[Message], model: str = "qwen3.6-plus") -> str:
+async def merge_summary(existing_summary: str, new_turns: list[Message], model: str = "qwen3.6-plus") -> str:
     """Merge: existing summary + new turns → updated summary."""
     if not existing_summary and not new_turns:
         return ""
     if not existing_summary:
-        return await compress_tier_1(new_turns, model=model)
+        return await compress_turns(new_turns, model=model)
 
     new_segment = "\n".join(f"[{t.role}]: {t.content}" for t in new_turns)
-    prompt = _load("summarize_tier_2.j2").format(
+    prompt = _load("l3_summary_merge.j2").format(
         existing_summary=existing_summary, new_segment=new_segment,
+        max_words=_cfg.CONTEXT_L3_MERGE_MAX_WORDS,
     )
 
     from core.llm import get_llm, Message as M

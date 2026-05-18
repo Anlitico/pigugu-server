@@ -180,9 +180,15 @@ class AgentConfig(BaseSettings):
     SILENCE_THRESHOLD: float = Field(default_factory=lambda: float(get_config_value("SILENCE_THRESHOLD", 30.0)))
 
     # Context Module — compression / extraction tuning
-    CONTEXT_RAW_TURN_COUNT: int = Field(default_factory=lambda: int(get_config_value("CONTEXT_RAW_TURN_COUNT", 5)))
-    CONTEXT_HOT_WINDOW_SIZE: int = Field(default_factory=lambda: int(get_config_value("CONTEXT_HOT_WINDOW_SIZE", 100)))
+    CONTEXT_HOT_WINDOW_SIZE: int = Field(default_factory=lambda: int(get_config_value("CONTEXT_HOT_WINDOW_SIZE", 500)))
     CONTEXT_TOKEN_BUDGET_CAP: int = Field(default_factory=lambda: int(get_config_value("CONTEXT_TOKEN_BUDGET_CAP", 200_000)))
+    CONTEXT_ROAST_COMPRESSION_RATIO: float = Field(default_factory=lambda: float(get_config_value("CONTEXT_ROAST_COMPRESSION_RATIO", 0.05)))
+    CONTEXT_ROAST_COMPRESSION_MIN_TOKENS: int = Field(default_factory=lambda: int(get_config_value("CONTEXT_ROAST_COMPRESSION_MIN_TOKENS", 1000)))
+    CONTEXT_MAX_TURNS: int = Field(default_factory=lambda: int(get_config_value("CONTEXT_MAX_TURNS", 400)))
+    CONTEXT_L3_COMPRESS_MAX_WORDS: int = Field(default_factory=lambda: int(get_config_value("CONTEXT_L3_COMPRESS_MAX_WORDS", 5000)))
+    CONTEXT_L3_MERGE_MAX_WORDS: int = Field(default_factory=lambda: int(get_config_value("CONTEXT_L3_MERGE_MAX_WORDS", 8000)))
+    CONTEXT_L4_ROAST_MAX_WORDS: int = Field(default_factory=lambda: int(get_config_value("CONTEXT_L4_ROAST_MAX_WORDS", 5000)))
+    CONTEXT_L2_PROFILE_MAX_WORDS: int = Field(default_factory=lambda: int(get_config_value("CONTEXT_L2_PROFILE_MAX_WORDS", 1500)))
     
     # Welcome Greeting
     ENABLE_WELCOME_GREETING: bool = Field(default_factory=lambda: get_bool_config_value("ENABLE_WELCOME_GREETING", True))

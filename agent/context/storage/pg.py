@@ -10,7 +10,16 @@ from loguru import logger
 
 from core.llm.types import Message
 from context.schema import UserMemory
-from context._utils import serialize_tool_calls
+
+
+def __serialize_tool_calls(tool_calls: list | None) -> str | None:
+    """Serialize ToolCall list to JSONB string for PG insert. Returns None if empty."""
+    if not tool_calls:
+        return None
+    return json.dumps([
+        {"id": tc.id, "name": tc.name, "arguments": tc.arguments}
+        for tc in tool_calls
+    ])
 
 
 class PgStorage:
@@ -35,7 +44,7 @@ class PgStorage:
                        ON CONFLICT (user_id, turn_number) DO NOTHING""",
                     self._user_id, turn_number,
                     turn.role, turn.content,
-                    serialize_tool_calls(turn.tool_calls),
+                    _serialize_tool_calls(turn.tool_calls),
                     turn.tool_call_id, turn.name, turn.partial,
                     roast_id,
                 )
@@ -57,7 +66,7 @@ class PgStorage:
                                ON CONFLICT (user_id, turn_number) DO NOTHING""",
                             self._user_id, turn_number,
                             turn.role, turn.content,
-                            serialize_tool_calls(turn.tool_calls),
+                            _serialize_tool_calls(turn.tool_calls),
                             turn.tool_call_id, turn.name, turn.partial,
                             roast_id,
                         )
@@ -80,7 +89,7 @@ class PgStorage:
                                ON CONFLICT (user_id, turn_number) DO NOTHING""",
                             self._user_id, turn_number,
                             turn.role, turn.content,
-                            serialize_tool_calls(turn.tool_calls),
+                            _serialize_tool_calls(turn.tool_calls),
                             turn.tool_call_id, turn.name, turn.partial,
                             roast_id,
                         )

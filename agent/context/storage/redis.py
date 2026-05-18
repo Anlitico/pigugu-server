@@ -64,12 +64,13 @@ class RedisStorage:
     # ── Turns ───────────────────────────────────────────────────────
 
     async def get_hot_turns(self, n: int, *, after_anchor: int = 0) -> list[ConversationRecord]:
+        """Return the last N turns (newest last), oldest→newest order."""
         if not self._redis:
             return []
         try:
             read_count = max(n * 3, 30)
             raw = await self._redis.lrange(
-                RedisKeys.turns(self._user_id), 0, read_count - 1
+                RedisKeys.turns(self._user_id), -read_count, -1
             )
             if not raw:
                 return []
@@ -77,12 +78,12 @@ class RedisStorage:
             records: list[ConversationRecord] = []
             for t in raw:
                 d = json.loads(t.decode() if isinstance(t, bytes) else t)
-                turn_num = d.pop("turn", 0)
+                turn_num = d.get("turn", 0)
                 if after_anchor == 0 or turn_num > after_anchor:
                     records.append(ConversationRecord.from_dict(d))
-                if len(records) >= n:
-                    break
-            return records
+
+            # Keep the last N
+            return records[-n:] if len(records) > n else records
         except Exception as e:
             logger.warning(f"Redis LRANGE failed: {e}")
             return []
@@ -212,8 +213,8 @@ class RedisStorage:
             return
         try:
             async with self._redis.pipeline() as pipe:
-                pipe.lpush(RedisKeys.turns(self._user_id), turn_data)
-                pipe.ltrim(RedisKeys.turns(self._user_id), 0, _cfg.CONTEXT_HOT_WINDOW_SIZE - 1)
+                pipe.rpush(RedisKeys.turns(self._user_id), turn_data)
+                pipe.ltrim(RedisKeys.turns(self._user_id), -_cfg.CONTEXT_HOT_WINDOW_SIZE, -1)
                 await pipe.execute()
         except Exception as e:
             logger.warning(f"Redis turn push failed: {e}")

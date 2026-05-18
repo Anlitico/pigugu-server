@@ -5,6 +5,10 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from config import get_config
+
+_cfg = get_config()
+
 from core.llm.types import Message
 
 _PROMPTS_DIR = Path(__file__).parent.parent / "prompts"
@@ -20,7 +24,7 @@ async def extract_facts(turns: list[Message], model: str = "qwen3.6-plus") -> li
         return []
 
     turns_text = "\n".join(f"[{t.role}]: {t.content}" for t in turns)
-    prompt = _load("extract_facts.j2").replace("{{turns_text}}", turns_text)
+    prompt = _load("l2_extract_facts.j2").replace("{{turns_text}}", turns_text)
 
     from core.llm import get_llm, Message as M
     import json
@@ -43,12 +47,15 @@ async def summarize_profile(facts: list[str], *, existing: str = "", model: str 
 
     if existing:
         new_facts_text = "\n".join(f"- {f}" for f in facts)
-        prompt = _load("summarize_profile_merge.j2").format(
+        prompt = _load("l2_profile_merge.j2").format(
             existing_profile=existing, new_facts=new_facts_text,
+            max_words=_cfg.CONTEXT_L2_PROFILE_MAX_WORDS,
         )
     else:
         facts_text = "\n".join(f"- {f}" for f in facts)
-        prompt = _load("summarize_profile_initial.j2").format(facts_text=facts_text)
+        prompt = _load("l2_profile_initial.j2").format(
+            facts_text=facts_text, max_words=_cfg.CONTEXT_L2_PROFILE_MAX_WORDS,
+        )
 
     try:
         llm = get_llm(model)

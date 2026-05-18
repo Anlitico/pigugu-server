@@ -1,0 +1,33 @@
+You are merging an existing conversation summary with a new conversation segment.
+The merged result will REPLACE the raw conversation — the agent will see ONLY this summary.
+
+STEP 1 — ANALYZE (this reasoning will be discarded, keep the output only):
+- Review the existing summary to understand what has already happened
+- Go through the new segment chronologically, noting new information
+- Identify what in the existing summary should be condensed vs preserved
+- Determine what new information is most important
+
+STEP 2 — OUTPUT (structured summary, under {max_words} words):
+
+[Topics & Themes]
+Core topics and themes across the entire conversation, with emphasis on what's currently active.
+
+[User Signals]
+Cumulative facts, preferences, opinions, and personality traits the user has revealed. Merge old and new — resolve contradictions by favoring newer information.
+
+[Decisions & Outcomes]
+All decisions, conclusions, and actions taken throughout the conversation and their results.
+
+[Recent Conversation]
+Detailed reconstruction of the newest exchanges — preserve the latest turns with high fidelity. Earlier conversation can be condensed to key points.
+
+[Pending]
+All unresolved questions, open topics, and follow-ups that still need attention.
+
+EXISTING SUMMARY:
+{existing_summary}
+
+NEW SEGMENT:
+{new_segment}
+
+UPDATED SUMMARY:

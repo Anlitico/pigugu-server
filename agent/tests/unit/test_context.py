@@ -10,7 +10,7 @@ from context.storage.redis import RedisKeys
 from context.schema import (
     WorkingContext, UserMemory, TokenBudget, RoastContext,
 )
-from context.validation import validate_tool_calls
+from context.sanitize import validate_tool_calls
 from config import get_config
 
 _cfg = get_config()
@@ -187,8 +187,8 @@ class TestWorkingContext:
             ],
         )
         msgs = wc.to_messages(system_prompt="sys")
-        assert len(msgs) == 3  # system + 2 turns (reversed)
-        assert msgs[1].role == "assistant"
+        assert len(msgs) == 3  # system + 2 turns (oldest→newest)
+        assert msgs[1].role == "user"
 
     def test_to_messages_with_roast(self):
         wc = WorkingContext(
@@ -242,14 +242,32 @@ class TestUserMemory:
 
 
 class TestConstants:
-    def test_raw_turn_count(self):
-        assert _cfg.CONTEXT_RAW_TURN_COUNT == 5
-
     def test_hot_window_size(self):
-        assert _cfg.CONTEXT_HOT_WINDOW_SIZE == 100
+        assert _cfg.CONTEXT_HOT_WINDOW_SIZE == 500
+
+    def test_max_turns(self):
+        assert _cfg.CONTEXT_MAX_TURNS == 400
 
     def test_token_budget_cap(self):
         assert _cfg.CONTEXT_TOKEN_BUDGET_CAP == 200_000
+
+    def test_roast_compression_ratio(self):
+        assert _cfg.CONTEXT_ROAST_COMPRESSION_RATIO == 0.05
+
+    def test_roast_compression_min_tokens(self):
+        assert _cfg.CONTEXT_ROAST_COMPRESSION_MIN_TOKENS == 1000
+
+    def test_l3_compress_max_words(self):
+        assert _cfg.CONTEXT_L3_COMPRESS_MAX_WORDS == 5000
+
+    def test_l3_merge_max_words(self):
+        assert _cfg.CONTEXT_L3_MERGE_MAX_WORDS == 8000
+
+    def test_l4_roast_max_words(self):
+        assert _cfg.CONTEXT_L4_ROAST_MAX_WORDS == 5000
+
+    def test_l2_profile_max_words(self):
+        assert _cfg.CONTEXT_L2_PROFILE_MAX_WORDS == 1500
 
 
 class TestMessageSerialization:
@@ -404,28 +422,22 @@ class TestToolCallValidation:
         assert len(result) == 1  # kept as-is
 
 
-class TestLoadResult:
-    def test_defaults(self):
-        from context.loader import LoadResult
-        r = LoadResult()
-        assert r.messages == []
+class TestContextManagerEntry:
+    def test_constructor_with_persona(self):
+        from context.manager import ContextManager
+        ctx = ContextManager(persona_prompt="You are helpful.")
+        assert ctx._persona_prompt == "You are helpful."
 
-
-class TestContextLoader:
-    def test_constructor(self):
-        from context.loader import ContextLoader
-        loader = ContextLoader()
-        assert loader._redis is None
-
-    def test_constructor_with_infra(self):
-        from context.loader import ContextLoader
-        loader = ContextLoader(redis_client="r", pg_pool="p")
-        assert loader._redis == "r"
+    def test_end_roast(self):
+        from context.manager import ContextManager
+        import asyncio
+        ctx = ContextManager()
+        asyncio.run(ctx.end_roast(user_id="u1"))
 
     def test_record_turn_without_redis(self):
-        from context.loader import ContextLoader
+        from context.manager import ContextManager
         import asyncio
-        loader = ContextLoader()
-        asyncio.run(loader.record_turn(
+        ctx = ContextManager()
+        asyncio.run(ctx.add_turn(
             user_id="u1", role="user", content="hello",
         ))

@@ -1,4 +1,4 @@
-# agent/context/schemas.py
+# agent/context/schema.py
 """Core data structures for the 4-layer agent context architecture.
 
 Layer 1 — System Prompt + Tools (~3-5K, prefix-cached)
@@ -15,46 +15,71 @@ from dataclasses import dataclass, field
 
 from core.llm.types import Message
 
-from .validation import _len_fallback, validate_tool_calls
+from .sanitize import _len_fallback, validate_tool_calls
 
 
 @dataclass
 class ConversationRecord:
     """A stored turn — Redis/PG intermediate between Message and AgentConversation.
 
-    turn_number is the global counter. roast_id and roast_start are embedded
-    in the data so assembly can determine boundaries without reading meta.
+    turn_number is the global counter. roast_id is embedded in the data
+    so assembly can determine boundaries without reading meta.
     """
 
     turn_number: int
     role: str
     content: str
-    roast_id: str | None = None       # None = free chat
-    roast_start: bool = False          # true = this turn is the roast prompt
-
-    @classmethod
-    def from_message(cls, turn_number: int, msg: Message, *, roast_id: str | None = None, roast_start: bool = False) -> "ConversationRecord":
-        return cls(turn_number=turn_number, role=msg.role, content=msg.content, roast_id=roast_id, roast_start=roast_start)
+    created_at: float                       # time.time() when recorded
+    roast_id: str | None = None            # None = free chat, str = in this roast
+    tool_calls: list | None = None         # [{"id":..., "name":..., "arguments":...}]
+    tool_call_id: str | None = None
+    name: str | None = None
+    partial: bool = False
 
     def to_message(self) -> Message:
-        return Message(role=self.role, content=self.content)
+        from core.llm.types import ToolCall
+        tcs = None
+        if self.tool_calls:
+            tcs = [ToolCall(**tc) if isinstance(tc, dict) else tc for tc in self.tool_calls]
+        return Message(
+            role=self.role, content=self.content,
+            tool_calls=tcs, tool_call_id=self.tool_call_id,
+            name=self.name, partial=self.partial,
+        )
 
     def to_dict(self) -> dict:
+        import json
         d = {"turn": self.turn_number, "role": self.role, "content": self.content}
         if self.roast_id:
             d["roast_id"] = self.roast_id
-        if self.roast_start:
-            d["roast_start"] = True
+        if self.tool_calls:
+            d["tool_calls"] = json.dumps(self.tool_calls, ensure_ascii=False)
+        if self.tool_call_id:
+            d["tool_call_id"] = self.tool_call_id
+        if self.name:
+            d["name"] = self.name
+        if self.partial:
+            d["partial"] = True
+        d["ts"] = self.created_at
         return d
 
     @classmethod
     def from_dict(cls, d: dict) -> "ConversationRecord":
+        import json
+        tcs_raw = d.get("tool_calls")
+        tcs = None
+        if tcs_raw:
+            tcs = json.loads(tcs_raw) if isinstance(tcs_raw, str) else tcs_raw
         return cls(
             turn_number=d["turn"],
             role=d["role"],
             content=d["content"],
             roast_id=d.get("roast_id"),
-            roast_start=d.get("roast_start", False),
+            created_at=d.get("ts", 0.0),
+            tool_calls=tcs,
+            tool_call_id=d.get("tool_call_id"),
+            name=d.get("name"),
+            partial=d.get("partial", False),
         )
 
 
@@ -63,23 +88,22 @@ class SummaryRecord:
     """A stored summary with embedded position info.
 
     end_turn anchors the summary to the turn timeline — all turns ≤ end_turn
-    are covered by this summary. tier distinguishes recent (1) from global (2).
+    are covered by this summary.
     """
 
     text: str
     end_turn: int = 0
-    tier: int = 1     # 1=recent, 2=global
 
     def serialize(self) -> str:
         import json
-        return json.dumps({"text": self.text, "end_turn": self.end_turn, "tier": self.tier}, ensure_ascii=False)
+        return json.dumps({"text": self.text, "end_turn": self.end_turn}, ensure_ascii=False)
 
     @classmethod
     def deserialize(cls, raw: str) -> "SummaryRecord":
         import json
         try:
             data = json.loads(raw)
-            return cls(text=data["text"], end_turn=data["end_turn"], tier=data["tier"])
+            return cls(text=data["text"], end_turn=data["end_turn"])
         except Exception:
             return cls(text=raw)
 
@@ -152,11 +176,13 @@ class UserMemory:
 
 @dataclass
 class RoastContext:
-    """Active roast data. Only exists while a roast is in progress.
+    """Active roast data. Loaded when the latest record has an active roast_id.
 
-    4a — prompt: RAW game rules, never compressed during the roast.
-    4b — turns: gameplay turns, raw within buffer, soft-compressed when exceeded.
-    On roast end: extract facts → L2, compress → L3, then discard.
+    4a — prompt: RAW game rules, preserved verbatim by L4 compression (never passed to LLM).
+    4b — summary: L4-compressed gameplay history.
+
+    Roast lifecycle is data-driven: active while records carry roast_id,
+    ends via 24h staleness or new roast_id. No explicit cleanup needed.
     """
 
     roast_id: str
@@ -242,7 +268,8 @@ class WorkingContext:
             result.append(Message.system(f"[Game scenario + history]\n{self.roast.summary}"))
             budget.layer_4_roast_prompt = tc(self.roast.summary)
 
-        for turn in reversed(self.raw_turns):
+        # raw_turns are oldest→newest (RPUSH order)
+        for turn in self.raw_turns:
             if isinstance(turn, ConversationRecord):
                 result.append(turn.to_message())
             else:

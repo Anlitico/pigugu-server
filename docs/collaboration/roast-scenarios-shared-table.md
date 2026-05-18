@@ -23,7 +23,7 @@ CREATE INDEX IF NOT EXISTS idx_roast_scenarios_mode
 | 谁 | 操作 | 说明 |
 |----|------|------|
 | **爬虫管线**（你） | `INSERT INTO roast_scenarios` | 分类器生成 `prompt` 文本后写入 |
-| **ContextLoader**（我） | `SELECT prompt WHERE roast_id = $1` | 用户进入玩法时加载，注入 LLM context 的 L4 层 |
+| **ContextManager**（我） | `SELECT prompt WHERE roast_id = $1` | 用户进入玩法时加载，注入 LLM context 的 L4 层 |
 
 - 你负责：分析帖子 → 生成 `prompt`（游戏场景描述）→ 写入这个表
 - 我负责：按 `roast_id` 读取 → 注入 Agent context → 对话结束后标记 `status = 'expired'`
@@ -71,9 +71,9 @@ resp = await llm.chat(
 
 | 接口 | 提供方 | 消费方 | 说明 |
 |------|--------|--------|------|
-| `roast_scenarios` 表 | 爬虫管线（你） | ContextLoader（我） | 你写入，我读取 |
+| `roast_scenarios` 表 | 爬虫管线（你） | ContextManager（我） | 你写入，我读取 |
 | `trump_social_posts` 表 | 爬虫（已有） | 分类器（你） | 爬虫 upsert 后触发分类 |
-| `ContextLoader.end_roast(roast_id)` | ContextLoader（我） | 后续流程 | 玩法结束时标记 `status=expired` |
+| `ContextManager.end_roast(roast_id)` | ContextManager（我） | 后续流程 | 玩法结束时标记 `status=expired` |
 
 ```python
 # 爬虫管线侧（你）
@@ -99,7 +99,7 @@ async def classify_and_store(post: dict) -> None:
 ```
 
 ```python
-# ContextLoader 侧（我）
+# ContextManager 侧（我）
 async def load_roast_prompt(roast_id: str) -> str:
     row = await db.fetchrow(
         "SELECT prompt FROM roast_scenarios WHERE roast_id=$1 AND status='active'",
@@ -110,7 +110,7 @@ async def load_roast_prompt(roast_id: str) -> str:
 
 ## 6. 待确认
 
-- `prompt` 的 token 上限建议 5000 tokens（软限制，超限不拒绝写入但 ContextLoader 会告警），是否满足业务场景？
+- `prompt` 的 token 上限建议 5000 tokens（软限制，超限不拒绝写入但 ContextManager 会告警），是否满足业务场景？
 - `expires_at` 的过期策略由你决定（48h / 按 mode 不同 / 手动）？
 - `game_mode` 的值列表是否定稿（poison_opinion | debate | prediction | breaking_bomb）？
 - 是否需要 `metadata JSONB` 字段存放 mode-specific 结构化数据（如 debate 的 weakness/strength），供 Agent 工具调用时查询？
