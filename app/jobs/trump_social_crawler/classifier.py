@@ -188,7 +188,7 @@ async def _store_scenarios(
                         "(roast_id, game_mode, headline, source, source_url, "
                         "teaser, tags, is_urgent, prompt, news_id, expires_at) "
                         "VALUES (:roast_id, :game_mode, :headline, :source, :source_url, "
-                        ":teaser, :tags::jsonb, :is_urgent, :prompt, :news_id, :expires_at)"
+                        ":teaser, CAST(:tags AS jsonb), :is_urgent, :prompt, :news_id, :expires_at)"
                     ),
                     dict(
                         roast_id=roast_id,
