@@ -12,7 +12,7 @@ from core.llm.types import Message
 from context.schema import UserMemory
 
 
-def __serialize_tool_calls(tool_calls: list | None) -> str | None:
+def _serialize_tool_calls(tool_calls: list | None) -> str | None:
     """Serialize ToolCall list to JSONB string for PG insert. Returns None if empty."""
     if not tool_calls:
         return None

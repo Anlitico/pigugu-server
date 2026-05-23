@@ -2,7 +2,7 @@
 """Context pipeline — 4-layer agent context with compression and extraction.
 
 ContextManager is the main entry point:
-    ctx = ContextManager(redis_client=redis, pg_pool=pg, persona_prompt="...")
+    ctx = ContextManager(redis_client=redis, pg_pool=pg)
     messages = await ctx.load(user_id="u1")
     await ctx.add_turn(user_id="u1", role="assistant", content="...")
 """

@@ -140,7 +140,7 @@ def create_agent_components(config=None, persona=None):
     model = config.resolve_model()
     pig_agent = PigAgent(None, PigAgentConfig(
         model=model,
-        instructions=instructions,
+        system_prompt_id=persona.persona_id if persona else "",
         temperature=config.LLM_TEMPERATURE,
         max_tokens=config.LLM_MAX_TOKENS,
     ))

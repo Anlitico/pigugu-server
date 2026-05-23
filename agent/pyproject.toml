@@ -41,6 +41,11 @@ markers = [
     "integration: marks tests that call real LLM APIs (deselect with '-m \"not integration\"')",
 ]
 
+[dependency-groups]
+dev = [
+    "pyright>=1.1",
+]
+
 [build-system]
 requires = ["setuptools>=61.0", "wheel"]
 build-backend = "setuptools.build_meta"

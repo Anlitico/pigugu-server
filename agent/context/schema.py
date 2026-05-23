@@ -1,7 +1,7 @@
 # agent/context/schema.py
 """Core data structures for the 4-layer agent context architecture.
 
-Layer 1 — System Prompt + Tools (~3-5K, prefix-cached)
+Layer 1 — System Prompt (injected by PigAgent, not stored in context)
 Layer 2 — User Preference (~1-2K, prefix-cached)
 Layer 3 — Session Context (dynamic: raw turns + summaries)
 Layer 4 — Active Roast (transient: prompt → summary → raw turns)
@@ -12,6 +12,7 @@ Token Budget: 200K cap, dynamically allocated at assembly time.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from typing import Literal, cast
 
 from core.llm.types import Message
 
@@ -42,7 +43,8 @@ class ConversationRecord:
         if self.tool_calls:
             tcs = [ToolCall(**tc) if isinstance(tc, dict) else tc for tc in self.tool_calls]
         return Message(
-            role=self.role, content=self.content,
+            role=cast(Literal["system", "user", "assistant", "tool"], self.role),
+            content=self.content,
             tool_calls=tcs, tool_call_id=self.tool_call_id,
             name=self.name, partial=self.partial,
         )
@@ -103,7 +105,7 @@ class SummaryRecord:
         import json
         try:
             data = json.loads(raw)
-            return cls(text=data["text"], end_turn=data["end_turn"])
+            return cls(text=data["text"], end_turn=data.get("end_turn", 0))
         except Exception:
             return cls(text=raw)
 
@@ -238,23 +240,16 @@ class WorkingContext:
     # Budget
     budget: TokenBudget = field(default_factory=TokenBudget)
 
-    def to_messages(self, *, system_prompt: str = "", token_counter=None) -> list:
-        """Unified anchor assembly.
+    def to_messages(self, *, token_counter=None) -> list:
+        """Assemble context messages: L2 profile + L3 summary + L4 roast + raw turns.
 
-        ── system area (≤ anchor) ──
-        L1 + L2 + L3 summary + L4 roast summary
-        ── conversation area (> anchor) ──
-        all raw turns
+        L1 (system prompt) is NOT included — the caller (PigAgent) injects it.
         """
         from core.llm.types import Message
 
         tc = token_counter or _len_fallback
         result: list[Message] = []
         budget = self.budget
-
-        if system_prompt:
-            result.append(Message.system(system_prompt))
-            budget.layer_1_system = tc(system_prompt)
 
         if self.user_memory and self.user_memory.profile_summary:
             result.append(Message.system(f"[User profile]\n{self.user_memory.profile_summary}"))

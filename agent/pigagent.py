@@ -22,20 +22,17 @@ from core.agent.runner import AgentRunner, RunnerConfig
 from core.agent.stop import StepResult, no_tool_calls
 
 from context.manager import ContextManager
+from prompts import get as get_system_prompt
 
 ToolHandler = Callable[[Any], Any]
 
 
 @dataclass
 class PigAgentConfig:
-    """Configuration for a PigAgent instance.
-
-    Combines LLM provider config with tool definitions.
-    ContextManager is constructed separately with redis_client + pg_pool.
-    """
+    """Configuration for a PigAgent instance."""
 
     model: str = "qwen3.6-plus"
-    instructions: str = ""
+    system_prompt_id: str = ""          # ID in the prompt registry
     tools: list[ToolSpec] = field(default_factory=list)
     tool_handlers: dict[str, ToolHandler] = field(default_factory=dict)
     temperature: float = 0.6
@@ -49,10 +46,10 @@ class PigAgent:
     """Pigugu agent — owns ContextManager and delegates loop to AgentRunner.
 
     Usage:
-        ctx = ContextManager(redis_client=redis, pg_pool=pg, persona_prompt="...")
+        ctx = ContextManager(redis_client=redis, pg_pool=pg)
         config = PigAgentConfig(
             model="qwen3.6-plus",
-            instructions="You are a game master...",
+            system_prompt_id="trump",
             tools=[...],
             tool_handlers={...},
         )
@@ -121,9 +118,13 @@ class PigAgent:
 
         async def _load_context() -> list[Message]:
             nonlocal initial_count
-            messages = await self.ctx.load(user_id=user_id)
-            initial_count = len(messages)
-            return messages
+            context = await self.ctx.load(user_id=user_id)
+            # Prepend system prompt from registry
+            prompt = get_system_prompt(self.config.system_prompt_id)
+            if prompt:
+                context.insert(0, Message.system(prompt))
+            initial_count = len(context)
+            return context
 
         async def _flush_all(messages: list, state) -> None:
             """Save new messages (beyond initial context) to Redis/PG."""

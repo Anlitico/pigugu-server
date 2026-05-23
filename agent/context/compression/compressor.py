@@ -71,9 +71,9 @@ class ContextCompressor:
                 self._compress_l3(existing_summary, l3_msgs, model),
                 return_exceptions=True,
             )
-            if isinstance(l2_facts, Exception):
+            if isinstance(l2_facts, BaseException):
                 l2_facts = []
-            if isinstance(l3_text, Exception):
+            if isinstance(l3_text, BaseException):
                 l3_text = existing_summary
 
             await self._write_l2(l2_facts)
@@ -114,9 +114,9 @@ class ContextCompressor:
 
             results = await asyncio.gather(*tasks, return_exceptions=True)
 
-            l2_facts = results[0] if not isinstance(results[0], Exception) else []
-            l3_text = results[1] if not isinstance(results[1], Exception) else existing_summary
-            l4_text = results[2] if not isinstance(results[2], Exception) else None
+            l2_facts = results[0] if not isinstance(results[0], BaseException) else []
+            l3_text = results[1] if not isinstance(results[1], BaseException) else existing_summary
+            l4_text = results[2] if not isinstance(results[2], BaseException) else None
 
             await self._write_l2(l2_facts)
             if l3_text and l3_msgs:

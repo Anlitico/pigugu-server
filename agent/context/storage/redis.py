@@ -12,7 +12,7 @@ from config import get_config
 _cfg = get_config()
 
 from core.llm.types import Message
-from context.schema import UserMemory, ConversationRecord
+from context.schema import UserMemory, ConversationRecord, SummaryRecord
 
 class RedisKeys:
     """Canonical Redis key patterns. All keyed by user_id."""
@@ -140,8 +140,7 @@ class RedisStorage:
 
     # ── Summaries ────────────────────────────────────────────────────
 
-    async def read_summary(self) -> "SummaryRecord | None":
-        from context.schema import SummaryRecord
+    async def read_summary(self) -> SummaryRecord | None:
         if not self._redis:
             return None
         try:
@@ -152,7 +151,7 @@ class RedisStorage:
             pass
         return None
 
-    async def write_summary(self, sr: "SummaryRecord") -> None:
+    async def write_summary(self, sr: SummaryRecord) -> None:
         if not self._redis:
             return
         try:

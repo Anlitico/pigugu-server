@@ -10,7 +10,6 @@ from context import ContextManager
 ctx = ContextManager(
     redis_client=redis,
     pg_pool=pg,
-    persona_prompt="You are a game master...",
 )
 
 # Before each LLM call
@@ -137,7 +136,7 @@ Output format:
 
 Merge works the same way: strip prompt header → LLM merges gameplay body → prepend prompt.
 
-Prompts: [l4_roast_initial.j2](agent/context/prompts/l4_roast_initial.j2), [l4_roast_merge.j2](agent/context/prompts/l4_roast_merge.j2)
+Prompts: [l4_roast_initial.j2](agent/context/prompts/l4_roast_initial.j2), [l4_merge_roast.j2](agent/context/prompts/l4_merge_roast.j2)
 
 ### Token Budgets
 
@@ -213,7 +212,6 @@ context/
 ├── snapshot.py          # ContextSnapshot — token counting + segment analysis
 ├── roast.py             # RoastState — pure roast lifecycle functions
 ├── manager.py           # ContextManager — entry point + orchestrator
-├── sanitize.py          # validate_tool_calls + _len_fallback
 ├── README.md
 │
 ├── storage/
@@ -234,5 +232,21 @@ context/
     ├── l3_summary_initial.j2
     ├── l3_summary_merge.j2
     ├── l4_roast_initial.j2
-    └── l4_roast_merge.j2
+    └── l4_merge_roast.j2
+
+Tests live in `tests/unit/context/`, one file per module:
+
+```
+tests/unit/context/
+├── test_schema.py       # ConversationRecord, SummaryRecord, TokenBudget, UserMemory,
+│                          RoastContext, WorkingContext
+├── test_storage.py      # RedisKeys, RedisStorage (happy + exception), PgStorage
+├── test_manager.py      # ContextManager — constructor, add_turn, assemble, load
+├── test_snapshot.py     # ContextSnapshot — scenario detection, segment splitting
+├── test_roast.py        # RoastState — roast_id assignment, staleness, queries
+├── test_compression.py  # L2/L3/L4 edge cases (empty turns, no LLM calls)
+└── test_context.py      # Core types: Message serialization, tool call validation, constants
+```
+
+Run with `pytest tests/unit/context/ -m "not integration"` (integration tests hit real LLM APIs).
 ```

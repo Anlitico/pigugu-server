@@ -28,10 +28,9 @@ from .roast import RoastState
 class ContextManager:
     """Global context orchestrator. One instance for the entire app."""
 
-    def __init__(self, *, redis_client=None, pg_pool=None, persona_prompt: str = ""):
+    def __init__(self, *, redis_client=None, pg_pool=None):
         self._redis = redis_client
         self._pg_pool = pg_pool
-        self._persona_prompt = persona_prompt
         self._compressor = ContextCompressor(redis_client=redis_client, pg_pool=pg_pool)
 
     def _store(self, user_id: str) -> RedisStorage:
@@ -48,9 +47,9 @@ class ContextManager:
     # ── Public Entry Points ───────────────────────────────────────────
 
     async def load(self, *, user_id: str) -> list:
-        """Assemble context and return messages ready for LLM call."""
+        """Assemble context and return messages (no system prompt — caller injects)."""
         wc = await self.assemble(user_id)
-        return wc.to_messages(system_prompt=self._persona_prompt)
+        return wc.to_messages()
 
     async def write_game_state(self, *, user_id: str, state: dict) -> None:
         if not self._redis:
