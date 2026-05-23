@@ -110,7 +110,7 @@ async def search_perplexity(
         took_ms = int((time.time() - start_time) * 1000)
         
         # Extract content
-        content = response.choices[0].message.content if response.choices else ""
+        content = (response.choices[0].message.content or "") if response.choices else ""
         
         # Extract citations from response metadata if available
         citations: list[str] = []

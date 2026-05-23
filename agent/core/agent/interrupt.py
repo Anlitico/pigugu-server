@@ -345,7 +345,7 @@ async def _call_callback(
         return None
 
 
-def _get_interrupt_key(key, bound_args):
+def _get_interrupt_key(key, bound_args) -> str | None:
     if callable(key):
         try:
             key_sig = inspect.signature(key)
@@ -353,7 +353,7 @@ def _get_interrupt_key(key, bound_args):
             for param_name in key_sig.parameters.keys():
                 if param_name in bound_args.arguments:
                     key_kwargs[param_name] = bound_args.arguments[param_name]
-            return key(**key_kwargs)
+            return str(key(**key_kwargs))
         except Exception as e:
             logger.error(f"Error generating key from function: {e}")
             return None
@@ -398,7 +398,7 @@ def check_interrupt(
                 resolved_on_interrupt = _resolve_callback(on_interrupt, "_on_interrupt", self_value)
                 resolved_on_finally = _resolve_callback(on_finally, "_on_finally", self_value)
 
-                final_key = _get_interrupt_key(key, bound_args)
+                final_key: str | None = _get_interrupt_key(key, bound_args)
 
                 if resolved_on_start:
                     callback_result = await _call_callback(resolved_on_start, state_value)
@@ -548,7 +548,7 @@ def check_interrupt(
                 resolved_on_interrupt = _resolve_callback(on_interrupt, "_on_interrupt", self_value)
                 resolved_on_finally = _resolve_callback(on_finally, "_on_finally", self_value)
 
-                final_key = _get_interrupt_key(key, bound_args)
+                final_key: str | None = _get_interrupt_key(key, bound_args)
 
                 if resolved_on_start:
                     await _call_callback(resolved_on_start, state_value)

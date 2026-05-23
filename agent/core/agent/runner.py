@@ -96,10 +96,12 @@ class AgentRunner:
         self, on_before_step: BeforeStepHook, on_after_step: AfterStepHook,
     ) -> StepResult:
         """Race the main loop against an interrupt event."""
+        key = self._interrupt_key
+        assert key is not None, "_run_guarded requires interrupt_key"
         manager = get_interrupt_manager()
-        event = manager.get(self._interrupt_key)
+        event = manager.get(key)
         if event is None:
-            event = manager.create(self._interrupt_key)
+            event = manager.create(key)
 
         loop_task = asyncio.create_task(
             self._run_loop(on_before_step, on_after_step)
@@ -117,9 +119,10 @@ class AgentRunner:
                     await int_task
                 except asyncio.CancelledError:
                     pass
-                if loop_task.exception() is None:
+                exc = loop_task.exception()
+                if exc is None:
                     return loop_task.result()
-                raise loop_task.exception()
+                raise exc
             else:
                 loop_task.cancel()
                 try:
@@ -127,10 +130,10 @@ class AgentRunner:
                 except asyncio.CancelledError:
                     pass
                 self.state.status = StateStatus.INTERRUPTED.value
-                logger.info(f"[Runner] Interrupted: {self._interrupt_key}")
+                logger.info(f"[Runner] Interrupted: {key}")
                 return self.last_result or StepResult(finish_reason="interrupted")
         finally:
-            manager.cleanup(self._interrupt_key)
+            manager.cleanup(key)
 
     # ── Internal: main loop ─────────────────────────────────────────────
 
