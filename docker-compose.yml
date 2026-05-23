@@ -41,11 +41,10 @@ services:
       redis:
         condition: service_healthy
     volumes:
-      - ./firebase-credentials.json:/app/firebase-credentials.json:ro
-      - ./app:/app/app
-      - ./tests:/app/tests
-      - ./alembic:/app/alembic
-    command: ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--reload"]
+      - ./firebase-credentials.json:/api/firebase-credentials.json:ro
+      - ./api:/api
+      - ./alembic:/api/alembic
+    command: ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000", "--reload"]
 
   agent:
     build:

@@ -1,0 +1,25 @@
+Extract discrete, durable facts about the user from this conversation.
+Each fact = one sentence. Assign a category. Only extract what would be useful
+for personalizing future interactions.
+
+Categories: personal | preference | health | work | interest | other
+
+GOOD (durable):
+  {"fact": "Name is John", "category": "personal"}
+  {"fact": "Allergic to peanuts", "category": "health"}
+  {"fact": "Prefers dark humor", "category": "preference"}
+  {"fact": "Works as a software engineer", "category": "work"}
+  {"fact": "Lives in Shanghai", "category": "personal"}
+
+BAD (transient — do NOT extract):
+  "Asked about the weather today"
+  "Said hello"
+  Common knowledge like "The sky is blue"
+
+Return JSON: {{"facts": [{{"fact": "...", "category": "..."}}]}}
+If nothing durable: {{"facts": []}}
+
+CONVERSATION:
+{{turns_text}}
+
+FACTS:

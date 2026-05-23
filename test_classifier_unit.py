@@ -10,7 +10,7 @@ from datetime import datetime
 
 def test_schema_alignment():
     """Ensure the SQLAlchemy model columns match the Alembic migration."""
-    from app.models.roast_scenario import RoastScenario
+    from models.roast_scenario import RoastScenario
 
     model_columns = {c.name: c for c in RoastScenario.__table__.columns}
 
@@ -65,7 +65,7 @@ def test_schema_alignment():
 
 def test_prompt_structure():
     """Ensure the classifier prompt contains all required sections."""
-    from app.jobs.trump_social_crawler.classifier import _build_classifier_prompt
+    from jobs.trump_social_crawler.classifier import _build_classifier_prompt
 
     post = {
         "platform": "truthsocial",
@@ -106,7 +106,7 @@ def test_prompt_structure():
 
 def test_fallback_poison():
     """Fallback should generate a valid poison_opinion entry with all new fields."""
-    from app.jobs.trump_social_crawler.classifier import _fallback_poison
+    from jobs.trump_social_crawler.classifier import _fallback_poison
 
     post = {
         "platform": "truthsocial",
@@ -240,7 +240,7 @@ def test_json_parsing():
 
 def test_roast_id_format():
     """roast_id must follow {mode_abbrev}_{date}_{3-digit-seq}."""
-    from app.jobs.trump_social_crawler.classifier import MODE_ABBREV
+    from jobs.trump_social_crawler.classifier import MODE_ABBREV
 
     expected = {
         "poison_opinion": "poison",
@@ -261,7 +261,7 @@ def test_roast_id_format():
 
 def test_expiry_calculation():
     """Verify expiry times match design doc rules."""
-    from app.jobs.trump_social_crawler.classifier import _add_hours, _extract_date
+    from jobs.trump_social_crawler.classifier import _add_hours, _extract_date
 
     ts = "2026-05-17T08:00:00Z"
     if _add_hours(ts, 48) != "2026-05-19T08:00:00+00:00":

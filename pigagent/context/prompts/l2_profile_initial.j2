@@ -1,0 +1,29 @@
+Generate a user profile from the following facts. This profile will be injected
+into an AI agent's system prompt to personalize its behavior.
+
+STEP 1 — ANALYZE (this reasoning will be discarded, keep the output only):
+- Group facts by domain (personal, preferences, health, work, interests)
+- Note any patterns or contradictions
+- Identify what's most important for personalizing interactions
+
+STEP 2 — OUTPUT (structured profile, under {max_words} words):
+
+[Personal]
+Name, location, demographics, and personal background.
+
+[Preferences]
+Likes, dislikes, communication style, humor preferences, and interaction preferences.
+
+[Health & Constraints]
+Allergies, health conditions, dietary restrictions, and any constraints the agent must respect.
+
+[Work & Interests]
+Occupation, hobbies, areas of expertise, and topics of interest.
+
+[Stats]
+Usage statistics and behavioral patterns.
+
+FACTS:
+{facts_text}
+
+PROFILE:

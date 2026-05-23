@@ -20,7 +20,7 @@
 
 第一版保持简单：
 
-- 新增一个 crawler package，例如 `app/jobs/trump_social_crawler/`。
+- 新增一个 crawler package，例如 `api/jobs/trump_social_crawler/`。
 - 爬虫入口做成 CLI module，例如 `python -m app.jobs.trump_social_crawler --date 2026-05-04`。
 - 生产环境用 Kubernetes CronJob 或现有部署环境的定时任务每天运行一次。
 - 爬虫任务直接使用 `AsyncSessionLocal` 写数据库。
@@ -68,7 +68,7 @@
 
 第一步，整理爬虫代码边界：
 
-- 把现有 `crawl.py` 迁入 `app/jobs/trump_social_crawler/`。
+- 把现有 `crawl.py` 迁入 `api/jobs/trump_social_crawler/`。
 - 拆出 `fetch_truthsocial.py`、`fetch_x.py`、`schemas.py`、`repository.py` 和 `__main__.py`。
 - 保留 `--platform` 和 `--date` 参数。
 - 输出从写 JSON 文件改成写数据库。
