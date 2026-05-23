@@ -4,7 +4,7 @@
             "name": "pigugu-server",
             "path": ".",
             "settings": {
-                "python.analysis.extraPaths": ["api", "agent"]
+                "python.analysis.extraPaths": ["api", "pigagent"]
             }
         },
         {
@@ -16,8 +16,8 @@
             }
         },
         {
-            "name": "agent (LiveKit)",
-            "path": "agent",
+            "name": "pigagent (LiveKit)",
+            "path": "pigagent",
             "settings": {
                 "python.defaultInterpreterPath": "${workspaceFolder}/.venv/Scripts/python.exe",
                 "python.analysis.extraPaths": ["${workspaceFolder}"]

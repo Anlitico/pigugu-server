@@ -151,7 +151,7 @@ This triggers backfill mode, which paginates backward until it covers the target
 
 ## Agent consumption
 
-The LiveKit agent (`agent/main.py`) does not query the database directly. To make crawled posts available to the agent, add a FastAPI internal endpoint and have the agent call it via HTTP. This keeps database access logic inside the API container and avoids duplicating session management in the agent.
+The LiveKit agent (`pigagent/main.py`) does not query the database directly. To make crawled posts available to the agent, add a FastAPI internal endpoint and have the agent call it via HTTP. This keeps database access logic inside the API container and avoids duplicating session management in the agent.
 
 Example internal endpoint pattern:
 
