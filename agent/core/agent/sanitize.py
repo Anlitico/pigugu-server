@@ -1,4 +1,4 @@
-# agent/context/sanitize.py
+# agent/core/agent/sanitize.py
 """Message list sanitization before LLM input — tool call cleanup, token fallback."""
 
 
@@ -16,7 +16,7 @@ def validate_tool_calls(messages: list) -> list:
     if not messages:
         return messages
 
-    from core.llm.types import Message
+    from ..llm.types import Message
 
     responded_ids: set[str] = set()
     for m in messages:

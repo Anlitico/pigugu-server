@@ -15,7 +15,7 @@ from dataclasses import dataclass, field
 
 from core.llm.types import Message
 
-from .sanitize import _len_fallback, validate_tool_calls
+from core.agent.sanitize import _len_fallback, validate_tool_calls
 
 
 @dataclass

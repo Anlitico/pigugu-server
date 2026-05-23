@@ -10,7 +10,7 @@ from context.storage.redis import RedisKeys
 from context.schema import (
     WorkingContext, UserMemory, TokenBudget, RoastContext,
 )
-from context.sanitize import validate_tool_calls
+from core.agent.sanitize import validate_tool_calls
 from config import get_config
 
 _cfg = get_config()

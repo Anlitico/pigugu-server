@@ -10,9 +10,9 @@ import os
 from loguru import logger
 
 from config import get_config
-from core.stt import create_stt
-from core.tts import create_tts
-from core.pigagent import PigAgent, AgentConfig
+from core.audio.stt import create_stt
+from core.audio.tts import create_tts
+from pigagent import PigAgent, PigAgentConfig
 
 
 def validate_configuration(config=None):
@@ -138,8 +138,7 @@ def create_agent_components(config=None, persona=None):
         instructions = get_personality_prompt(llm_provider_id)
 
     model = config.resolve_model()
-    pig_agent = PigAgent(AgentConfig(
-        provider=provider,
+    pig_agent = PigAgent(None, PigAgentConfig(
         model=model,
         instructions=instructions,
         temperature=config.LLM_TEMPERATURE,

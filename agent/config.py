@@ -184,6 +184,7 @@ class AgentConfig(BaseSettings):
     CONTEXT_TOKEN_BUDGET_CAP: int = Field(default_factory=lambda: int(get_config_value("CONTEXT_TOKEN_BUDGET_CAP", 200_000)))
     CONTEXT_ROAST_COMPRESSION_RATIO: float = Field(default_factory=lambda: float(get_config_value("CONTEXT_ROAST_COMPRESSION_RATIO", 0.05)))
     CONTEXT_ROAST_COMPRESSION_MIN_TOKENS: int = Field(default_factory=lambda: int(get_config_value("CONTEXT_ROAST_COMPRESSION_MIN_TOKENS", 1000)))
+    AGENT_MAX_STEPS: int = Field(default_factory=lambda: int(get_config_value("AGENT_MAX_STEPS", 5)))
     CONTEXT_MAX_TURNS: int = Field(default_factory=lambda: int(get_config_value("CONTEXT_MAX_TURNS", 400)))
     CONTEXT_L3_COMPRESS_MAX_WORDS: int = Field(default_factory=lambda: int(get_config_value("CONTEXT_L3_COMPRESS_MAX_WORDS", 5000)))
     CONTEXT_L3_MERGE_MAX_WORDS: int = Field(default_factory=lambda: int(get_config_value("CONTEXT_L3_MERGE_MAX_WORDS", 8000)))

@@ -47,6 +47,7 @@ from lifecycle import ConversationManager, PersistenceProvider
 from models import ConversationState, NewsContext
 from memory import ShortTermMemory
 from personas.mood_provider import MoodProvider
+from core.agent.interrupt import get_interrupt_manager
 
 load_dotenv()
 
@@ -798,21 +799,44 @@ async def entrypoint(ctx: JobContext):
     )
 
     logger.info("Agent and session created (VAD + PigAgent + LiveKit pipeline)")
-        
-        # Add comprehensive logging to debug the conversation pipeline
-        @session.on("user_state_changed")
-        def on_user_state_changed(event):
-            if event.old_state != "speaking" and event.new_state == "speaking":
-                logger.info("🎤 [DEBUG] User started speaking")
-                # Reset timing for new turn when user starts speaking
-                reset_turn_timing()
-            elif event.old_state == "speaking" and event.new_state != "speaking":
-                logger.info(f"🎤 [DEBUG] User stopped speaking (now {event.new_state})")
-                # === TIMING: Record T0 - user stopped speaking ===
-                turn_timing["user_stop_speaking"] = time.perf_counter()
-                logger.info(f"⏱️ [TIMING] T0: User stopped speaking at {turn_timing['user_stop_speaking']:.3f}")
-            else:
-                logger.info(f"👤 [DEBUG] User state: {event.old_state} → {event.new_state}")
+
+    # ── Interrupt wiring ────────────────────────────────────────────
+    # When user starts speaking while agent is responding, trigger
+    # InterruptManager → AgentRunner cancels the current loop.
+    room_name = getattr(ctx.room, 'name', 'unknown')
+    current_interrupt_key: str | None = None
+    interrupt_mgr = get_interrupt_manager()
+
+    @session.on("agent_state_changed")
+    def on_agent_state_changed(event):
+        nonlocal current_interrupt_key
+        if event.new_state == "speaking":
+            # Agent started speaking — clear any previous interrupt
+            current_interrupt_key = None
+        elif event.old_state in ("thinking", "speaking") and event.new_state == "listening":
+            # Agent finished — clean up interrupt event
+            if current_interrupt_key:
+                interrupt_mgr.cleanup(current_interrupt_key)
+                current_interrupt_key = None
+
+    # Add comprehensive logging to debug the conversation pipeline
+    @session.on("user_state_changed")
+    def on_user_state_changed(event):
+        nonlocal current_interrupt_key
+        if event.old_state != "speaking" and event.new_state == "speaking":
+            logger.info("🎤 [DEBUG] User started speaking")
+            reset_turn_timing()
+
+            # Trigger interrupt if agent is currently running
+            if current_interrupt_key:
+                logger.info(f"🛑 [Interrupt] User started speaking, cancelling agent: {current_interrupt_key}")
+                asyncio.create_task(interrupt_mgr.trigger(current_interrupt_key))
+        elif event.old_state == "speaking" and event.new_state != "speaking":
+            logger.info(f"🎤 [DEBUG] User stopped speaking (now {event.new_state})")
+            turn_timing["user_stop_speaking"] = time.perf_counter()
+            logger.info(f"⏱️ [TIMING] T0: User stopped speaking at {turn_timing['user_stop_speaking']:.3f}")
+        else:
+            logger.info(f"👤 [DEBUG] User state: {event.old_state} → {event.new_state}")
         
         @session.on("user_input_transcribed")
         def on_user_input_transcribed(event):
