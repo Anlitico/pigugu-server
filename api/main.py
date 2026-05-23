@@ -14,6 +14,7 @@ from modules.device.internal_router import router as internal_device_router
 from modules.device.router import router as device_router
 from modules.game.router import leaderboard_router
 from modules.game.router import router as game_router
+from modules.gameplay.router import router as gameplay_router
 from modules.news.router import router as news_router
 from modules.push.router import router as push_router
 from modules.push.service import init_firebase
@@ -71,6 +72,7 @@ app.include_router(device_router, prefix="/v1")
 app.include_router(internal_device_router, prefix="/v1")
 app.include_router(news_router, prefix="/v1")
 app.include_router(game_router, prefix="/v1")
+app.include_router(gameplay_router, prefix="/v1")
 app.include_router(leaderboard_router, prefix="/v1")
 app.include_router(push_router, prefix="/v1")
 app.include_router(ws_router)

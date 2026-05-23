@@ -32,6 +32,11 @@ spec:
                     secretKeyRef:
                       name: pigugu-secrets
                       key: BRIGHTDATA_API_KEY
+                - name: DEEPSEEK_API_KEY
+                  valueFrom:
+                    secretKeyRef:
+                      name: pigugu-secrets
+                      key: DEEPSEEK_API_KEY
               resources:
                 requests:
                   memory: "128Mi"

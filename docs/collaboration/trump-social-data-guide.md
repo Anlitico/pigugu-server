@@ -7,7 +7,7 @@ For developers who want to query Trump social media data produced by the Kuberne
 A Kubernetes CronJob (`trump-crawler`) runs daily at 10:00 UTC (6:00 PM China time). It fetches the latest posts from both Truth Social and X/Twitter, then writes them directly into the project database via upsert.
 
 - **K8s manifest**: `k8s/crawler-cronjob.yaml`
-- **Crawler source**: `app/jobs/trump_social_crawler/`
+- **Crawler source**: `api/jobs/trump_social_crawler/`
 - **Deployed alongside**: the API and agent via the same `Deploy to Amazon EKS` workflow
 
 ## Table: `trump_social_posts`
@@ -55,8 +55,8 @@ from fastapi import Depends
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.database import get_db
-from app.models.trump_social_post import TrumpSocialPost
+from core.database import get_db
+from models.trump_social_post import TrumpSocialPost
 
 
 @router.get("/trump-posts")
@@ -81,8 +81,8 @@ Use `AsyncSessionLocal` directly:
 ```python
 import asyncio
 from sqlalchemy import select
-from app.core.database import AsyncSessionLocal
-from app.models.trump_social_post import TrumpSocialPost
+from core.database import AsyncSessionLocal
+from models.trump_social_post import TrumpSocialPost
 
 
 async def main():
@@ -156,12 +156,12 @@ The LiveKit agent (`pigagent/main.py`) does not query the database directly. To 
 Example internal endpoint pattern:
 
 ```python
-# app/modules/trump/router.py
+# api/modules/trump/router.py
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
-from app.core.database import get_db
-from app.models.trump_social_post import TrumpSocialPost
+from core.database import get_db
+from models.trump_social_post import TrumpSocialPost
 
 router = APIRouter(prefix="/internal/trump", tags=["trump-internal"])
 

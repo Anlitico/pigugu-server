@@ -1,5 +1,7 @@
 # Local planning / scratch docs (not for commit)
 localDocs/
+CLAUDE.md
+.claude/
 
 # Byte-compiled / optimized / DLL files
 __pycache__/

@@ -20,6 +20,7 @@ dependencies = [
     "email-validator>=2.0.0",
     "curl_cffi>=0.7.0",
     "boto3>=1.34.0",
+    "openai>=1.0.0",
 ]
 
 [build-system]

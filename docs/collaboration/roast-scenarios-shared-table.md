@@ -23,7 +23,7 @@ CREATE INDEX IF NOT EXISTS idx_roast_scenarios_mode
 | 谁 | 操作 | 说明 |
 |----|------|------|
 | **爬虫管线**（你） | `INSERT INTO roast_scenarios` | 分类器生成 `prompt` 文本后写入 |
-| **ContextManager**（我） | `SELECT prompt WHERE roast_id = $1` | 用户进入玩法时加载，注入 LLM context 的 L4 层 |
+| **ContextLoader**（我） | `SELECT prompt WHERE roast_id = $1` | 用户进入玩法时加载，注入 LLM context 的 L4 层 |
 
 - 你负责：分析帖子 → 生成 `prompt`（游戏场景描述）→ 写入这个表
 - 我负责：按 `roast_id` 读取 → 注入 Agent context → 对话结束后标记 `status = 'expired'`
@@ -52,18 +52,18 @@ Agent 的 LLM 上下文按以下顺序组装：
 ```python
 from core.llm import get_llm, Message
 
-llm = get_llm("qwen3.6-plus")
+llm = get_llm("deepseek-chat")
 resp = await llm.chat(
     messages=[Message.user(CLASSIFIER_PROMPT)],
-    model="qwen3.6-plus",
+    model="deepseek-chat",
     response_format={"type": "json_object"},
     temperature=0.1,
 )
 ```
 
-- 推荐模型 `qwen3.6-plus`（类 GPT-4 级别，分类 + 提取够用，成本低于 plus）
-- 已封装重试、超时、fallback，不需自己管理 HTTP client
-- API key 从环境变量 `DASHSCOPE_US_API_KEY` 读取（provider 池已配置）
+- 推荐模型 `deepseek-chat`（DeepSeek V4 fast — 分类 + 提取够用，成本低）
+- 已封装重试、超时、fallback（默认 60s 超时，2 次重试），不需自己管理 HTTP client
+- API key 从环境变量 `DEEPSEEK_API_KEY` 读取（provider 池已配置）
 
 ## 5. 开发接口约定
 
@@ -71,9 +71,9 @@ resp = await llm.chat(
 
 | 接口 | 提供方 | 消费方 | 说明 |
 |------|--------|--------|------|
-| `roast_scenarios` 表 | 爬虫管线（你） | ContextManager（我） | 你写入，我读取 |
+| `roast_scenarios` 表 | 爬虫管线（你） | ContextLoader（我） | 你写入，我读取 |
 | `trump_social_posts` 表 | 爬虫（已有） | 分类器（你） | 爬虫 upsert 后触发分类 |
-| `ContextManager.end_roast(roast_id)` | ContextManager（我） | 后续流程 | 玩法结束时标记 `status=expired` |
+| `ContextLoader.end_roast(roast_id)` | ContextLoader（我） | 后续流程 | 玩法结束时标记 `status=expired` |
 
 ```python
 # 爬虫管线侧（你）
@@ -81,10 +81,10 @@ from core.llm import get_llm, Message
 
 async def classify_and_store(post: dict) -> None:
     # 1. 调用 LLM 分类 + 生成 prompt
-    llm = get_llm("qwen3.6-plus")
+    llm = get_llm("deepseek-chat")
     resp = await llm.chat(
         messages=[Message.user(build_classifier_prompt(post))],
-        model="qwen3.6-plus",
+        model="deepseek-chat",
         response_format={"type": "json_object"},
     )
     data = json.loads(resp.content)
@@ -99,7 +99,7 @@ async def classify_and_store(post: dict) -> None:
 ```
 
 ```python
-# ContextManager 侧（我）
+# ContextLoader 侧（我）
 async def load_roast_prompt(roast_id: str) -> str:
     row = await db.fetchrow(
         "SELECT prompt FROM roast_scenarios WHERE roast_id=$1 AND status='active'",
@@ -110,8 +110,8 @@ async def load_roast_prompt(roast_id: str) -> str:
 
 ## 6. 待确认
 
-- `prompt` 的 token 上限建议 5000 tokens（软限制，超限不拒绝写入但 ContextManager 会告警），是否满足业务场景？
+- `prompt` 的 token 上限建议 5000 tokens（软限制，超限不拒绝写入但 ContextLoader 会告警），是否满足业务场景？
 - `expires_at` 的过期策略由你决定（48h / 按 mode 不同 / 手动）？
 - `game_mode` 的值列表是否定稿（poison_opinion | debate | prediction | breaking_bomb）？
 - 是否需要 `metadata JSONB` 字段存放 mode-specific 结构化数据（如 debate 的 weakness/strength），供 Agent 工具调用时查询？
-- 分类器用 `qwen3.6-plus` 是否满足精度要求？如需更强推理可换 `qwen-plus`
+- 分类器用 `deepseek-chat` 是否满足精度要求？如需更强推理可换 `deepseek-reasoner`
