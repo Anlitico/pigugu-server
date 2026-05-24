@@ -1,8 +1,9 @@
-﻿# pigagent/components/factory.py
+﻿# pigagent/bootstrap/factory.py
 """
 Component factory: creates STT, PigAgent, TTS instances from configuration.
 
-Extracted from main.py to keep the entrypoint slim and testable.
+Also handles tool registration — assembles the ToolRegistry from tool
+definitions in pigagent.tools and passes them to PigAgentConfig.
 """
 
 import os
@@ -13,6 +14,9 @@ from config import get_config
 from core.audio.stt import create_stt
 from core.audio.tts import create_tts
 from pigagent import PigAgent, PigAgentConfig
+from core.agent import ToolRegistry
+from tools import create_web_search_tool, volume_tool
+from tools.search import TavilyProvider
 
 
 def validate_configuration(config=None):
@@ -138,9 +142,19 @@ def create_agent_components(config=None, persona=None):
         instructions = get_personality_prompt(llm_provider_id)
 
     model = config.resolve_model()
+
+    # Assemble tool registry — create providers, create tools, register
+    search_provider = TavilyProvider()
+    web_search_tool = create_web_search_tool(search_provider)
+
+    registry = ToolRegistry()
+    registry.register_many([web_search_tool, volume_tool])
+
     pig_agent = PigAgent(None, PigAgentConfig(
         model=model,
         system_prompt_id=persona.persona_id if persona else "",
+        tools=registry.tools,
+        tool_handlers=registry.tool_handlers,
         temperature=config.LLM_TEMPERATURE,
         max_tokens=config.LLM_MAX_TOKENS,
     ))

@@ -1,5 +1,5 @@
 ﻿# pigagent/core/agent/__init__.py
-"""Core agent infrastructure — runner, state, interrupt, executor, stop conditions."""
+"""Core agent infrastructure — runner, state, interrupt, executor, tools, stop conditions."""
 
 from .stop import StepResult, step_count_is, no_tool_calls
 from .state import AgentState, StateStatus
@@ -8,6 +8,8 @@ from .interrupt import InterruptManager, InterruptedException, get_interrupt_man
 from .executor import ToolExecutor, ToolResult, ToolExecutionResult
 from .runner import AgentRunner, RunnerConfig
 from .sanitize import _len_fallback, validate_tool_calls
+from .tool import Tool
+from .registry import ToolRegistry
 
 __all__ = [
     "StepResult",
@@ -18,4 +20,6 @@ __all__ = [
     "ToolExecutor", "ToolResult", "ToolExecutionResult",
     "AgentRunner", "RunnerConfig",
     "_len_fallback", "validate_tool_calls",
+
+    "Tool", "ToolRegistry",
 ]

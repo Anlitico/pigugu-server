@@ -38,11 +38,12 @@ from livekit.plugins import silero
 from config import get_config
 from core.llm.types import Message, ModelCapability
 from core.llm.registry import ModelRegistry
-from core.search.adapter import build_search_messages
+from core.llm import get_llm
 from utils import SpeakerTracker, ResponseStrategy
+from tools.search.utils import build_search_messages
 from personas import PersonaRegistry, get_persona, GROUP_DISCUSSION_PROMPT
 from roasts import GameModeRegistry, get_game_mode
-from components.factory import create_agent_components, validate_configuration
+from bootstrap.factory import create_agent_components, validate_configuration
 from lifecycle import ConversationManager, PersistenceProvider
 from models import ConversationState, NewsContext
 from memory import ShortTermMemory
@@ -92,8 +93,8 @@ if config.LOG_TO_FILE:
 from personas.trump import TRUMP_FILLERS
 
 
-# Import perplexity search for tool-based web search (only used when POLICY_SEARCH_BACKEND = "perplexity")
-from core.search.perplexity import web_search as perplexity_web_search
+# Import search providers for tool-based web search
+from tools.search import PerplexityProvider
 
 
 class TrumpAgent(Agent):
@@ -105,10 +106,9 @@ class TrumpAgent(Agent):
     """
     
     def __init__(self, pig_agent, *, speaker_tracker: SpeakerTracker, agent_mode: int,
-                 agent_config=None, game_mode=None, persona=None, conv_manager=None,
-                 search_adapter=None, **kwargs):
+                 agent_config=None, game_mode=None, persona=None, conv_manager=None, **kwargs):
         super().__init__(**kwargs)
-        self._pig_agent = pig_agent         # 我们自己的 Agent 引擎
+        self._pig_agent = pig_agent
         self._speaker_tracker = speaker_tracker
         self._agent_mode = agent_mode
         self._config = agent_config
@@ -116,9 +116,7 @@ class TrumpAgent(Agent):
         self._filler_yielded_at = None
         self._use_search = False
         self._use_perplexity_tool = False
-        # 供 search adapter 使用
-        self._search_adapter = search_adapter
-        self._llm_provider = self._pig_agent.provider.provider_name if hasattr(self._pig_agent, 'provider') else ""
+        self._llm_provider = agent_config.LLM_PROVIDER.lower() if agent_config else ""
         self._llm_model = self._pig_agent.config.model if hasattr(self._pig_agent, 'config') else ""
         # Persona + Game Mode + Lifecycle
         self._game_mode = game_mode
@@ -142,12 +140,14 @@ class TrumpAgent(Agent):
             return '{"error": "Perplexity search not enabled"}'
         
         try:
-            result = await perplexity_web_search(
-                query=query,
-                model=self._config.PERPLEXITY_SEARCH_MODEL if self._config else "sonar-pro",
-                base_url=self._config.PERPLEXITY_SEARCH_BASE_URL if self._config else None,
-            )
-            return json.dumps(result)
+            model = self._config.PERPLEXITY_SEARCH_MODEL if self._config else "sonar"
+            base_url = self._config.PERPLEXITY_SEARCH_BASE_URL if self._config else None
+            provider = PerplexityProvider(model=model, base_url=base_url) if base_url else PerplexityProvider(model=model)
+            result = await provider.search(query=query)
+            return json.dumps({
+                "content": result.content,
+                "citations": result.citations,
+            })
         except Exception as e:
             logger.error(f"🔍 [PERPLEXITY] web_search tool failed: {e}")
             return json.dumps({"error": str(e)})
@@ -269,50 +269,34 @@ class TrumpAgent(Agent):
                     )
     
     async def _search_llm_stream(self, chat_ctx):
-        """Stream LLM response with web search enabled (bypasses LiveKit plugin).
-
-        For Qwen: uses enable_search=True via extra_body on the Chat Completions API.
-        For Grok: uses the Responses API with web_search tool.
-        """
-        messages = build_search_messages(chat_ctx.items)
-        has_system = any(msg["role"] == "system" for msg in messages)
+        """Stream LLM response with provider-native web search enabled."""
+        dict_msgs = build_search_messages(chat_ctx.items)
+        messages = [Message(role=m["role"], content=m["content"]) for m in dict_msgs]
         force_search = bool(self._config and self._config.FORCE_POLICY_SEARCH)
-        adapter_name = type(self._search_adapter).__name__ if self._search_adapter else "None"
+        model = self._config.resolve_model() if self._config else self._llm_model
+        temperature = self._config.LLM_TEMPERATURE if self._config else 0.6
 
-        provider = self._pig_agent.provider
-
-        search_model = self._config.resolve_model() if self._config else "unknown"
         logger.info(
-            f"🔍 [SEARCH] Sending {len(messages)} messages to {search_model} "
-            f"(adapter={adapter_name}, has_system={has_system}, force_search={force_search})"
+            f"🔍 [SEARCH] Streaming with built-in search: model={model}, "
+            f"messages={len(messages)}, force={force_search}"
         )
-        for i, m in enumerate(messages):
-            preview = m["content"][:80] if m["content"] else "(empty)"
-            logger.info(f"🔍 [SEARCH]   msg[{i}] role={m['role']} content={preview!r}")
 
-        try:
-            if not self._search_adapter:
-                raise RuntimeError(f"No search adapter configured for provider={search_model}")
-
-            async for chunk in self._search_adapter.stream_with_search(
-                messages=messages,
-                model=search_model,
-                api_key=provider._api_key,
-                base_url=provider.base_url,
-                temperature=self._config.LLM_TEMPERATURE if self._config else 0.6,
-                force_search=force_search,
-            ):
-                yield chunk
-        except Exception as e:
-            logger.error(f"🔍 [SEARCH] Search API error: {e}")
-            raise
+        provider = get_llm(model)
+        async for delta in provider.chat_stream(
+            messages=messages,
+            model=model,
+            search={"enabled": True, "force": force_search},
+            temperature=temperature,
+        ):
+            if delta.content:
+                yield delta.content
     
     async def llm_node(self, chat_ctx, tools, model_settings):
-        """Override: 用自己的 PigAgent 引擎，不再走 LiveKit 的 LLM 管道。
+        """Override: uses PigAgent engine instead of LiveKit's LLM pipeline.
 
-        Search 路径保持不变：
-        - built_in: _search_llm_stream (provider-native search)
-        - perplexity: 暂留 LiveKit tool loop（后续迁移到 PigAgent tool system）
+        Search paths:
+        - built_in: provider-native search via LLMProvider.chat_stream(search=enabled)
+        - perplexity: LiveKit @function_tool (legacy, migration pending)
         """
         # ── Dynamic context assembly ──────────────────────────────────
         if self._conv_manager:
@@ -770,15 +754,10 @@ async def entrypoint(ctx: JobContext):
         "max_endpointing_delay": max_ep,
     }
 
-    # Build search adapter
-    search_adapter = None
+    # Warn if model lacks native web_search; tool-based search will be used instead
     model_info = ModelRegistry.get(pig_agent.config.model)
-    if ModelCapability.WEB_SEARCH in model_info.capabilities:
-        from core.search.adapter import create_search_adapter
-        search_adapter = create_search_adapter(llm_provider_id)
-    else:
-        # 没有 web search 能力的 provider 走 Perplexity 工具搜索
-        logger.info("Provider doesn't support web_search, will use perplexity tool search")
+    if ModelCapability.WEB_SEARCH not in model_info.capabilities:
+        logger.info("Provider doesn't support web_search, will use tool-based search")
 
     # Create TrumpAgent — our LiveKit adapter wrapping PigAgent
     agent = TrumpAgent(
@@ -786,7 +765,6 @@ async def entrypoint(ctx: JobContext):
         speaker_tracker=speaker_tracker,
         agent_mode=config.AGENT_MODE,
         agent_config=config,
-        search_adapter=search_adapter,
         game_mode=game_mode,
         persona=persona,
         conv_manager=conv_manager,

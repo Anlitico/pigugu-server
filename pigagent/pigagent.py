@@ -59,7 +59,7 @@ class PigAgent:
         agent.record_turn(user_id, result)           # record to context
     """
 
-    def __init__(self, ctx: ContextManager, config: PigAgentConfig):
+    def __init__(self, ctx: ContextManager | None, config: PigAgentConfig):
         self.ctx = ctx
         self.config = config
 
@@ -78,9 +78,14 @@ class PigAgent:
 
     # ── Convenience wrappers around ContextManager ──────────────────────
 
+    def _require_ctx(self) -> ContextManager:
+        if self.ctx is None:
+            raise RuntimeError("PigAgent created without ContextManager")
+        return self.ctx
+
     async def load(self, *, user_id: str) -> list[Message]:
         """Assemble context for an LLM call. Delegates to ContextManager.load."""
-        return await self.ctx.load(user_id=user_id)
+        return await self._require_ctx().load(user_id=user_id)
 
     async def add_turn(
         self, user_id: str, role: str, content: str, *,
@@ -90,17 +95,17 @@ class PigAgent:
         partial: bool = False,
     ) -> None:
         """Record a turn to context. Delegates to ContextManager.add_turn."""
-        await self.ctx.add_turn(
+        await self._require_ctx().add_turn(
             user_id=user_id, role=role, content=content,
             tool_calls=tool_calls, tool_call_id=tool_call_id,
             name=name, partial=partial,
         )
 
     async def end_roast(self, user_id: str) -> None:
-        await self.ctx.end_roast(user_id)
+        await self._require_ctx().end_roast(user_id)
 
     async def write_game_state(self, *, user_id: str, state: dict) -> None:
-        await self.ctx.write_game_state(user_id=user_id, state=state)
+        await self._require_ctx().write_game_state(user_id=user_id, state=state)
 
     # ── Main entry point ────────────────────────────────────────────────
 
@@ -113,12 +118,14 @@ class PigAgent:
         effective_key = interrupt_key or self.config.interrupt_key
         self.runner._interrupt_key = effective_key
 
+        ctx = self._require_ctx()
+
         # Track how many messages were already in context (don't re-save them)
         initial_count = 0
 
         async def _load_context() -> list[Message]:
             nonlocal initial_count
-            context = await self.ctx.load(user_id=user_id)
+            context = await ctx.load(user_id=user_id)
             # Prepend system prompt from registry
             prompt = get_system_prompt(self.config.system_prompt_id)
             if prompt:
@@ -135,7 +142,7 @@ class PigAgent:
                         {"id": tc.id, "name": tc.name, "arguments": tc.arguments}
                         for tc in msg.tool_calls
                     ]
-                await self.ctx.add_turn(
+                await ctx.add_turn(
                     user_id=user_id,
                     role=msg.role,
                     content=msg.content,

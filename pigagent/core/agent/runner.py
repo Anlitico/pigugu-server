@@ -21,14 +21,16 @@ from loguru import logger
 from ..llm import get_llm
 from ..llm.types import Message, ChatResponse
 from .stop import StepResult, step_count_is, no_tool_calls
+from collections.abc import Awaitable
+
 from .state import AgentState, StateStatus
 from .executor import ToolExecutor
 from .interrupt import get_interrupt_manager, InterruptedException
 
-BeforeStepHook = Callable[[], "asyncio.Future[list]"]
+BeforeStepHook = Callable[[], Awaitable[list]]
 """Called once before the loop. Returns initial messages for the LLM."""
 
-AfterStepHook = Callable[[list, AgentState], "asyncio.Future[None]"]
+AfterStepHook = Callable[[list, AgentState], Awaitable[None]]
 """Called once after the loop (in finally). Receives all messages and final state."""
 
 
