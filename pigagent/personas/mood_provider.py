@@ -10,7 +10,7 @@ from typing import Optional
 
 from loguru import logger
 
-from models import MoodState
+from model import MoodState
 
 
 class MoodProvider:

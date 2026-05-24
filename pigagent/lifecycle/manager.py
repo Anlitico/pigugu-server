@@ -24,7 +24,7 @@ from .achievements import AchievementChecker
 from .persistence import PersistenceProvider
 
 if TYPE_CHECKING:
-    from models import ConversationState, NewsContext
+    from model import ConversationState, NewsContext
     from personas.base import Persona
     from roasts import GameMode
 

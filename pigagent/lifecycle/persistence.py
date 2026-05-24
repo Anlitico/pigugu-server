@@ -12,7 +12,7 @@ from typing import Optional, TYPE_CHECKING
 from loguru import logger
 
 if TYPE_CHECKING:
-    from models import ConversationState, ScoreResult
+    from model import ConversationState, ScoreResult
 
 
 class PersistenceProvider:

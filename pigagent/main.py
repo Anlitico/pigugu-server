@@ -39,10 +39,10 @@ from core.llm.types import Message, ModelCapability
 from core.llm.registry import ModelRegistry
 from tools.search.utils import build_search_messages
 from personas import PersonaRegistry, get_persona
-from roasts import GameModeRegistry, get_game_mode
+from roast import GameModeRegistry, get_game_mode
 from bootstrap.factory import create_agent_components, validate_configuration
 from lifecycle import ConversationManager, PersistenceProvider
-from models import ConversationState, NewsContext
+from model import Mode, ConversationState, NewsContext
 from personas.mood_provider import MoodProvider
 from core.agent.interrupt import get_interrupt_manager
 
@@ -95,7 +95,7 @@ class TrumpAgent(Agent):
     """
 
     def __init__(self, pig_agent, *, agent_config=None, game_mode=None,
-                 persona=None, conv_manager=None, **kwargs):
+                 persona=None, conv_manager=None, roast_body: str = "", **kwargs):
         super().__init__(**kwargs)
         self._pig_agent = pig_agent
         self._config = agent_config
@@ -108,6 +108,8 @@ class TrumpAgent(Agent):
         self._game_mode = game_mode
         self._persona = persona
         self._conv_manager = conv_manager
+        self._roast_body = roast_body
+        self._roast_injected = False
     
     async def on_user_turn_completed(self, turn_ctx, new_message):
         """Called when the user's turn has ended, before the agent's reply."""
@@ -170,6 +172,21 @@ class TrumpAgent(Agent):
         # Convert LiveKit items → Message list
         dict_msgs = build_search_messages(chat_ctx.items)
         messages = [Message(role=m["role"], content=m["content"]) for m in dict_msgs]
+
+        # Inject roast body (news + game rules) as a user message once
+        if self._roast_body and not self._roast_injected:
+            self._roast_injected = True
+            roast_msg = Message.user(self._roast_body)
+            # Insert after system messages, before user messages
+            insert_at = 0
+            for i, msg in enumerate(messages):
+                if msg.role != "system":
+                    insert_at = i
+                    break
+            else:
+                insert_at = len(messages)
+            messages.insert(insert_at, roast_msg)
+            logger.info(f"[Roast] Injected roast body at position {insert_at}")
 
         search_param = {"enabled": True} if use_search else None
         if use_search and self._config and self._config.FORCE_POLICY_SEARCH:
@@ -437,13 +454,13 @@ async def entrypoint(ctx: JobContext):
     GameModeRegistry.register_defaults()
 
     persona_id = metadata.get("persona", "trump") if metadata else "trump"
-    mode_id = metadata.get("mode", "roast") if metadata else "roast"
+    mode_id = metadata.get("mode", "roast_together") if metadata else "roast_together"
 
     persona = get_persona(persona_id)
     game_mode = get_game_mode(mode_id)
 
     logger.info(f"🎭 Persona: {persona.persona_id} ({persona.display_name}, domain={persona.domain})")
-    logger.info(f"🎮 Game Mode: {game_mode.mode_id} ({game_mode.display_name})")
+    logger.info(f"🎮 Game Mode: {game_mode.mode} ({game_mode.display_name})")
 
     # ── Init conversation lifecycle ────────────────────────────────────
     news_context = None
@@ -538,20 +555,18 @@ async def entrypoint(ctx: JobContext):
     # Build VAD (Voice Activity Detection)
     vad = silero.VAD.load()
 
-    # Build instructions from persona
+    # Build instructions from persona only (stable KV-cache prefix)
     llm_provider_id = config.LLM_PROVIDER.lower()
     instructions = persona.get_full_prompt(llm_provider_id)
     logger.info(f"Using persona '{persona.persona_id}' prompt (provider={llm_provider_id})")
 
-    # Add metadata context
-    if metadata:
-        instructions += "\n\nContext:\n"
-        for key, value in metadata.items():
-            instructions += f"- {key}: {value}\n"
-
-    # Add Game Mode system prompt extension
-    instructions += "\n\n" + game_mode.system_prompt_extension
-    logger.info(f"Added game mode prompt: {game_mode.mode_id}")
+    # Build roast body: news material + game mode rules (injected as user message)
+    roast_parts: list[str] = []
+    if news_context:
+        roast_parts.append(news_context.render())
+    roast_parts.append(game_mode.system_prompt_extension)
+    roast_body = "\n\n".join(p for p in roast_parts if p)
+    logger.info(f"Game mode '{game_mode.mode}' loaded as roast body ({len(roast_body)} chars)")
 
     min_ep = 0.5
     max_ep = 2.0
@@ -576,6 +591,7 @@ async def entrypoint(ctx: JobContext):
     agent = TrumpAgent(
         pig_agent=pig_agent,
         agent_config=config,
+        roast_body=roast_body,
         game_mode=game_mode,
         persona=persona,
         conv_manager=conv_manager,

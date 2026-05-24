@@ -9,7 +9,7 @@ scores from the completed ConversationState.
 from typing import Optional, TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from models import ConversationState, ScoreResult
+    from model import ConversationState, ScoreResult
     from roasts import GameMode
 
 
@@ -45,7 +45,7 @@ class Scorer:
         persona=None,
     ) -> "ScoreResult":
         """Calculate all scores for a completed conversation."""
-        from models import ScoreResult
+        from model import ScoreResult
 
         credibility = self._calc_credibility(state, game_mode)
         roast_points = self._calc_roast_points(state, game_mode)

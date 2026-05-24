@@ -8,7 +8,7 @@ import time
 from typing import Optional, TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from models import ConversationState
+    from model import ConversationState
 
 
 class StoryCard:

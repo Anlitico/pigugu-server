@@ -46,7 +46,7 @@ class Persona(ABC):
 
     def get_system_prompt(self, assembly) -> str:
         """Full system prompt: personality + mood + news + mode + memory + ending."""
-        from models import MoodState, NewsContext
+        from model import MoodState, NewsContext
 
         parts = [self.personality_prompt]
 

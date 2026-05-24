@@ -260,7 +260,7 @@ class WorkingContext:
             budget.layer_3_session = tc(self.summary)
 
         if self.roast and self.roast.summary:
-            result.append(Message.system(f"[Game scenario + history]\n{self.roast.summary}"))
+            result.append(Message.user(f"[Game scenario + history]\n{self.roast.summary}"))
             budget.layer_4_roast_prompt = tc(self.roast.summary)
 
         # raw_turns are oldest→newest (RPUSH order)
