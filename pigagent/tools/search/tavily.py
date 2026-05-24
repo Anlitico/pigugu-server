@@ -41,7 +41,7 @@ class TavilyProvider(SearchProvider):
             raise RuntimeError(
                 "No Tavily API key found. Set TAVILY_API_KEY."
             )
-        self._search_depth = search_depth
+        self._search_depth: str = search_depth
         self._max_results = max_results
         self._client = _TavilyClient(api_key=self._api_key)  # type: ignore[misc]
 
@@ -55,7 +55,7 @@ class TavilyProvider(SearchProvider):
 
         response = self._client.search(
             query=query,
-            search_depth=self._search_depth,
+            search_depth=self._search_depth,  # type: ignore[reportArgumentType]
             max_results=self._max_results,
             include_answer=True,
         )

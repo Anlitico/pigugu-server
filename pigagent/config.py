@@ -209,22 +209,9 @@ class AgentConfig(BaseSettings):
     PERPLEXITY_SEARCH_MODEL: str = Field(default_factory=lambda: get_config_value("PERPLEXITY_SEARCH_MODEL", "sonar-pro"))
     PERPLEXITY_SEARCH_BASE_URL: str = Field(default_factory=lambda: get_config_value("PERPLEXITY_SEARCH_BASE_URL", "https://api.perplexity.ai"))
     
-    # Agent Mode: 1 = Default, 2 = Interrupt Mode, 3 = Group Discussion Mode
+    # Agent Mode: 1 = Default, 2 = Interrupt Mode
     AGENT_MODE: int = Field(default_factory=lambda: int(get_config_value("AGENT_MODE", 1)))
     INTERRUPT_INTERVAL_SECONDS: float = Field(default_factory=lambda: float(get_config_value("INTERRUPT_INTERVAL_SECONDS", 30.0)))
-    GROUP_MODE_SILENCE_CHECK_SECONDS: float = Field(default_factory=lambda: float(get_config_value("GROUP_MODE_SILENCE_CHECK_SECONDS", 10.0)))
-    
-    # Mode 3 Response Gating
-    GROUP_RESPONSE_COOLDOWN_SECONDS: float = Field(default_factory=lambda: float(get_config_value("GROUP_RESPONSE_COOLDOWN_SECONDS", 15.0)))
-    GROUP_MIN_TURNS_BEFORE_RESPONSE: int = Field(default_factory=lambda: int(get_config_value("GROUP_MIN_TURNS_BEFORE_RESPONSE", 4)))
-    GROUP_RAPID_EXCHANGE_THRESHOLD: float = Field(default_factory=lambda: float(get_config_value("GROUP_RAPID_EXCHANGE_THRESHOLD", 3.0)))
-    GROUP_MIN_ENDPOINTING_DELAY: float = Field(default_factory=lambda: float(get_config_value("GROUP_MIN_ENDPOINTING_DELAY", 1.5)))
-    GROUP_MAX_ENDPOINTING_DELAY: float = Field(default_factory=lambda: float(get_config_value("GROUP_MAX_ENDPOINTING_DELAY", 5.0)))
-    
-    # Smart Response Settings (Phase 4)
-    ENABLE_SMART_RESPONSE: bool = Field(default_factory=lambda: get_bool_config_value("ENABLE_SMART_RESPONSE", False))
-    GROUP_RESPONSE_SILENCE_THRESHOLD: float = Field(default_factory=lambda: float(get_config_value("GROUP_RESPONSE_SILENCE_THRESHOLD", 3.0)))
-    DIRECT_ADDRESS_KEYWORDS: str = Field(default_factory=lambda: get_config_value("DIRECT_ADDRESS_KEYWORDS", "Trump,president,Donald,you,what do you think"))
     
     # Advanced Settings (Phase 5)
     ENGAGEMENT_THRESHOLD: float = Field(default_factory=lambda: float(get_config_value("ENGAGEMENT_THRESHOLD", 0.7)))
@@ -247,7 +234,6 @@ class AgentConfig(BaseSettings):
 # during phased migration. New code should use PersonaRegistry.get("trump").
 
 from personas.trump import TRUMP_PERSONALITY_PROMPT
-from personas import GROUP_DISCUSSION_PROMPT
 
 AI_PERSONALITY = TRUMP_PERSONALITY_PROMPT.format(today=date.today().isoformat())
 

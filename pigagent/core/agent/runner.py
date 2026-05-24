@@ -18,10 +18,11 @@ from typing import Callable
 
 from loguru import logger
 
+from collections.abc import AsyncIterator, Awaitable
+
 from ..llm import get_llm
 from ..llm.types import Message, ChatResponse
 from .stop import StepResult, step_count_is, no_tool_calls
-from collections.abc import Awaitable
 
 from .state import AgentState, StateStatus
 from .executor import ToolExecutor
@@ -91,6 +92,81 @@ class AgentRunner:
         if self._interrupt_key:
             return await self._run_guarded(on_before_step, on_after_step)
         return await self._run_loop(on_before_step, on_after_step)
+
+    async def stream(
+        self,
+        messages: list[Message],
+        *,
+        search: dict | None = None,
+        interrupt_key: str | None = None,
+    ) -> AsyncIterator[str]:
+        """Stream the agent ReAct loop, yielding text chunks in real time.
+
+        Takes messages directly (no ContextManager required).
+        Text from each LLM call is yielded immediately for TTS.
+        Tool execution happens transparently between LLM calls.
+        """
+        self._interrupt_key = interrupt_key
+        msgs = list(messages)
+        self.current_step = 0
+        self.state = AgentState(status=StateStatus.RUNNING.value)
+
+        try:
+            while not self._should_stop():
+                self.current_step += 1
+                logger.debug(f"[Runner] Stream step {self.current_step}")
+
+                provider = get_llm(self._model)
+                openai_tools = [t.to_openai_schema() for t in self._tools] if self._tools else None
+
+                collected: list[str] = []
+                tool_calls: list | None = None
+                finish = "stop"
+
+                async for delta in provider.chat_stream(  # type: ignore[reportGeneralTypeIssues]
+                    messages=msgs,
+                    model=self._model,
+                    tools=openai_tools,
+                    temperature=self._temperature,
+                    max_tokens=self._max_tokens,
+                    search=search,
+                ):
+                    if delta.content:
+                        collected.append(delta.content)
+                        yield delta.content
+
+                    if delta.tool_calls:
+                        tool_calls = delta.tool_calls
+
+                    if delta.finish_reason:
+                        finish = delta.finish_reason
+
+                content = "".join(collected)
+                self.last_result = StepResult(
+                    messages=msgs, content=content,
+                    tool_calls=tool_calls, finish_reason=finish,
+                )
+
+                if tool_calls:
+                    msgs.append(self._make_assistant_msg(self.last_result))
+                    exec_result = await self._executor.run(tool_calls)
+                    for tr in exec_result.results:
+                        msgs.append(Message.tool(
+                            call_id=tr.tool_call_id,
+                            name=tr.tool_name,
+                            content=tr.content if tr.success else f"Error: {tr.error}",
+                        ))
+                    continue
+
+                msgs.append(self._make_assistant_msg(self.last_result))
+                self.state.status = StateStatus.SUCCESS.value
+                return
+
+        except InterruptedException:
+            self.state.status = StateStatus.INTERRUPTED.value
+        except Exception:
+            self.state.status = StateStatus.ERROR.value
+            raise
 
     # ── Internal: interrupt-guarded loop ────────────────────────────────
 
@@ -190,7 +266,7 @@ class AgentRunner:
 
         return self.last_result or StepResult()
 
-    # ── Internal: single step ───────────────────────────────────────────
+    # ── Internal: single step (non-streaming) ────────────────────────────
 
     async def _run_step(self, messages: list[Message]) -> StepResult:
         """Execute a single LLM call and parse the response."""

@@ -72,10 +72,6 @@ def validate_configuration(config=None):
                 "when POLICY_SEARCH_BACKEND=perplexity"
             )
 
-    # Mode 3 requires diarization
-    if config.AGENT_MODE == 3 and not config.DEEPGRAM_ENABLE_DIARIZATION:
-        errors.append("Mode 3 (Group Discussion) requires DEEPGRAM_ENABLE_DIARIZATION = true")
-
     if errors:
         logger.error("=" * 70)
         logger.error("Configuration Errors:")

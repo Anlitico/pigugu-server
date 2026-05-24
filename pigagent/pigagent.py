@@ -1,17 +1,20 @@
 ﻿# pigagent/pigagent.py
 """PigAgent — pigugu agent definition that assembles AgentRunner + ContextManager.
 
-The agent lifecycle:
-    1. Load context (L1-L4) from ContextManager
-    2. Run AgentRunner loop (LLM + tools)
-    3. Record turns to ContextManager
-    4. Trigger compression when needed
+Two entry points:
+    stream(messages) — streaming ReAct loop with tools, for LiveKit integration
+    run(user_id)     — context-managed loop with Redis/PG persistence
 
-Streaming is supported via the AgentRunner's on_after_step hook.
+The agent lifecycle:
+    1. Load context (L1-L4) from ContextManager (run only)
+    2. Run AgentRunner loop (LLM + tools)
+    3. Record turns to ContextManager (run only)
+    4. Trigger compression when needed
 """
 
 from __future__ import annotations
 
+from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
@@ -161,3 +164,30 @@ class PigAgent:
             f"status={self.runner.state.status}, new_messages={len(result.messages) - initial_count}"
         )
         return result
+
+    async def stream(
+        self,
+        messages: list[Message],
+        *,
+        search: dict | None = None,
+        interrupt_key: str | None = None,
+    ) -> AsyncIterator[str]:
+        """Stream the agent ReAct loop on given messages.
+
+        Does not require ContextManager. Text chunks are yielded in real time
+        for TTS. Tool calls are handled transparently between LLM calls.
+
+        This is the primary entry point for LiveKit integration.
+        """
+        effective_key = interrupt_key or self.config.interrupt_key
+        logger.info(f"[PigAgent] Starting stream, interrupt_key={effective_key}")
+
+        async for text in self.runner.stream(
+            messages, search=search, interrupt_key=effective_key,
+        ):
+            yield text
+
+        logger.info(
+            f"[PigAgent] Stream complete: {self.runner.current_step} steps, "
+            f"status={self.runner.state.status}"
+        )

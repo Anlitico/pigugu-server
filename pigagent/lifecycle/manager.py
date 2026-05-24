@@ -27,8 +27,6 @@ if TYPE_CHECKING:
     from models import ConversationState, NewsContext
     from personas.base import Persona
     from roasts import GameMode
-    from memory.store import MemoryStore
-    from context.assembler import ContextAssembler
 
 
 class ConversationManager:
@@ -46,8 +44,6 @@ class ConversationManager:
         game_mode: "GameMode",
         silence_handler: Optional[SilenceHandler] = None,
         scorer: Optional[Scorer] = None,
-        memory_store: Optional["MemoryStore"] = None,
-        context_assembler: Optional["ContextAssembler"] = None,
         persistence: Optional[PersistenceProvider] = None,
         achievement_checker: Optional[AchievementChecker] = None,
         device_id: str = "",
@@ -57,8 +53,6 @@ class ConversationManager:
         self._game_mode = game_mode
         self._silence = silence_handler or SilenceHandler()
         self._scorer = scorer or Scorer()
-        self._memory = memory_store
-        self._assembler = context_assembler
         self._persistence = persistence
         self._achievements = achievement_checker or AchievementChecker()
         self._device_id = device_id
@@ -77,10 +71,6 @@ class ConversationManager:
         """
         user_text = user_message.strip()
         self.state.add_turn("user", user_text)
-
-        # Write to short-term memory
-        if self._memory:
-            self._memory.add_turn(self.state.user_id or "default", "user", user_text)
 
         # Reset silence tracking
         self._silence.reset()
@@ -109,10 +99,6 @@ class ConversationManager:
     def on_agent_message(self, content: str) -> None:
         """Called after the agent generates a response."""
         self.state.add_turn("assistant", content)
-
-        # Write to short-term memory
-        if self._memory:
-            self._memory.add_turn(self.state.user_id or "default", "assistant", content)
 
         # Schedule async scoring on first agent message after ending
         if self.state.ending.triggered and not self._scoring_scheduled:
@@ -153,24 +139,10 @@ class ConversationManager:
     async def assemble_context(self, chat_ctx, provider: str = "") -> str:
         """Build and inject the dynamic system prompt for the upcoming LLM call.
 
-        Replaces the static instructions string with a per-turn assembled
-        prompt that includes mood, news, memory, ending state, etc.
+        Currently a no-op — context assembly is handled by PigAgent's
+        ContextManager and the persona prompt injected by the entrypoint.
         """
-        if not self._assembler:
-            return ""
-
-        prompt = await self._assembler.assemble(
-            persona=self._persona,
-            game_mode=self._game_mode,
-            state=self.state,
-            memory=self._memory,
-            provider=provider,
-        )
-
-        # Inject into LiveKit ChatContext
-        self._assembler.inject_into_chat_ctx(prompt, chat_ctx)
-
-        return prompt
+        return ""
 
     # ── Internal ──────────────────────────────────────────────────────
 

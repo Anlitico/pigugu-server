@@ -28,7 +28,6 @@ from livekit.agents import (
     WorkerOptions,
     StopResponse,
     cli,
-    function_tool,
 )
 from livekit.agents.voice import room_io
 from livekit import rtc
@@ -38,15 +37,12 @@ from livekit.plugins import silero
 from config import get_config
 from core.llm.types import Message, ModelCapability
 from core.llm.registry import ModelRegistry
-from core.llm import get_llm
-from utils import SpeakerTracker, ResponseStrategy
 from tools.search.utils import build_search_messages
-from personas import PersonaRegistry, get_persona, GROUP_DISCUSSION_PROMPT
+from personas import PersonaRegistry, get_persona
 from roasts import GameModeRegistry, get_game_mode
 from bootstrap.factory import create_agent_components, validate_configuration
 from lifecycle import ConversationManager, PersistenceProvider
 from models import ConversationState, NewsContext
-from memory import ShortTermMemory
 from personas.mood_provider import MoodProvider
 from core.agent.interrupt import get_interrupt_manager
 
@@ -93,29 +89,19 @@ if config.LOG_TO_FILE:
 from personas.trump import TRUMP_FILLERS
 
 
-# Import search providers for tool-based web search
-from tools.search import PerplexityProvider
-
-
 class TrumpAgent(Agent):
     """
-    Custom Agent that adds speaker attribution and response gating for Mode 3.
-    
-    In Mode 3, user messages are prefixed with [Speaker X]: and the agent
-    decides whether to respond based on talk-show guest heuristics.
+    LiveKit Agent adapter. LLM and tool execution are delegated to PigAgent.stream().
     """
-    
-    def __init__(self, pig_agent, *, speaker_tracker: SpeakerTracker, agent_mode: int,
-                 agent_config=None, game_mode=None, persona=None, conv_manager=None, **kwargs):
+
+    def __init__(self, pig_agent, *, agent_config=None, game_mode=None,
+                 persona=None, conv_manager=None, **kwargs):
         super().__init__(**kwargs)
         self._pig_agent = pig_agent
-        self._speaker_tracker = speaker_tracker
-        self._agent_mode = agent_mode
         self._config = agent_config
         self._pending_filler = None
         self._filler_yielded_at = None
         self._use_search = False
-        self._use_perplexity_tool = False
         self._llm_provider = agent_config.LLM_PROVIDER.lower() if agent_config else ""
         self._llm_model = self._pig_agent.config.model if hasattr(self._pig_agent, 'config') else ""
         # Persona + Game Mode + Lifecycle
@@ -123,107 +109,10 @@ class TrumpAgent(Agent):
         self._persona = persona
         self._conv_manager = conv_manager
     
-    @function_tool(description="Search the web for current information using Perplexity")
-    async def web_search(self, query: str) -> str:
-        """
-        Tool-based web search using Perplexity API.
-        Only available when POLICY_SEARCH_BACKEND is set to "perplexity".
-        
-        Args:
-            query: The search query to execute
-            
-        Returns:
-            JSON string with search results including content and citations
-        """
-        if not self._config or self._config.POLICY_SEARCH_BACKEND != "perplexity":
-            logger.warning("🔍 [PERPLEXITY] web_search tool called but backend is not perplexity")
-            return '{"error": "Perplexity search not enabled"}'
-        
-        try:
-            model = self._config.PERPLEXITY_SEARCH_MODEL if self._config else "sonar"
-            base_url = self._config.PERPLEXITY_SEARCH_BASE_URL if self._config else None
-            provider = PerplexityProvider(model=model, base_url=base_url) if base_url else PerplexityProvider(model=model)
-            result = await provider.search(query=query)
-            return json.dumps({
-                "content": result.content,
-                "citations": result.citations,
-            })
-        except Exception as e:
-            logger.error(f"🔍 [PERPLEXITY] web_search tool failed: {e}")
-            return json.dumps({"error": str(e)})
-    
     async def on_user_turn_completed(self, turn_ctx, new_message):
-        """
-        Called when the user's turn has ended, before the agent's reply.
-        
-        Mode 3: Adds [Speaker X]: prefix AND gates whether the agent should
-        respond at all (raise StopResponse to suppress). Behaves like a
-        talk-show side guest -- only speaks when appropriate.
-        
-        All modes: If filler words are enabled, picks a Trump-style filler
-        and injects context so the LLM continues from it.
-        """
-        # --- Mode 3: speaker attribution + response gating ---
-        if self._agent_mode == 3:
-            last_speaker = self._speaker_tracker.get_last_speaker()
-            original_text = new_message.text_content or ""
-            if last_speaker is not None and original_text:
-                new_message.content = [f"[Speaker {last_speaker}]: {original_text}"]
-                logger.debug(f"📊 [MODE 3] Speaker attribution: [Speaker {last_speaker}]")
-            
-            text_lower = original_text.lower()
-            
-            cooldown = self._config.GROUP_RESPONSE_COOLDOWN_SECONDS if self._config else 15.0
-            min_turns = self._config.GROUP_MIN_TURNS_BEFORE_RESPONSE if self._config else 4
-            rapid_threshold = self._config.GROUP_RAPID_EXCHANGE_THRESHOLD if self._config else 3.0
-            
-            kw_str = self._config.DIRECT_ADDRESS_KEYWORDS if self._config else "Trump,president,Donald,you,what do you think"
-            direct_keywords = [k.strip().lower() for k in kw_str.split(",")]
-            
-            is_direct = any(kw in text_lower for kw in direct_keywords)
-            if is_direct:
-                logger.info(f"🎯 [MODE 3] Direct address detected -- responding")
-            else:
-                recent_turns = self._speaker_tracker.get_recent_turns(count=40)
-                now = time.time()
-                
-                for turn in reversed(recent_turns):
-                    if turn.is_agent:
-                        if (now - turn.timestamp) < cooldown:
-                            logger.info(f"🔇 [MODE 3] Suppressed -- cooldown ({now - turn.timestamp:.1f}s < {cooldown}s)")
-                            raise StopResponse()
-                        break
-                
-                segments = []
-                for turn in recent_turns:
-                    key = "agent" if turn.is_agent else turn.speaker_id
-                    if segments and segments[-1][0] == key:
-                        segments[-1] = (key, turn.timestamp)
-                    else:
-                        segments.append((key, turn.timestamp))
-                
-                user_segments = [(k, ts) for k, ts in segments if k != "agent"]
-                if len(user_segments) >= 2:
-                    prev_speaker, prev_ts = user_segments[-2]
-                    curr_speaker, curr_ts = user_segments[-1]
-                    gap = curr_ts - prev_ts
-                    if prev_speaker != curr_speaker and gap < rapid_threshold:
-                        logger.info(f"🔇 [MODE 3] Suppressed -- rapid exchange between speakers (gap {gap:.1f}s < {rapid_threshold}s)")
-                        raise StopResponse()
-                
-                segments_since_agent = 0
-                for key, _ in reversed(segments):
-                    if key == "agent":
-                        break
-                    segments_since_agent += 1
-                
-                if segments_since_agent < min_turns:
-                    logger.info(f"🔇 [MODE 3] Suppressed -- only {segments_since_agent}/{min_turns} speaker segments since last response")
-                    raise StopResponse()
-                
-                logger.info(f"🎯 [MODE 3] Allowing response ({segments_since_agent} speaker segments since last, gap OK)")
-        
-        # --- Filler words (all modes, skip short messages like greetings) ---
+        """Called when the user's turn has ended, before the agent's reply."""
+
+        # --- Filler words (skip short messages like greetings) ---
         user_text = (new_message.text_content or "").strip()
         if self._config and self._config.ENABLE_FILLER_WORDS and len(user_text.split()) > 5:
             filler = random.choice(TRUMP_FILLERS)
@@ -236,16 +125,10 @@ class TrumpAgent(Agent):
             )
             logger.info(f"💬 [FILLER] Queued filler: \"{filler}\"")
         
-        # --- Policy search: let the model decide when to search ---
+        # --- Policy search: enable native web search in the LLM call ---
         self._use_search = bool(self._config and self._config.ENABLE_POLICY_SEARCH)
-        self._use_perplexity_tool = (
-            self._use_search and
-            self._config and
-            self._config.POLICY_SEARCH_BACKEND == "perplexity"
-        )
         if self._use_search:
-            backend = "perplexity" if self._use_perplexity_tool else "built_in"
-            logger.info(f"🔍 [SEARCH] Policy search enabled, backend={backend}")
+            logger.info("🔍 [SEARCH] Native web search enabled")
 
         # --- Lifecycle: delegate to ConversationManager ---
         user_text = (new_message.text_content or "").strip()
@@ -268,37 +151,12 @@ class TrumpAgent(Agent):
                         role="system", content=lifecycle_result["mode_context"]
                     )
     
-    async def _search_llm_stream(self, chat_ctx):
-        """Stream LLM response with provider-native web search enabled."""
-        dict_msgs = build_search_messages(chat_ctx.items)
-        messages = [Message(role=m["role"], content=m["content"]) for m in dict_msgs]
-        force_search = bool(self._config and self._config.FORCE_POLICY_SEARCH)
-        model = self._config.resolve_model() if self._config else self._llm_model
-        temperature = self._config.LLM_TEMPERATURE if self._config else 0.6
-
-        logger.info(
-            f"🔍 [SEARCH] Streaming with built-in search: model={model}, "
-            f"messages={len(messages)}, force={force_search}"
-        )
-
-        provider = get_llm(model)
-        async for delta in provider.chat_stream(
-            messages=messages,
-            model=model,
-            search={"enabled": True, "force": force_search},
-            temperature=temperature,
-        ):
-            if delta.content:
-                yield delta.content
-    
     async def llm_node(self, chat_ctx, tools, model_settings):
-        """Override: uses PigAgent engine instead of LiveKit's LLM pipeline.
+        """Override: delegates to PigAgent.stream() for LLM + tool execution.
 
-        Search paths:
-        - built_in: provider-native search via LLMProvider.chat_stream(search=enabled)
-        - perplexity: LiveKit @function_tool (legacy, migration pending)
+        Converts LiveKit chat_ctx to Message list, enables native web search
+        if configured, and streams text chunks directly for TTS.
         """
-        # ── Dynamic context assembly ──────────────────────────────────
         if self._conv_manager:
             await self._conv_manager.assemble_context(
                 chat_ctx, provider=self._llm_provider
@@ -307,37 +165,18 @@ class TrumpAgent(Agent):
         filler = self._pending_filler
         self._pending_filler = None
         use_search = self._use_search
-        use_perplexity_tool = self._use_perplexity_tool
         self._use_search = False
-        self._use_perplexity_tool = False
 
-        if use_search:
-            if use_perplexity_tool:
-                logger.info("🔍 [SEARCH] Using Perplexity tool-based search")
-            else:
-                logger.info(f"🔍 [SEARCH] Using built-in search ({self._llm_provider})")
+        # Convert LiveKit items → Message list
+        dict_msgs = build_search_messages(chat_ctx.items)
+        messages = [Message(role=m["role"], content=m["content"]) for m in dict_msgs]
 
-        def _get_llm_gen():
-            if use_search and not use_perplexity_tool:
-                return self._search_llm_stream(chat_ctx)
+        search_param = {"enabled": True} if use_search else None
+        if use_search and self._config and self._config.FORCE_POLICY_SEARCH:
+            search_param = {"enabled": True, "force": True}
 
-            if use_perplexity_tool:
-                # Perplexity tool search — 暂留 LiveKit tool loop
-                return Agent.default.llm_node(self, chat_ctx, tools, model_settings)
-
-            # Normal path: 委托给 PigAgent
-            messages = build_search_messages(chat_ctx.items)
-            wrapped = [Message(role=m["role"], content=m["content"]) for m in messages]
-
-            async def _pig_agent_stream():
-                try:
-                    async for text in self._pig_agent.run(wrapped):
-                        yield text
-                except Exception as e:
-                    logger.error(f"[PigAgent] run failed: {e}")
-                    raise
-
-            return _pig_agent_stream()
+        def _gen():
+            return self._pig_agent.stream(messages, search=search_param)
 
         if filler:
             self._filler_yielded_at = time.perf_counter()
@@ -350,7 +189,7 @@ class TrumpAgent(Agent):
 
             async def _buffer_llm():
                 try:
-                    async for chunk in _get_llm_gen():
+                    async for chunk in _gen():
                         await queue.put(chunk)
                 except Exception as e:
                     logger.error(f"[LLM] Stream failed: {e}")
@@ -373,7 +212,7 @@ class TrumpAgent(Agent):
 
             await llm_task
         else:
-            async for chunk in _get_llm_gen():
+            async for chunk in _gen():
                 yield chunk
 
 
@@ -583,17 +422,6 @@ async def entrypoint(ctx: JobContext):
         logger.info(f"⏱️ ══════════════════════════════════════════════════════════")
     # === END LATENCY TIMING INSTRUMENTATION ===
     
-    # Initialize speaker tracker
-    speaker_tracker = SpeakerTracker(active_window_seconds=60.0)
-    
-    # Initialize response strategy
-    direct_keywords = [k.strip() for k in config.DIRECT_ADDRESS_KEYWORDS.split(",")]
-    response_strategy = ResponseStrategy(
-        enabled=config.ENABLE_SMART_RESPONSE,
-        group_silence_threshold=config.GROUP_RESPONSE_SILENCE_THRESHOLD,
-        direct_address_keywords=direct_keywords
-    )
-    
     # Parse metadata from job context
     metadata = {}
     if ctx.job.metadata:
@@ -629,9 +457,7 @@ async def entrypoint(ctx: JobContext):
             mode=game_mode.mode_id,
             persona=persona.persona_id,
         )
-    # ── Memory + Context + Persistence ─────────────────────────────────
-    memory_store = ShortTermMemory()
-    context_assembler = ContextAssembler()
+    # ── Mood + Persistence ─────────────────────────────────
     mood_provider = MoodProvider()
 
     # Persistence: PG + Redis when available, console fallback otherwise
@@ -648,8 +474,6 @@ async def entrypoint(ctx: JobContext):
         state=conv_state,
         persona=persona,
         game_mode=game_mode,
-        memory_store=memory_store,
-        context_assembler=context_assembler,
         persistence=persistence,
         device_id=device_id,
     )
@@ -672,7 +496,7 @@ async def entrypoint(ctx: JobContext):
     logger.info("=" * 70)
     logger.info(f"Agent starting for room: {ctx.room.name}")
     logger.info(f"Job ID: {ctx.job.id}")
-    mode_desc = {1: "Default", 2: f"Interrupt (every {config.INTERRUPT_INTERVAL_SECONDS}s)", 3: "Group Discussion"}
+    mode_desc = {1: "Default", 2: f"Interrupt (every {config.INTERRUPT_INTERVAL_SECONDS}s)"}
     logger.info(f"Agent Mode: {config.AGENT_MODE} ({mode_desc.get(config.AGENT_MODE, 'Unknown')})")
     logger.info(f"STT: {stt_info}")
     logger.info(f"LLM: {llm_model_info}")
@@ -729,19 +553,8 @@ async def entrypoint(ctx: JobContext):
     instructions += "\n\n" + game_mode.system_prompt_extension
     logger.info(f"Added game mode prompt: {game_mode.mode_id}")
 
-    # Add Group Discussion prompt for Mode 3
-    if config.AGENT_MODE == 3:
-        gd_prompt = getattr(persona, 'group_discussion_prompt', GROUP_DISCUSSION_PROMPT)
-        instructions += gd_prompt
-        logger.info("Added Group Discussion prompt for Mode 3")
-
-    # Mode 3 endpointing delays
-    if config.AGENT_MODE == 3:
-        min_ep = config.GROUP_MIN_ENDPOINTING_DELAY
-        max_ep = config.GROUP_MAX_ENDPOINTING_DELAY
-    else:
-        min_ep = 0.5
-        max_ep = 2.0
+    min_ep = 0.5
+    max_ep = 2.0
 
     agent_kwargs = {
         "instructions": instructions,
@@ -762,8 +575,6 @@ async def entrypoint(ctx: JobContext):
     # Create TrumpAgent — our LiveKit adapter wrapping PigAgent
     agent = TrumpAgent(
         pig_agent=pig_agent,
-        speaker_tracker=speaker_tracker,
-        agent_mode=config.AGENT_MODE,
         agent_config=config,
         game_mode=game_mode,
         persona=persona,
@@ -820,26 +631,10 @@ async def entrypoint(ctx: JobContext):
         def on_user_input_transcribed(event):
             nonlocal last_user_interaction_time
             
-            # Extract speaker information if available (when diarization is enabled)
-            speaker_info = ""
-            speaker_id = None
-            if hasattr(event, 'speaker_id') and event.speaker_id is not None:
-                speaker_id = event.speaker_id
-                speaker_info = f" (speaker: {speaker_id})"
-            
-            logger.info(f"👤 [STT] User transcribed: {event.transcript}{speaker_info}")
+            logger.info(f"👤 [STT] User transcribed: {event.transcript}")
             logger.info(f"🔍 [DEBUG] is_final={event.is_final}, type={event.type}")
             logger.info(f"🔍 [DEBUG] Session agent_state: {session.agent_state}")
             logger.info(f"🔍 [DEBUG] Session user_state: {session.user_state}")
-            
-            # Track speaker if we have speaker_id (diarization enabled)
-            if event.is_final and event.transcript and event.transcript.strip() and speaker_id is not None:
-                speaker_tracker.track_utterance(
-                    speaker_id=speaker_id,
-                    text=event.transcript.strip()
-                )
-                # Log conversation mode periodically
-                logger.info(speaker_tracker.get_conversation_mode_summary())
             
             if event.is_final and event.transcript and event.transcript.strip():
                 # === TIMING: Record T1 - final transcript received ===
@@ -850,19 +645,13 @@ async def entrypoint(ctx: JobContext):
             if event.is_final and event.transcript and event.transcript.strip():
                 last_user_interaction_time = asyncio.get_event_loop().time()
                 logger.debug(f"⏰ [MODE] Interaction timer reset")
-            
+
             # Publish user transcript to frontend in real-time (when final)
             if event.is_final and event.transcript and event.transcript.strip():
                 try:
                     import json
                     trimmed_transcript = event.transcript.strip()
-                    
-                    # Send JSON payload with speaker_id for Mode 3 web client display
-                    payload = {
-                        "text": trimmed_transcript,
-                        "speaker_id": speaker_id  # Will be None in Mode 1/2
-                    }
-                    
+                    payload = {"text": trimmed_transcript}
                     asyncio.create_task(
                         ctx.room.local_participant.publish_data(
                             json.dumps(payload).encode('utf-8'),
@@ -870,7 +659,7 @@ async def entrypoint(ctx: JobContext):
                             topic="user_transcript"
                         )
                     )
-                    logger.debug(f"📤 Published user transcript (real-time, speaker: {speaker_id})")
+                    logger.debug("📤 Published user transcript (real-time)")
                 except Exception as e:
                     logger.error(f"❌ Error publishing user transcript: {e}")
         
@@ -984,9 +773,6 @@ async def entrypoint(ctx: JobContext):
                     turn_timing["llm_response_logged"] = time.perf_counter()
                     logger.info(f"⏱️ [TIMING] T4: LLM response complete at {turn_timing['llm_response_logged']:.3f}")
                     
-                    # Track agent response in speaker tracker
-                    speaker_tracker.track_agent_response(text)
-
                     # Lifecycle: notify ConversationManager of agent message
                     conv_manager.on_agent_message(text)
 
@@ -1197,151 +983,19 @@ Your response:"""
                 except Exception as e:
                     logger.error(f"❌ [MODE 2] Error in interrupt checker: {e}")
         
-        # Mode 3: Group Discussion Mode - LLM decides whether to intervene
-        async def should_intervene_group(last_utterance: str) -> tuple[bool, str]:
-            """
-            LLM decides if agent should speak in group discussion.
-            Returns (should_speak, response_if_yes)
-            """
-            # Build context with speaker info
-            active_speakers = speaker_tracker.get_active_speakers()
-            is_group = speaker_tracker.is_group_conversation()
-            recent_turns = speaker_tracker.get_recent_turns(count=8)
-            
-            # Build conversation history with speaker attribution
-            history_lines = []
-            for turn in recent_turns:
-                if turn.is_agent:
-                    history_lines.append(f"Trump (you): {turn.text}")
-                else:
-                    history_lines.append(f"Speaker {turn.speaker_id}: {turn.text}")
-            history_text = "\n".join(history_lines) if history_lines else "No conversation yet."
-            
-            decision_prompt = f"""You are Donald Trump in a GROUP DISCUSSION with multiple people.
-
-CURRENT SITUATION:
-- Active speakers: {len(active_speakers)} people
-- Conversation type: {"Group discussion" if is_group else "1-on-1"}
-- Last utterance: "{last_utterance}"
-
-RECENT CONVERSATION:
-{history_text}
-
-YOUR DECISION:
-Analyze whether you should speak now or stay quiet. Consider:
-1. Was something directed at you? (your name, "Trump", "president", "you", asking your opinion)
-2. Is there a natural pause where you could add value?
-3. Would jumping in disrupt an ongoing exchange between others?
-4. Do you have something meaningful to contribute?
-
-RESPOND IN THIS EXACT FORMAT:
-DECISION: [SPEAK or QUIET]
-REASON: [one short sentence why]
-RESPONSE: [if SPEAK, your 1-3 sentence response in Trump style. If QUIET, write "none"]
-
-Example if you should speak:
-DECISION: SPEAK
-REASON: They asked what I think about the economy.
-RESPONSE: Let me tell you about the economy - we had the best numbers ever, believe me!
-
-Example if you should stay quiet:
-DECISION: QUIET
-REASON: They're having a back-and-forth, I'd be interrupting.
-RESPONSE: none"""
-
-            try:
-                # Use PigAgent's provider directly
-                provider = pig_agent.provider
-                messages = [Message.user(decision_prompt)]
-                decision_text = ""
-                async for delta in provider.chat_stream(messages, model=pig_agent.config.model):
-                    if delta.content:
-                        decision_text += delta.content
-                
-                decision_text = decision_text.strip()
-                logger.info(f"🎯 [MODE 3] LLM decision: {decision_text[:150]}...")
-                
-                # Parse decision
-                should_speak = "DECISION: SPEAK" in decision_text.upper()
-                response = ""
-                
-                if should_speak and "RESPONSE:" in decision_text:
-                    response_start = decision_text.find("RESPONSE:") + 9
-                    response = decision_text[response_start:].strip()
-                    if response.lower() == "none":
-                        response = ""
-                
-                return (should_speak, response)
-                
-            except Exception as e:
-                logger.error(f"❌ [MODE 3] Error in should_intervene_group: {e}")
-                return (False, "")
-        
-        async def group_discussion_checker():
-            """Background task for Mode 3 - periodic check if agent should intervene"""
-            nonlocal last_user_interaction_time
-            
-            logger.info(f"🎯 [MODE 3] Group discussion mode active (check every {config.GROUP_MODE_SILENCE_CHECK_SECONDS}s)")
-            
-            while True:
-                try:
-                    await asyncio.sleep(config.GROUP_MODE_SILENCE_CHECK_SECONDS)
-                    
-                    current_time = asyncio.get_event_loop().time()
-                    time_since_last = current_time - last_user_interaction_time
-                    
-                    # Only check if there's been some silence and agent isn't speaking
-                    if time_since_last >= config.GROUP_MODE_SILENCE_CHECK_SECONDS:
-                        if session.agent_state != "speaking":
-                            logger.info(f"🎯 [MODE 3] Silence detected ({time_since_last:.1f}s), checking if should intervene...")
-                            
-                            # Get last utterance from history
-                            last_utterance = ""
-                            if conversation_history:
-                                last_msg = conversation_history[-1]
-                                if last_msg["role"] == "user":
-                                    last_utterance = last_msg["content"]
-                            
-                            should_speak, response = await should_intervene_group(last_utterance)
-                            
-                            if should_speak and response:
-                                session.say(response, allow_interruptions=True)
-                                logger.info(f"🎯 [MODE 3] Agent intervening: {response[:100]}")
-                                last_user_interaction_time = current_time
-                            else:
-                                logger.debug(f"🎯 [MODE 3] LLM decided to stay quiet")
-                
-                except asyncio.CancelledError:
-                    logger.info("🎯 [MODE 3] Group discussion checker stopped")
-                    break
-                except Exception as e:
-                    logger.error(f"❌ [MODE 3] Error in group discussion checker: {e}")
-        
         # Start interrupt checker if in Mode 2
-        group_mode_task = None
         if config.AGENT_MODE == 2:
             interrupt_task = asyncio.create_task(interrupt_checker())
             logger.info(f"⏰ [MODE 2] Auto-interrupt enabled (every {config.INTERRUPT_INTERVAL_SECONDS}s)")
-        elif config.AGENT_MODE == 3:
-            group_mode_task = asyncio.create_task(group_discussion_checker())
-            logger.info(f"🎯 [MODE 3] Group discussion mode enabled (diarization: {config.DEEPGRAM_ENABLE_DIARIZATION})")
-        
+
         # Keep the job alive - the session runs in background tasks
-        # Wait forever (until cancelled by job shutdown)
         try:
             await asyncio.Event().wait()
         finally:
-            # Clean up background tasks
             if interrupt_task:
                 interrupt_task.cancel()
                 try:
                     await interrupt_task
-                except asyncio.CancelledError:
-                    pass
-            if group_mode_task:
-                group_mode_task.cancel()
-                try:
-                    await group_mode_task
                 except asyncio.CancelledError:
                     pass
         

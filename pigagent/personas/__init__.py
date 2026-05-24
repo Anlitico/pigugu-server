@@ -4,7 +4,7 @@
 from loguru import logger
 
 from .base import Persona
-from .trump import TrumpPersona, GROUP_DISCUSSION_PROMPT
+from .trump import TrumpPersona
 from .musk import MuskPersona
 from .james import JamesPersona
 
@@ -74,5 +74,4 @@ __all__ = [
     "MuskPersona",
     "JamesPersona",
     "get_persona",
-    "GROUP_DISCUSSION_PROMPT",
 ]
