@@ -1,40 +1,74 @@
-"""BreakingBomb — 突发炸弹: breaking news just dropped, get the user's gut reaction."""
+"""BreakingBomb — 突发炸弹: breaking news just dropped, get the user's gut reaction.
+
+State (extra):
+    reactions — [{turn, text, timestamp}, ...]
+"""
 
 from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
 from model import Mode
-from roast.base import GameMode
+from roast.base import GameMode, Trigger
+from roast.prompts import render
 
 if TYPE_CHECKING:
     from roast.state import RoastState
 
-BREAKING_BOMB_SYSTEM_PROMPT = """
-## GAME MODE: BREAKING BOMB (突发炸弹)
-
-This just happened. Pigugu wants your take. Spill.
-
-### Rules
-- Act like the news JUST broke. Energy must be high and urgent.
-- Give your immediate, unfiltered reaction. No time for deep analysis.
-- Ask the user for their gut reaction — raw, visceral, no filter.
-- Keep it SHORT. 1-3 sentences max. This is rapid-fire.
-
-### Ending
-End after 3 turns. The news is fresh, reactions are quick, then you move on.
-Pigugu may follow up later if the story develops further.
-"""
-
 
 class BreakingBombMode(GameMode):
     mode = Mode.BREAKING_BOMB
-    display_name = "突发炸弹"
     max_turns = 3
 
     @property
     def system_prompt_extension(self) -> str:
-        return BREAKING_BOMB_SYSTEM_PROMPT
+        return render("breaking_bomb_system")
+
+    # ── State helpers ──────────────────────────────────────────────────
+
+    @staticmethod
+    def init_extra() -> dict:
+        return {"reactions": []}
+
+    # ── Advance ────────────────────────────────────────────────────────
+
+    async def tick(
+        self,
+        state: RoastState,
+        *,
+        records: list,
+        redis,
+        pg_pool=None,
+    ) -> str | None:
+        """Record the user's reaction, then run base trigger checks."""
+        self._update_state(state, records)
+        return await super().tick(state, records=records, redis=redis, pg_pool=pg_pool)
+
+    def _update_state(self, state: RoastState, records: list) -> None:
+        """Record the latest user reaction."""
+        user_turns = [r for r in records
+                      if getattr(r, "role", "") == "user"]
+        if not user_turns:
+            return
+
+        latest = user_turns[-1]
+        state.extra.setdefault("reactions", []).append({
+            "turn": state.turn_count,
+            "text": getattr(latest, "content", "")[:200],
+        })
+
+    # ── Triggers ───────────────────────────────────────────────────────
+
+    @property
+    def triggers(self) -> list[Trigger]:
+        return [
+            Trigger(
+                name="ending_max_turns",
+                check=lambda s, r: s.turn_count >= self.max_turns,
+                prompt=render("breaking_bomb_ending"),
+                affects_phase=True,
+            ),
+        ]
 
     def score(self, state: RoastState) -> dict:
         reactions = state.extra.get("reactions", [])

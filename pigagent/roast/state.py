@@ -69,10 +69,16 @@ class RoastState:
         news_id: str,
         mode: Mode,
         *,
+        extra: dict[str, Any] | None = None,
         redis,
         pg_pool=None,
     ) -> RoastState:
-        """Start a new roast session. Auto-closes any previous active one."""
+        """Start a new roast session. Auto-closes any previous active one.
+
+        Args:
+            extra: Mode-specific initial state (e.g. game_mode.init_extra()).
+                   If None, defaults to empty dict.
+        """
         prev = await cls._load_active(user_id, redis)
         if prev and prev.phase != Phase.CLOSED:
             prev.phase = Phase.CLOSED
@@ -89,7 +95,7 @@ class RoastState:
         state.roast_id = str(uuid.uuid4())
         state.phase = Phase.ACTIVE
         state.turn_count = 0
-        state.extra = {}
+        state.extra = dict(extra) if extra else {}
 
         await state._save_active(redis)
         logger.info(f"[RoastState] Started: {state.roast_id} mode={mode.value}")

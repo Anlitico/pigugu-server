@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from typing import Callable, TYPE_CHECKING
+from typing import Callable, ClassVar, TYPE_CHECKING
 
 from loguru import logger
 from model import Mode, Phase
@@ -20,11 +20,18 @@ class Trigger:
 
     When check returns True, the prompt is injected into the next turn.
     Evaluated in order; first match wins.
+
+    prompt can be a static str or a Callable[[RoastState], str] for
+    dynamic templates (e.g. referencing state.extra fields).
+
+    If affects_phase is True, the state phase is updated to REVIEW
+    when this trigger fires. Used for game-ending triggers.
     """
 
     name: str
     check: Callable[[RoastState, list], bool] = field(repr=False)
-    prompt: str
+    prompt: str | Callable[[RoastState], str] = field(repr=False)
+    affects_phase: bool = False
 
 
 class GameMode(ABC):
@@ -38,15 +45,9 @@ class GameMode(ABC):
 
     @property
     @abstractmethod
-    def display_name(self) -> str: ...
-
-    @property
-    @abstractmethod
     def system_prompt_extension(self) -> str: ...
 
-    @property
-    @abstractmethod
-    def max_turns(self) -> int: ...
+    max_turns: int
 
     @property
     def triggers(self) -> list[Trigger]:
@@ -94,8 +95,8 @@ class GameMode(ABC):
         for trigger in self.triggers:
             try:
                 if trigger.check(state, records):
-                    prompt = trigger.prompt
-                    await self._emit(state, trigger, redis)
+                    prompt = trigger.prompt(state) if callable(trigger.prompt) else trigger.prompt
+                    await self._emit(state, trigger, prompt, redis)
                     await state.save(redis, pg_pool)
                     return prompt
             except Exception as e:
@@ -104,11 +105,11 @@ class GameMode(ABC):
         await state.save(redis, pg_pool)
         return None
 
-    async def _emit(self, state: RoastState, trigger: Trigger, redis) -> None:
+    async def _emit(self, state: RoastState, trigger: Trigger, prompt: str, redis) -> None:
         """Write trigger prompt and update state."""
-        await pending.write(state.roast_id, trigger.prompt, redis)
+        await pending.write(state.roast_id, prompt, redis)
 
-        if trigger.name.startswith("ending"):
+        if trigger.affects_phase:
             state.phase = Phase.REVIEW
 
         logger.info(

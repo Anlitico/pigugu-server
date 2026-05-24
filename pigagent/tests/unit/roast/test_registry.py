@@ -16,7 +16,6 @@ class TestGameModeRegistry:
         m = get_game_mode("roast_together")
         assert isinstance(m, GameMode)
         assert m.mode == Mode.ROAST_TOGETHER
-        assert m.display_name
 
     def test_get_debate(self):
         m = get_game_mode("debate_bicker")

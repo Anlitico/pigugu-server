@@ -12,13 +12,13 @@ _KEY = "roast:{roast_id}:pending_prompt"
 _TTL = 86400
 
 
-def consume(roast_id: str, redis) -> str | None:
+async def consume(roast_id: str, redis) -> str | None:
     """Read and delete the pending prompt. Called by context assembly."""
     key = _KEY.format(roast_id=roast_id)
     try:
-        prompt = redis.get(key)
+        prompt = await redis.get(key)
         if prompt:
-            redis.delete(key)
+            await redis.delete(key)
             return prompt if isinstance(prompt, str) else prompt.decode("utf-8")
     except Exception as e:
         logger.warning(f"[Pending] consume failed for {roast_id}: {e}")

@@ -35,9 +35,8 @@ from livekit.plugins import silero
 
 # Import our modular components
 from config import get_config
-from core.llm.types import Message, ModelCapability
+from core.llm.types import ModelCapability
 from core.llm.registry import ModelRegistry
-from tools.search.utils import build_search_messages
 from personas import PersonaRegistry, get_persona
 from roast import GameModeRegistry, get_game_mode
 from bootstrap.factory import create_agent_components, validate_configuration
@@ -83,154 +82,19 @@ if config.LOG_TO_FILE:
     logger.info(f"File logging enabled: {config.LOG_FILE_PATH}")
 
 
-# Filler phrases are now provided by Persona. During migration, the
-# TrumpAgent still references TRUMP_FILLERS imported from personas.trump
-# for backward compat. New code should use persona.get_filler().
-from personas.trump import TRUMP_FILLERS
+class LiveKitAgentAdapter(Agent):
+    """LiveKit Agent adapter — thin wrapper, all logic in PigAgent."""
 
-
-class TrumpAgent(Agent):
-    """
-    LiveKit Agent adapter. LLM and tool execution are delegated to PigAgent.stream().
-    """
-
-    def __init__(self, pig_agent, *, agent_config=None, game_mode=None,
-                 persona=None, conv_manager=None, roast_body: str = "", **kwargs):
+    def __init__(self, pig_agent, **kwargs):
         super().__init__(**kwargs)
-        self._pig_agent = pig_agent
-        self._config = agent_config
-        self._pending_filler = None
-        self._filler_yielded_at = None
-        self._use_search = False
-        self._llm_provider = agent_config.LLM_PROVIDER.lower() if agent_config else ""
-        self._llm_model = self._pig_agent.config.model if hasattr(self._pig_agent, 'config') else ""
-        # Persona + Game Mode + Lifecycle
-        self._game_mode = game_mode
-        self._persona = persona
-        self._conv_manager = conv_manager
-        self._roast_body = roast_body
-        self._roast_injected = False
-    
+        self._pig = pig_agent
+
     async def on_user_turn_completed(self, turn_ctx, new_message):
-        """Called when the user's turn has ended, before the agent's reply."""
+        await self._pig.on_user_turn_completed(turn_ctx, new_message)
 
-        # --- Filler words (skip short messages like greetings) ---
-        user_text = (new_message.text_content or "").strip()
-        if self._config and self._config.ENABLE_FILLER_WORDS and len(user_text.split()) > 5:
-            filler = random.choice(TRUMP_FILLERS)
-            self._pending_filler = filler
-            # Modify turn_ctx to cancel preemptive generation so llm_node
-            # runs fresh with the filler set.
-            turn_ctx.add_message(
-                role="system",
-                content=f'You already began your reply with: "{filler}". Continue from there. Do NOT repeat it.',
-            )
-            logger.info(f"💬 [FILLER] Queued filler: \"{filler}\"")
-        
-        # --- Policy search: enable native web search in the LLM call ---
-        self._use_search = bool(self._config and self._config.ENABLE_POLICY_SEARCH)
-        if self._use_search:
-            logger.info("🔍 [SEARCH] Native web search enabled")
-
-        # --- Lifecycle: delegate to ConversationManager ---
-        user_text = (new_message.text_content or "").strip()
-        if self._conv_manager:
-            lifecycle_result = await self._conv_manager.on_user_turn_completed(user_text)
-            if lifecycle_result:
-                # Inject ending review tone if triggered
-                if lifecycle_result.get("ending_triggered"):
-                    review_tone = lifecycle_result.get("review_tone", "")
-                    if review_tone:
-                        turn_ctx.add_message(role="system", content=review_tone)
-                        logger.info("📖 [LIFECYCLE] Review tone injected into context")
-                    ending_line = lifecycle_result.get("ending_line", "")
-                    if ending_line:
-                        logger.info(f"🏁 [LIFECYCLE] Ending line: {ending_line[:80]}...")
-
-                # Inject mode-specific context if any
-                if lifecycle_result.get("mode_context"):
-                    turn_ctx.add_message(
-                        role="system", content=lifecycle_result["mode_context"]
-                    )
-    
     async def llm_node(self, chat_ctx, tools, model_settings):
-        """Override: delegates to PigAgent.stream() for LLM + tool execution.
-
-        Converts LiveKit chat_ctx to Message list, enables native web search
-        if configured, and streams text chunks directly for TTS.
-        """
-        if self._conv_manager:
-            await self._conv_manager.assemble_context(
-                chat_ctx, provider=self._llm_provider
-            )
-
-        filler = self._pending_filler
-        self._pending_filler = None
-        use_search = self._use_search
-        self._use_search = False
-
-        # Convert LiveKit items → Message list
-        dict_msgs = build_search_messages(chat_ctx.items)
-        messages = [Message(role=m["role"], content=m["content"]) for m in dict_msgs]
-
-        # Inject roast body (news + game rules) as a user message once
-        if self._roast_body and not self._roast_injected:
-            self._roast_injected = True
-            roast_msg = Message.user(self._roast_body)
-            # Insert after system messages, before user messages
-            insert_at = 0
-            for i, msg in enumerate(messages):
-                if msg.role != "system":
-                    insert_at = i
-                    break
-            else:
-                insert_at = len(messages)
-            messages.insert(insert_at, roast_msg)
-            logger.info(f"[Roast] Injected roast body at position {insert_at}")
-
-        search_param = {"enabled": True} if use_search else None
-        if use_search and self._config and self._config.FORCE_POLICY_SEARCH:
-            search_param = {"enabled": True, "force": True}
-
-        def _gen():
-            return self._pig_agent.stream(messages, search=search_param)
-
-        if filler:
-            self._filler_yielded_at = time.perf_counter()
-            logger.info(f"⏱️ [TIMING] Filler yielded to TTS at {self._filler_yielded_at:.3f}")
-            yield filler + " "
-
-            chat_ctx.add_message(role="assistant", content=filler)
-
-            queue = asyncio.Queue()
-
-            async def _buffer_llm():
-                try:
-                    async for chunk in _gen():
-                        await queue.put(chunk)
-                except Exception as e:
-                    logger.error(f"[LLM] Stream failed: {e}")
-                finally:
-                    await queue.put(None)
-
-            llm_task = asyncio.create_task(_buffer_llm())
-
-            await asyncio.sleep(3.0)
-
-            llm_task = asyncio.create_task(_buffer_llm())
-
-            await asyncio.sleep(3.0)
-
-            while True:
-                chunk = await queue.get()
-                if chunk is None:
-                    break
-                yield chunk
-
-            await llm_task
-        else:
-            async for chunk in _gen():
-                yield chunk
+        async for text in self._pig.generate_reply(chat_ctx):
+            yield text
 
 
 async def entrypoint(ctx: JobContext):
@@ -460,7 +324,7 @@ async def entrypoint(ctx: JobContext):
     game_mode = get_game_mode(mode_id)
 
     logger.info(f"🎭 Persona: {persona.persona_id} ({persona.display_name}, domain={persona.domain})")
-    logger.info(f"🎮 Game Mode: {game_mode.mode} ({game_mode.display_name})")
+    logger.info(f"🎮 Game Mode: {game_mode.mode}")
 
     # ── Init conversation lifecycle ────────────────────────────────────
     news_context = None
@@ -543,7 +407,7 @@ async def entrypoint(ctx: JobContext):
     stt_plugin = stt.get_plugin() if hasattr(stt, 'get_plugin') else stt
     tts_plugin = tts.get_plugin() if hasattr(tts, 'get_plugin') else tts
 
-    # LLM plugin not needed — TrumpAgent overrides llm_node() with PigAgent
+    # LLM plugin not needed — LiveKitAgentAdapter overrides llm_node() with PigAgent
     # We pass a dummy to satisfy LiveKit AgentSession type check (never called)
     from livekit.plugins import openai as _lk_openai
     _dummy_llm = _lk_openai.LLM(model="gpt-4.1", api_key="unused")
@@ -587,16 +451,17 @@ async def entrypoint(ctx: JobContext):
     if ModelCapability.WEB_SEARCH not in model_info.capabilities:
         logger.info("Provider doesn't support web_search, will use tool-based search")
 
-    # Create TrumpAgent — our LiveKit adapter wrapping PigAgent
-    agent = TrumpAgent(
-        pig_agent=pig_agent,
-        agent_config=config,
-        roast_body=roast_body,
+    # Create LiveKitAgentAdapter — our LiveKit adapter wrapping PigAgent
+    pig_agent.configure(
         game_mode=game_mode,
-        persona=persona,
         conv_manager=conv_manager,
-        **agent_kwargs
+        roast_body=roast_body,
+        fillers=persona.fillers,
+        enable_filler_words=config.ENABLE_FILLER_WORDS,
+        enable_policy_search=config.ENABLE_POLICY_SEARCH,
     )
+
+    agent = LiveKitAgentAdapter(pig_agent=pig_agent, **agent_kwargs)
 
     # Create AgentSession (manages the runtime)
     session = AgentSession(
@@ -694,9 +559,9 @@ async def entrypoint(ctx: JobContext):
                 # === TIMING: Record T5 - agent started speaking and log summary ===
                 turn_timing["agent_start_speaking"] = time.perf_counter()
                 # Capture filler yield timestamp from agent if available
-                if hasattr(agent, '_filler_yielded_at') and agent._filler_yielded_at is not None:
-                    turn_timing["filler_yielded"] = agent._filler_yielded_at
-                    agent._filler_yielded_at = None
+                if hasattr(pig_agent, '_filler_yielded_at') and pig_agent._filler_yielded_at is not None:
+                    turn_timing["filler_yielded"] = pig_agent._filler_yielded_at
+                    pig_agent._filler_yielded_at = None
                 logger.info(f"⏱️ [TIMING] T5: Agent started speaking at {turn_timing['agent_start_speaking']:.3f}")
                 log_turn_timing_summary()
                 # Send signal to frontend for timing

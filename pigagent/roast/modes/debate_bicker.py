@@ -1,4 +1,12 @@
-"""DebateBicker — 辩论抬杠: Pigugu picks a controversial side; the user argues back."""
+"""DebateBicker — 辩论抬杠: Pigugu picks a controversial side; the user argues back.
+
+State (extra):
+    strong_points  — count of data-backed arguments from the user
+    fart_type      — concede | grudging | impressed (set on ending)
+    debate_history — [{turn, length, has_data}, ...]
+
+Per PRD §6.2: user MUST have the last word. Pigugu responds with a fart sound.
+"""
 
 from __future__ import annotations
 
@@ -6,75 +14,122 @@ from typing import TYPE_CHECKING
 
 from model import Mode
 from roast.base import GameMode, Trigger
+from roast.prompts import render
 
 if TYPE_CHECKING:
     from roast.state import RoastState
 
-DEBATE_SYSTEM_PROMPT = """
-## GAME MODE: DEBATE BICKER (辩论抬杠)
+# ── Strong point detection ───────────────────────────────────────────────
 
-Pigugu picks a side — probably not yours. You argue back.
-You get the last word. It ends with a fart.
+_DATA_KEYWORDS = [
+    "percent", "million", "billion", "according to", "study",
+    "data", "statistics", "actually", "because", "evidence",
+    "%", "$", "report", "research", "numbers", "fact",
+    "proved", "shows", "proves", "confirmed",
+]
 
-### Rules
-- Take a strong, controversial stance. Be provocative but playful.
-- Challenge the user's arguments aggressively but with humor.
-- The user MUST have the last word — never end on your own point.
-- When you sense the user is making their final argument, concede gracefully.
 
-### Ending
-The debate ends when the user clearly wins (3+ strong points), after 6 turns,
-or when the user repeats themselves. Pigugu responds with a FART SOUND —
-different fart types for different outcomes:
-- Short, loud fart = "Alright, you got me."
-- Long, low fart = "I still disagree but fine."
-- Rapid-fire farts = "You make too much sense, I'm speechless."
-The user should feel satisfied and entertained, never frustrated.
-"""
+def _is_strong_point(text: str) -> bool:
+    if len(text) < 80:
+        return False
+    lower = text.lower()
+    return any(kw in lower for kw in _DATA_KEYWORDS)
 
 
 class DebateBickerMode(GameMode):
     mode = Mode.DEBATE_BICKER
-    display_name = "辩论抬杠"
     max_turns = 6
 
     @property
     def system_prompt_extension(self) -> str:
-        return DEBATE_SYSTEM_PROMPT
+        return render("debate_bicker_system")
+
+    # ── State helpers ──────────────────────────────────────────────────
+
+    @staticmethod
+    def init_extra() -> dict:
+        return {
+            "strong_points": 0,
+            "fart_type": "",
+            "debate_history": [],
+        }
+
+    # ── Advance ────────────────────────────────────────────────────────
+
+    async def tick(
+        self,
+        state: RoastState,
+        *,
+        records: list,
+        redis,
+        pg_pool=None,
+    ) -> str | None:
+        """Update strong points, then run base trigger checks."""
+        self._update_state(state, records)
+        return await super().tick(state, records=records, redis=redis, pg_pool=pg_pool)
+
+    def _update_state(self, state: RoastState, records: list) -> None:
+        """Detect strong points in the latest user turn."""
+        user_turns = [r for r in records
+                      if getattr(r, "role", "") == "user"]
+        if not user_turns:
+            return
+
+        latest = user_turns[-1]
+        text = getattr(latest, "content", "")
+        length = len(text)
+        has_data = _is_strong_point(text)
+
+        if has_data:
+            state.extra["strong_points"] = state.extra.get("strong_points", 0) + 1
+
+        state.extra.setdefault("debate_history", []).append({
+            "turn": state.turn_count,
+            "length": length,
+            "has_data": has_data,
+        })
+
+    # ── Triggers ───────────────────────────────────────────────────────
 
     @property
     def triggers(self) -> list[Trigger]:
         return [
-            Trigger(
-                name="ending_max_turns",
-                check=lambda s, r: s.turn_count >= self.max_turns,
-                prompt=(
-                    "THE DEBATE HAS REACHED ITS LIMIT. The user gets the last word.\n"
-                    "You are now in REVIEW TONE. Concede with a FART SOUND — "
-                    "pick the right fart type for the outcome. Make sure the user "
-                    "feels satisfied, not frustrated."
-                ),
-            ),
             Trigger(
                 name="user_won",
                 check=lambda s, r: (
                     s.extra.get("strong_points", 0) >= 3
                     and s.turn_count >= 4
                 ),
-                prompt=(
-                    "The user has clearly won this debate with strong arguments. "
-                    "Acknowledge their victory with a RAPID-FIRE FART — "
-                    "you're impressed and speechless. Let them enjoy the win."
+                prompt=lambda s: render(
+                    "debate_bicker_user_won",
+                    fart_impressed=(
+                        "RAPID-FIRE FART. You're genuinely impressed — "
+                        "'You make too much sense. I'm speechless.'"
+                    ),
+                    strong_points=s.extra.get("strong_points", 0),
+                    turn_count=s.turn_count,
                 ),
             ),
             Trigger(
-                name="user_repeat",
-                check=lambda s, r: _detect_repeat(r),
-                prompt=(
-                    "The user is repeating the same argument. The debate has run "
-                    "its course. Let the user have the last word and respond with "
-                    "a SHORT LOUD FART — you concede but move on."
+                name="ending_max_turns",
+                check=lambda s, r: s.turn_count >= self.max_turns,
+                prompt=lambda s: render(
+                    "debate_bicker_ending",
+                    fart_type=(
+                        "RAPID-FIRE FART. You're genuinely impressed."
+                        if s.extra.get("strong_points", 0) >= 3
+                        else "LONG LOW FART. You still disagree but accept it."
+                        if s.extra.get("strong_points", 0) >= 1
+                        else "SHORT LOUD FART. You concede."
+                    ),
+                    strong_points=s.extra.get("strong_points", 0),
                 ),
+                affects_phase=True,
+            ),
+            Trigger(
+                name="user_repeat",
+                check=lambda _s, r: _detect_repeat(r),
+                prompt=render("debate_bicker_repeat"),
             ),
         ]
 
