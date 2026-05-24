@@ -40,9 +40,7 @@ from core.llm.registry import ModelRegistry
 from personas import PersonaRegistry, get_persona
 from roast import GameModeRegistry, get_game_mode
 from bootstrap.factory import create_agent_components, validate_configuration
-from lifecycle import ConversationManager, PersistenceProvider
-from model import Mode, ConversationState, NewsContext
-from personas.mood_provider import MoodProvider
+from roast.types import Mode
 from core.agent.interrupt import get_interrupt_manager
 
 load_dotenv()
@@ -326,39 +324,22 @@ async def entrypoint(ctx: JobContext):
     logger.info(f"🎭 Persona: {persona.persona_id} ({persona.display_name}, domain={persona.domain})")
     logger.info(f"🎮 Game Mode: {game_mode.mode}")
 
-    # ── Init conversation lifecycle ────────────────────────────────────
-    news_context = None
+    # ── Build roast body from news metadata ─────────────────────────────
+    roast_parts: list[str] = []
     if metadata:
-        news_context = NewsContext(
-            news_id=metadata.get("news_id", ""),
-            title=metadata.get("news_title", ""),
-            summary=metadata.get("news_summary", ""),
-            source=metadata.get("news_source", ""),
-            domain=metadata.get("news_domain", persona.domain),
-            mode=game_mode.mode_id,
-            persona=persona.persona_id,
-        )
-    # ── Mood + Persistence ─────────────────────────────────
-    mood_provider = MoodProvider()
-
-    # Persistence: PG + Redis when available, console fallback otherwise
-    device_id = metadata.get("device_id", "") if metadata else ""
-    persistence = PersistenceProvider(pg_pool=None, redis_client=None)
-
-    conv_state = ConversationState(
-        persona_id=persona.persona_id,
-        mode_id=game_mode.mode_id,
-        news=news_context,
-        user_id=metadata.get("user_id", "") if metadata else "",
-    )
-    conv_manager = ConversationManager(
-        state=conv_state,
-        persona=persona,
-        game_mode=game_mode,
-        persistence=persistence,
-        device_id=device_id,
-    )
-    logger.info(f"📋 ConversationManager initialized — session={conv_state.session_id[:8]}...")
+        title = metadata.get("news_title", "")
+        summary = metadata.get("news_summary", "")
+        source = metadata.get("news_source", "")
+        if title:
+            roast_parts.append(
+                f"## NEWS CONTEXT\n"
+                f"Topic: {title}\n"
+                f"Summary: {summary}\n"
+                f"Source: {source}\n"
+            )
+    roast_parts.append(game_mode.system_prompt_extension)
+    roast_body = "\n\n".join(p for p in roast_parts if p.strip())
+    logger.info(f"Game mode '{game_mode.mode}' loaded as roast body ({len(roast_body)} chars)")
 
     # Determine STT model info for logging
     stt_provider = config.STT_PROVIDER.lower()
@@ -424,14 +405,6 @@ async def entrypoint(ctx: JobContext):
     instructions = persona.get_full_prompt(llm_provider_id)
     logger.info(f"Using persona '{persona.persona_id}' prompt (provider={llm_provider_id})")
 
-    # Build roast body: news material + game mode rules (injected as user message)
-    roast_parts: list[str] = []
-    if news_context:
-        roast_parts.append(news_context.render())
-    roast_parts.append(game_mode.system_prompt_extension)
-    roast_body = "\n\n".join(p for p in roast_parts if p)
-    logger.info(f"Game mode '{game_mode.mode}' loaded as roast body ({len(roast_body)} chars)")
-
     min_ep = 0.5
     max_ep = 2.0
 
@@ -454,7 +427,6 @@ async def entrypoint(ctx: JobContext):
     # Create LiveKitAgentAdapter — our LiveKit adapter wrapping PigAgent
     pig_agent.configure(
         game_mode=game_mode,
-        conv_manager=conv_manager,
         roast_body=roast_body,
         fillers=persona.fillers,
         enable_filler_words=config.ENABLE_FILLER_WORDS,
@@ -654,9 +626,6 @@ async def entrypoint(ctx: JobContext):
                     turn_timing["llm_response_logged"] = time.perf_counter()
                     logger.info(f"⏱️ [TIMING] T4: LLM response complete at {turn_timing['llm_response_logged']:.3f}")
                     
-                    # Lifecycle: notify ConversationManager of agent message
-                    conv_manager.on_agent_message(text)
-
                     # Publish agent response to room for frontend display
                     try:
                         trimmed_text = text.strip()

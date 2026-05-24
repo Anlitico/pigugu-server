@@ -3,7 +3,7 @@
 from unittest.mock import MagicMock
 
 from roast.state import RoastState
-from model import Mode, Phase
+from roast.types import Mode, Phase
 
 
 def _state(**kw):

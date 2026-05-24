@@ -2,7 +2,7 @@
 
 from roast import GameModeRegistry, get_game_mode
 from roast.base import GameMode
-from model import Mode
+from roast.types import Mode
 
 
 class TestGameModeRegistry:

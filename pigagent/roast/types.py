@@ -1,4 +1,4 @@
-"""Shared type definitions for pigagent."""
+"""Type definitions for roast game modes."""
 
 from __future__ import annotations
 

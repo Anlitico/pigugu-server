@@ -12,7 +12,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from model import Mode
+from roast.types import Mode
 from roast.base import GameMode, Trigger
 from roast.prompts import render
 

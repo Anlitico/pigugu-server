@@ -56,7 +56,6 @@ class PigAgent:
         config: PigAgentConfig,
         *,
         game_mode=None,
-        conv_manager=None,
         roast_body: str = "",
         fillers: list[str] | None = None,
         enable_filler_words: bool = False,
@@ -65,7 +64,6 @@ class PigAgent:
         self.ctx = ctx
         self.config = config
         self._game_mode = game_mode
-        self._conv_manager = conv_manager
         self._roast_body = roast_body
         self._fillers = fillers or []
         self._enable_filler_words = enable_filler_words
@@ -94,7 +92,6 @@ class PigAgent:
         self,
         *,
         game_mode=None,
-        conv_manager=None,
         roast_body: str = "",
         fillers: list[str] | None = None,
         enable_filler_words: bool = False,
@@ -102,7 +99,6 @@ class PigAgent:
     ) -> None:
         """Post-creation configuration for runtime dependencies."""
         self._game_mode = game_mode
-        self._conv_manager = conv_manager
         self._roast_body = roast_body if roast_body else self._roast_body
         self._fillers = fillers or []
         self._enable_filler_words = enable_filler_words
@@ -130,30 +126,11 @@ class PigAgent:
         if self._use_search:
             logger.info("🔍 [SEARCH] Native web search enabled")
 
-        # Lifecycle hooks
-        if self._conv_manager:
-            lifecycle_result = await self._conv_manager.on_user_turn_completed(user_text)
-            if lifecycle_result:
-                if lifecycle_result.get("ending_triggered"):
-                    review_tone = lifecycle_result.get("review_tone", "")
-                    if review_tone:
-                        turn_ctx.add_message(role="system", content=review_tone)
-                    ending_line = lifecycle_result.get("ending_line", "")
-                    if ending_line:
-                        logger.info(f"🏁 [LIFECYCLE] Ending line: {ending_line[:80]}...")
-                if lifecycle_result.get("mode_context"):
-                    turn_ctx.add_message(
-                        role="system", content=lifecycle_result["mode_context"]
-                    )
-
     async def generate_reply(self, chat_ctx) -> AsyncIterator[str]:
         """Generate a reply: assemble context, inject prompts, stream LLM + tools.
 
         Called from llm_node. Yields text chunks for TTS.
         """
-        if self._conv_manager:
-            await self._conv_manager.assemble_context(chat_ctx)
-
         filler = self._pending_filler
         self._pending_filler = None
         use_search = self._use_search

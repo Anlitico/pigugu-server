@@ -44,36 +44,6 @@ class Persona(ABC):
 
     # ── Concrete ──────────────────────────────────────────────────────
 
-    def get_system_prompt(self, assembly) -> str:
-        """Full system prompt: personality + mood + news + mode + memory + ending."""
-        from model import MoodState, NewsContext
-
-        parts = [self.personality_prompt]
-
-        mood = getattr(assembly, "mood", None)
-        if mood and isinstance(mood, MoodState):
-            parts.append(mood.render())
-
-        news = getattr(assembly, "news", None)
-        if news and isinstance(news, NewsContext):
-            parts.append(news.render())
-
-        mode = getattr(assembly, "game_mode", None)
-        if mode and hasattr(mode, "system_prompt_extension"):
-            parts.append(mode.system_prompt_extension)
-
-        memory = getattr(assembly, "memory_summary", "")
-        if memory:
-            parts.append(f"## MEMORY\n{memory}")
-
-        ending = getattr(assembly, "ending_state", None)
-        if ending and hasattr(ending, "render"):
-            rendered = ending.render()
-            if rendered:
-                parts.append(rendered)
-
-        return "\n\n".join(filter(None, parts))
-
     def get_filler(self) -> str:
         """Random filler phrase for masking LLM latency."""
         if self.fillers:

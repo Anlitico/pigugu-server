@@ -7,7 +7,7 @@ from dataclasses import dataclass, field
 from typing import Callable, ClassVar, TYPE_CHECKING
 
 from loguru import logger
-from model import Mode, Phase
+from roast.types import Mode, Phase
 from roast import pending
 
 if TYPE_CHECKING:

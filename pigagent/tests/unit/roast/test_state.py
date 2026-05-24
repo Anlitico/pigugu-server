@@ -1,7 +1,7 @@
 """Tests for RoastState."""
 
 from roast.state import RoastState
-from model import Mode, Phase
+from roast.types import Mode, Phase
 
 
 def _make(**kw):

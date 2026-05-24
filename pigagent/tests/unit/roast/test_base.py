@@ -2,7 +2,7 @@
 
 from roast.base import Trigger, GameMode
 from roast.state import RoastState
-from model import Mode
+from roast.types import Mode
 
 
 class TestTrigger:
@@ -82,7 +82,7 @@ class TestGameModeTick:
     """End-to-end tick() flow using a real mode (RoastTogetherMode)."""
 
     def _state(self, **kw):
-        from model import Phase
+        from roast.types import Phase
         s = RoastState.__new__(RoastState)
         s.user_id = "u1"
         s.persona_id = "trump"
@@ -122,7 +122,7 @@ class TestGameModeTick:
 
     def test_skips_if_not_active(self):
         from unittest.mock import MagicMock
-        from model import Phase
+        from roast.types import Phase
         from roast.modes.roast_together import RoastTogetherMode
         import asyncio
 

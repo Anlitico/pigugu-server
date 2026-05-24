@@ -102,15 +102,3 @@ class MuskPersona(Persona):
     @property
     def personality_prompt(self) -> str:
         return MUSK_PERSONALITY_PROMPT
-
-    @property
-    def silence_messages(self):
-        from lifecycle.silence_handler import SilenceAction
-        return {
-            SilenceAction.GENTLE_PROMPT: "Still there? No rush. Great ideas take time.",
-            SilenceAction.SNARKY_COMMENT: (
-                "I'll wait. Some problems are worth thinking about... "
-                "or did I break something?"
-            ),
-            SilenceAction.EXIT: "Time's up. My neural net has better things to compute. Later.",
-        }

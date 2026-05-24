@@ -9,7 +9,7 @@ from typing import Any
 
 from loguru import logger
 
-from model import Mode, Phase
+from roast.types import Mode, Phase
 
 _ACTIVE_KEY = "roast:state:active:{user_id}"
 _ACTIVE_TTL = 86400  # 24h

@@ -86,12 +86,3 @@ class JamesPersona(Persona):
     @property
     def personality_prompt(self) -> str:
         return JAMES_PERSONALITY_PROMPT
-
-    @property
-    def silence_messages(self):
-        from lifecycle.silence_handler import SilenceAction
-        return {
-            SilenceAction.GENTLE_PROMPT: "You still watching? I'm here.",
-            SilenceAction.SNARKY_COMMENT: "Did I strike a nerve, or are you just processing?",
-            SilenceAction.EXIT: "Timeout called. I'll be here when you're ready. Peace.",
-        }
