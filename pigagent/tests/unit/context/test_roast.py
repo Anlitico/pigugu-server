@@ -1,9 +1,9 @@
 # tests/unit/context/test_roast.py
-"""Unit tests for RoastState — roast_instance_id assignment and state queries."""
+"""Unit tests for RoastState  -  roast_instance_id assignment and state queries."""
 
 
 class TestRoastState:
-    """RoastState — pure functions for roast_instance_id assignment and queries."""
+    """RoastState  -  pure functions for roast_instance_id assignment and queries."""
 
     @staticmethod
     def _rec(turn_number, role="user", content="", roast_instance_id=None, created_at=0.0):

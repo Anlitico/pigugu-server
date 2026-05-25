@@ -1,4 +1,4 @@
-"""Tests for roast.base — Trigger and GameMode base class."""
+"""Tests for roast.base  -  Trigger and GameMode base class."""
 
 from roast.base import Trigger, GameMode
 from roast.state import RoastState
@@ -86,7 +86,7 @@ class TestGameModeTick:
         from roast.types import Phase
         s = RoastState.__new__(RoastState)
         s.user_id = "u1"
-        s.persona_id = "trump"
+        s.persona_id = 1
         s.roast_id = "n1"
         s.mode = Mode.ROAST_TOGETHER
         s.roast_instance_id = "test-id"

@@ -1,9 +1,9 @@
-"""DebateBicker — 辩论抬杠: Pigugu picks a controversial side; the user argues back.
+"""DebateBicker — Pigugu picks a controversial side; the user argues back.
 
 State (extra):
-    strong_points  — count of data-backed arguments from the user
-    fart_type      — concede | grudging | impressed (set on ending)
-    debate_history — [{turn, length, has_data}, ...]
+    strong_points   -  count of data-backed arguments from the user
+    fart_type       -  concede | grudging | impressed (set on ending)
+    debate_history  -  [{turn, length, has_data}, ...]
 
 Per PRD §6.2: user MUST have the last word. Pigugu responds with a fart sound.
 """
@@ -103,7 +103,7 @@ class DebateBickerMode(GameMode):
                 prompt=lambda s: render(
                     "debate_bicker_user_won",
                     fart_impressed=(
-                        "RAPID-FIRE FART. You're genuinely impressed — "
+                        "RAPID-FIRE FART. You're genuinely impressed  -  "
                         "'You make too much sense. I'm speechless.'"
                     ),
                     strong_points=s.extra.get("strong_points", 0),

@@ -1,8 +1,8 @@
 # pigagent/core/agent/stop.py
 """Loop stop conditions and StepResult for AgentRunner.
 
-StepResult — what a single LLM + tool-execution step produced.
-Stop conditions — composable predicates on AgentState.
+StepResult  -  what a single LLM + tool-execution step produced.
+Stop conditions  -  composable predicates on AgentState.
 """
 
 from __future__ import annotations
@@ -23,7 +23,7 @@ class StepResult:
     finish_reason: str = ""  # "stop" | "tool_calls" | "length" | "interrupted"
 
 
-# ── Stop conditions (composable — stop when any returns True) ──────────
+# ── Stop conditions (composable  -  stop when any returns True) ──────────
 
 
 def step_count_is(max_steps: int) -> Callable[[AgentState], bool]:

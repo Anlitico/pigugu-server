@@ -1,5 +1,5 @@
 ﻿# pigagent/core/llm/providers/qwen.py
-"""Qwen provider — DashScope OpenAI-compatible API"""
+"""Qwen provider  -  DashScope OpenAI-compatible API"""
 
 from __future__ import annotations
 

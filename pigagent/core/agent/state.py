@@ -1,5 +1,5 @@
 # pigagent/core/agent/state.py
-"""Agent state — per-chat data object, created fresh for each stream() / run().
+"""Agent state  -  per-chat data object, created fresh for each stream() / run().
 
 Holds all mutable state for a single agent loop execution. Stop conditions
 and hooks read from it. AgentRunner carries no per-call state.
@@ -23,7 +23,7 @@ class StateStatus(Enum):
 
 @dataclass
 class AgentState:
-    """Per-chat data object — one per stream() / run() call.
+    """Per-chat data object  -  one per stream() / run() call.
 
     Created fresh at the start of each agent loop. Holds step counter,
     tool call tracking, and terminal status. Read by stop conditions and

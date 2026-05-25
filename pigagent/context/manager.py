@@ -1,12 +1,12 @@
 ﻿# pigagent/context/manager.py
-"""ContextManager — global orchestrator. Data-driven, no meta hash.
+"""ContextManager  -  global orchestrator. Data-driven, no meta hash.
 
 All position info is embedded in the data:
-  - turn_count → last ConversationRecord.turn_number
-  - roast_instance_id   → ConversationRecord.roast_instance_id
-  - roast start/end → inferred from roast_instance_id transitions
-  - anchor     → SummaryRecord.end_turn
-  - compressing → ctx:u1:compressing (independent key)
+  - turn_count  ->  last ConversationRecord.turn_number
+  - roast_instance_id    ->  ConversationRecord.roast_instance_id
+  - roast start/end  ->  inferred from roast_instance_id transitions
+  - anchor      ->  SummaryRecord.end_turn
+  - compressing  ->  ctx:u1:compressing (independent key)
 """
 
 from __future__ import annotations
@@ -47,7 +47,7 @@ class ContextManager:
     # ── Public Entry Points ───────────────────────────────────────────
 
     async def load(self, *, user_id: str) -> list:
-        """Assemble context and return messages (no system prompt — caller injects)."""
+        """Assemble context and return messages (no system prompt  -  caller injects)."""
         wc = await self.assemble(user_id)
         return wc.to_messages()
 
@@ -128,7 +128,7 @@ class ContextManager:
         if snap.roast_instance_id:
             wc.roast = await self._load_roast_context(user_id, snap.roast_instance_id)
 
-        # Compression trigger — same records, fire-and-forget
+        # Compression trigger  -  same records, fire-and-forget
         if not await store.is_compressing() and raw_records:
             asyncio.create_task(
                 self._compressor.run(

@@ -1,4 +1,4 @@
-"""Tests for tools.search.utils — build_search_messages, _normalize_role."""
+"""Tests for tools.search.utils  -  build_search_messages, _normalize_role."""
 
 
 class MockChatItem:

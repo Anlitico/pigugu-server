@@ -1,4 +1,4 @@
-"""roast — game mode registry, state machine, and trigger detection."""
+"""roast  -  game mode registry, state machine, and trigger detection."""
 
 from roast.base import GameMode, Trigger
 from roast.state import RoastState

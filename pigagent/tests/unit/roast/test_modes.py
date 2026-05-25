@@ -1,4 +1,4 @@
-"""Tests for individual game modes — tick, state, triggers."""
+"""Tests for individual game modes  -  tick, state, triggers."""
 
 from unittest.mock import MagicMock
 
@@ -9,7 +9,7 @@ from roast.types import Mode, Phase
 def _state(**kw):
     s = RoastState.__new__(RoastState)
     s.user_id = "u1"
-    s.persona_id = "trump"
+    s.persona_id = 1
     s.roast_id = "n1"
     s.mode = kw.pop("mode", Mode.ROAST_TOGETHER)
     s.roast_instance_id = "test-id"
@@ -25,9 +25,9 @@ class _FakeTurn:
         self.content = content
 
 
-# ═══════════════════════════════════════════════════════════════════
+# -------------------------------------------------------------------
 # RoastTogetherMode
-# ═══════════════════════════════════════════════════════════════════
+# -------------------------------------------------------------------
 
 class TestRoastTogetherEnergy:
     def test_empty(self):
@@ -110,9 +110,9 @@ class TestRoastTogetherTriggers:
         assert trigger.check(state, records)
 
 
-# ═══════════════════════════════════════════════════════════════════
+# -------------------------------------------------------------------
 # DebateBickerMode
-# ═══════════════════════════════════════════════════════════════════
+# -------------------------------------------------------------------
 
 class TestDebateBickerState:
     def test_init_extra(self):
@@ -173,9 +173,9 @@ class TestDebateBickerTriggers:
         assert not _detect_repeat(records2)
 
 
-# ═══════════════════════════════════════════════════════════════════
+# -------------------------------------------------------------------
 # BreakingBombMode
-# ═══════════════════════════════════════════════════════════════════
+# -------------------------------------------------------------------
 
 class TestBreakingBombState:
     def test_init_extra(self):

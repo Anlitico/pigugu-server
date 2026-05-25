@@ -1,4 +1,4 @@
-"""Tool dataclass — the core data structure for defining agent tools.
+"""Tool dataclass  -  the core data structure for defining agent tools.
 
 A Tool combines spec (name, description, parameters) with handler (execute)
 in one explicit, immutable object. Inspired by Vercel AI SDK's tool() pattern.
@@ -17,7 +17,7 @@ from .executor import ToolHandler
 
 @dataclass(frozen=True)
 class Tool:
-    """A complete tool definition — spec + handler in one explicit object.
+    """A complete tool definition  -  spec + handler in one explicit object.
 
     Usage:
         async def search_handler(args: dict) -> dict:
@@ -40,8 +40,8 @@ class Tool:
 
     name: str
     description: str
-    parameters: dict          # JSON Schema — hand-written for precise control
-    execute: ToolHandler      # Callable[[dict], Any] — receives parsed args dict, returns any JSON-serializable value
+    parameters: dict          # JSON Schema  -  hand-written for precise control
+    execute: ToolHandler      # Callable[[dict], Any]  -  receives parsed args dict, returns any JSON-serializable value
 
     @property
     def spec(self) -> ToolSpec:

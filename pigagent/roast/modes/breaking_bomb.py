@@ -1,7 +1,7 @@
-"""BreakingBomb — 突发炸弹: breaking news just dropped, get the user's gut reaction.
+"""BreakingBomb — breaking news just dropped, get the user's gut reaction.
 
 State (extra):
-    reactions — [{turn, text, timestamp}, ...]
+    reactions  -  [{turn, text, timestamp}, ...]
 """
 
 from __future__ import annotations

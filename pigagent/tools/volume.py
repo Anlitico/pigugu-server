@@ -1,7 +1,7 @@
-"""Volume Control Tool — adjust audio volume via voice commands.
+"""Volume Control Tool  -  adjust audio volume via voice commands.
 
 Supports setting absolute volume, incremental adjustments, mute and unmute.
-Implementation is a mock — always returns success for now.
+Implementation is a mock  -  always returns success for now.
 """
 
 from __future__ import annotations
@@ -143,11 +143,11 @@ volume_tool = Tool(
                 "enum": ["set", "increase", "decrease", "mute", "unmute"],
                 "description": (
                     "The volume action to perform. "
-                    "'set' — set to a specific level. "
-                    "'increase' — raise volume by a step. "
-                    "'decrease' — lower volume by a step. "
-                    "'mute' — silence audio. "
-                    "'unmute' — restore audio from mute."
+                    "'set'  -  set to a specific level. "
+                    "'increase'  -  raise volume by a step. "
+                    "'decrease'  -  lower volume by a step. "
+                    "'mute'  -  silence audio. "
+                    "'unmute'  -  restore audio from mute."
                 ),
             },
             "value": {

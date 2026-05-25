@@ -32,7 +32,7 @@ class TestTurnTimer:
 
     def test_log_summary_no_t5_does_nothing(self):
         timer = TurnTimer()
-        # No agent_start_speaking set → log_summary should return early
+        # No agent_start_speaking set  ->  log_summary should return early
         timer.mark("user_stop_speaking")
         timer.mark("agent_start_thinking")
         # Should not raise

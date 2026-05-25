@@ -1,5 +1,5 @@
 # tests/unit/context/test_storage.py
-"""Unit tests for context storage — RedisKeys, RedisStorage, PgStorage."""
+"""Unit tests for context storage  -  RedisKeys, RedisStorage, PgStorage."""
 
 import json
 
@@ -8,9 +8,9 @@ import pytest
 from context.storage.redis import RedisKeys
 
 
-# ═══════════════════════════════════════════════════════════════════════════════
+# -------------------------------------------------------------------------------
 # RedisKeys
-# ═══════════════════════════════════════════════════════════════════════════════
+# -------------------------------------------------------------------------------
 
 class TestRedisKeys:
     def test_turns(self):
@@ -41,12 +41,12 @@ class TestRedisKeys:
         assert RedisKeys.roast_meta("u1") == "ctx:u1:roast:meta"
 
 
-# ═══════════════════════════════════════════════════════════════════════════════
-# RedisStorage — happy path with mocked Redis
-# ═══════════════════════════════════════════════════════════════════════════════
+# -------------------------------------------------------------------------------
+# RedisStorage  -  happy path with mocked Redis
+# -------------------------------------------------------------------------------
 
 class TestRedisStorage:
-    """RedisStorage — all methods with mocked Redis client."""
+    """RedisStorage  -  all methods with mocked Redis client."""
 
     @pytest.fixture
     def redis_mock(self):
@@ -303,12 +303,12 @@ class TestRedisStorage:
         redis_mock.delete.assert_called_once()
 
 
-# ═══════════════════════════════════════════════════════════════════════════════
-# RedisStorage — exception handling
-# ═══════════════════════════════════════════════════════════════════════════════
+# -------------------------------------------------------------------------------
+# RedisStorage  -  exception handling
+# -------------------------------------------------------------------------------
 
 class TestRedisStorageExceptionHandling:
-    """RedisStorage — exception handling returns safe defaults."""
+    """RedisStorage  -  exception handling returns safe defaults."""
 
     @pytest.fixture
     def broken_redis(self):
@@ -405,12 +405,12 @@ class TestRedisStorageExceptionHandling:
         await safe_store.delete_roast_keys()
 
 
-# ═══════════════════════════════════════════════════════════════════════════════
+# -------------------------------------------------------------------------------
 # PgStorage
-# ═══════════════════════════════════════════════════════════════════════════════
+# -------------------------------------------------------------------------------
 
 class TestPgStorage:
-    """PgStorage — all methods with mocked PG pool."""
+    """PgStorage  -  all methods with mocked PG pool."""
 
     @pytest.fixture
     def pg_mock(self):

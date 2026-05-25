@@ -15,7 +15,6 @@ API Keys (MUST be provided by environment variables, usually .env locally):
 
 import os
 import tomllib
-from datetime import date
 from pathlib import Path
 from typing import Optional, Dict, Any
 from pydantic_settings import BaseSettings
@@ -120,7 +119,7 @@ class AgentConfig(BaseSettings):
     #   ("qwen", "qwen-us", "grok", "xai", "deepseek", etc.)
     LLM_PROVIDER: str = Field(default_factory=lambda: get_config_value("LLM_PROVIDER", "qwen"))
 
-    # LLM_MODEL: unified model field — when set, takes priority over QWEN_MODEL/GROK_MODEL
+    # LLM_MODEL: unified model field  -  when set, takes priority over QWEN_MODEL/GROK_MODEL
     LLM_MODEL: str = Field(default_factory=lambda: get_config_value("LLM_MODEL", ""))
 
     # Legacy per-provider model fields (still supported)
@@ -179,7 +178,7 @@ class AgentConfig(BaseSettings):
     ENABLE_INTERRUPTIONS: bool = Field(default_factory=lambda: get_bool_config_value("ENABLE_INTERRUPTIONS", True))
     SILENCE_THRESHOLD: float = Field(default_factory=lambda: float(get_config_value("SILENCE_THRESHOLD", 30.0)))
 
-    # Context Module — compression / extraction tuning
+    # Context Module  -  compression / extraction tuning
     CONTEXT_HOT_WINDOW_SIZE: int = Field(default_factory=lambda: int(get_config_value("CONTEXT_HOT_WINDOW_SIZE", 500)))
     CONTEXT_TOKEN_BUDGET_CAP: int = Field(default_factory=lambda: int(get_config_value("CONTEXT_TOKEN_BUDGET_CAP", 200_000)))
     CONTEXT_ROAST_COMPRESSION_RATIO: float = Field(default_factory=lambda: float(get_config_value("CONTEXT_ROAST_COMPRESSION_RATIO", 0.05)))
@@ -227,26 +226,6 @@ class AgentConfig(BaseSettings):
     class Config:
         case_sensitive = True
         # Environment variables can override any setting.
-
-
-# ── AI Personality ───────────────────────────────────────────────────
-# Migrated to personas/ package. These re-exports preserve backward compatibility
-# during phased migration. New code should use PersonaRegistry.get("trump").
-
-from personas.trump import TRUMP_PERSONALITY_PROMPT
-
-AI_PERSONALITY = TRUMP_PERSONALITY_PROMPT.format(today=date.today().isoformat())
-
-
-def get_personality_prompt(provider: str = "qwen") -> str:
-    """Get personality prompt with provider-specific additions.
-
-    During migration, delegates to TrumpPersona. New code should use
-    Persona.get_full_prompt(provider) instead.
-    """
-    from personas import get_persona
-    persona = get_persona("trump")
-    return persona.get_full_prompt(provider)
 
 
 def get_config() -> AgentConfig:

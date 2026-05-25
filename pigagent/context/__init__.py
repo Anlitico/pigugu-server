@@ -1,5 +1,5 @@
 ﻿# pigagent/context/__init__.py
-"""Context pipeline — 4-layer agent context with compression and extraction.
+"""Context pipeline  -  4-layer agent context with compression and extraction.
 
 ContextManager is the main entry point:
     ctx = ContextManager(redis_client=redis, pg_pool=pg)

@@ -1,5 +1,5 @@
 # tests/unit/core/agent/test_stop.py
-"""Tests for core.agent.stop — StepResult, step_count_is, no_tool_calls."""
+"""Tests for core.agent.stop  -  StepResult, step_count_is, no_tool_calls."""
 
 from core.agent.state import AgentState
 
@@ -40,7 +40,7 @@ class TestStopConditions:
         assert step_count_is(5)(state)
 
     def test_no_tool_calls_last_result_none(self):
-        """current_step=0 means no steps run yet — should not stop."""
+        """current_step=0 means no steps run yet  -  should not stop."""
         from core.agent.stop import no_tool_calls
         state = AgentState(current_step=0, last_had_tool_calls=False)
         assert not no_tool_calls(state)

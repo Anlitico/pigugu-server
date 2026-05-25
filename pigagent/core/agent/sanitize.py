@@ -1,5 +1,5 @@
 ﻿# pigagent/core/agent/sanitize.py
-"""Message list sanitization before LLM input — tool call cleanup, token fallback."""
+"""Message list sanitization before LLM input  -  tool call cleanup, token fallback."""
 
 
 def _len_fallback(text: str) -> int:

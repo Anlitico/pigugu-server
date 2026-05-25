@@ -25,7 +25,7 @@ def main() -> None:
     logger.info("=" * 70)
 
     if not validate_configuration():
-        logger.error("Configuration errors — please fix and try again.")
+        logger.error("Configuration errors  -  please fix and try again.")
         exit(1)
 
     logger.info("Configuration validated, starting workers...")

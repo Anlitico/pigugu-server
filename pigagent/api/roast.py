@@ -15,13 +15,13 @@ router = APIRouter(prefix="/roast", tags=["roast"])
 
 class RoastStartRequest(BaseModel):
     user_id: str
-    persona_id: str
+    persona_id: int
     roast_id: str
     mode_id: str
     prompt: str
 
 
-async def _event_stream(user_id: str, persona_id: str, roast_id: str, mode_id: str, prompt: str):
+async def _event_stream(user_id: str, persona_id: int, roast_id: str, mode_id: str, prompt: str):
     """SSE generator: yields text chunks from start_roast()."""
     pig_agent = get_pig_agent()
     try:

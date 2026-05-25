@@ -1,5 +1,5 @@
 # tests/unit/test_context_schema.py
-"""Unit tests for context schemas — ConversationRecord, SummaryRecord, TokenBudget,
+"""Unit tests for context schemas  -  ConversationRecord, SummaryRecord, TokenBudget,
 UserMemory, RoastContext, WorkingContext."""
 
 import json
@@ -15,9 +15,9 @@ from config import get_config
 _cfg = get_config()
 
 
-# ═══════════════════════════════════════════════════════════════════════════════
+# -------------------------------------------------------------------------------
 # TokenBudget
-# ═══════════════════════════════════════════════════════════════════════════════
+# -------------------------------------------------------------------------------
 
 class TestTokenBudget:
     def test_defaults(self):
@@ -44,9 +44,9 @@ class TestTokenBudget:
         assert "remaining" in d
 
 
-# ═══════════════════════════════════════════════════════════════════════════════
+# -------------------------------------------------------------------------------
 # RoastContext
-# ═══════════════════════════════════════════════════════════════════════════════
+# -------------------------------------------------------------------------------
 
 class TestRoastContext:
     def test_defaults(self):
@@ -72,9 +72,9 @@ class TestRoastContext:
         assert meta["turn_count"] == 1
 
 
-# ═══════════════════════════════════════════════════════════════════════════════
+# -------------------------------------------------------------------------------
 # WorkingContext
-# ═══════════════════════════════════════════════════════════════════════════════
+# -------------------------------------------------------------------------------
 
 class TestWorkingContext:
     def test_defaults(self):
@@ -185,9 +185,9 @@ class TestWorkingContextRawTurns:
         assert s["breakdown"]["L4_roast_prompt"] == 2000
 
 
-# ═══════════════════════════════════════════════════════════════════════════════
+# -------------------------------------------------------------------------------
 # UserMemory
-# ═══════════════════════════════════════════════════════════════════════════════
+# -------------------------------------------------------------------------------
 
 class TestUserMemory:
     def test_defaults(self):
@@ -215,12 +215,12 @@ class TestUserMemory:
         assert um.token_count() > 0
 
 
-# ═══════════════════════════════════════════════════════════════════════════════
+# -------------------------------------------------------------------------------
 # ConversationRecord
-# ═══════════════════════════════════════════════════════════════════════════════
+# -------------------------------------------------------------------------------
 
 class TestConversationRecord:
-    """ConversationRecord — serialization and conversion to Message."""
+    """ConversationRecord  -  serialization and conversion to Message."""
 
     def test_to_message_basic(self):
         from context.schema import ConversationRecord
@@ -338,12 +338,12 @@ class TestConversationRecord:
         assert restored.partial is True
 
 
-# ═══════════════════════════════════════════════════════════════════════════════
+# -------------------------------------------------------------------------------
 # SummaryRecord
-# ═══════════════════════════════════════════════════════════════════════════════
+# -------------------------------------------------------------------------------
 
 class TestSummaryRecord:
-    """SummaryRecord — serialize/deserialize with end_turn anchor."""
+    """SummaryRecord  -  serialize/deserialize with end_turn anchor."""
 
     def test_serialize(self):
         from context.schema import SummaryRecord

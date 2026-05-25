@@ -1,5 +1,5 @@
 # pigagent/core/__init__.py
-"""Core AI pipeline — LLM, agent, audio."""
+"""Core AI pipeline  -  LLM, agent, audio."""
 
 from .audio import create_stt, STTProvider, create_tts, TTSProvider
 

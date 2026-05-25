@@ -1,4 +1,4 @@
-"""GameModeRegistry — load and register all game modes at startup."""
+"""GameModeRegistry  -  load and register all game modes at startup."""
 
 from __future__ import annotations
 

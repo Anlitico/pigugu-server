@@ -1,9 +1,9 @@
 # pigagent/core/agent/runner.py
-"""AgentRunner — generic ReAct agent loop with composable stop conditions.
+"""AgentRunner  -  generic ReAct agent loop with composable stop conditions.
 
 Stateless design: all per-call mutable state (current_step, AgentState,
 last_result) is held in local variables. The instance itself is pure config
-+ executor — safe to reuse across concurrent calls.
++ executor  -  safe to reuse across concurrent calls.
 """
 
 from __future__ import annotations
@@ -48,7 +48,7 @@ class RunnerConfig:
 
 
 class AgentRunner:
-    """ReAct agent loop runner — config + executor, zero per-call allocation.
+    """ReAct agent loop runner  -  config + executor, zero per-call allocation.
 
     All mutable state (step counter, AgentState, last result) is local to
     each stream() / run() call. The instance is safe for concurrent reuse.
@@ -98,7 +98,7 @@ class AgentRunner:
     ) -> AsyncIterator[str]:
         """Stream the ReAct loop, yielding text chunks for TTS.
 
-        All state is local — safe for concurrent calls on the same instance.
+        All state is local  -  safe for concurrent calls on the same instance.
         """
         msgs = list(messages)
         state = AgentState(status=StateStatus.RUNNING.value)

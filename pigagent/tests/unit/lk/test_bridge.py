@@ -19,7 +19,7 @@ def _make_bridge(**kwargs):
 
     defaults = {
         "pig_agent": pig,
-        "persona_id": "trump",
+        "persona_id": 1,
         "user_id": "u1",
     }
     defaults.update(kwargs)
@@ -122,7 +122,7 @@ class TestLlmNode:
         pig.generate_reply.assert_called_once()
         args, kwargs = pig.generate_reply.call_args
         assert args == ("u1", "hello")
-        assert kwargs["persona_id"] == "trump"
+        assert kwargs["persona_id"] == 1
         assert result == "Hello!"
 
     def test_empty_user_text_yields_nothing(self):
@@ -136,14 +136,14 @@ class TestLlmNode:
         assert result == ""
 
     def test_passes_persona_id(self):
-        bridge, pig = _make_bridge(persona_id="musk")
+        bridge, pig = _make_bridge(persona_id=2)
         ctx = _make_chat_ctx([("user", "hello")])
 
         import asyncio
         asyncio.run(_run_collect(bridge.llm_node(ctx, [], MagicMock())))
 
         _, kwargs = pig.generate_reply.call_args
-        assert kwargs["persona_id"] == "musk"
+        assert kwargs["persona_id"] == 2
 
 
 # ── Properties ──────────────────────────────────────────────────────────────

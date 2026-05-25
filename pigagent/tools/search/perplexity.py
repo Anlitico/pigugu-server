@@ -1,4 +1,4 @@
-"""Perplexity Search Provider — Sonar API integration.
+"""Perplexity Search Provider  -  Sonar API integration.
 
 Supports both Perplexity native (pplx- key) and OpenRouter (sk-or- key).
 Key prefix determines the base URL automatically.

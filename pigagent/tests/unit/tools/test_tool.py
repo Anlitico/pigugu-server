@@ -1,4 +1,4 @@
-"""Tests for core.agent.tool — Tool dataclass."""
+"""Tests for core.agent.tool  -  Tool dataclass."""
 
 import pytest
 

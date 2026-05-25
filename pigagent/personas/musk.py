@@ -1,5 +1,5 @@
 ﻿# pigagent/personas/musk.py
-"""MuskPersona — economy/tech domain."""
+"""MuskPersona  -  economy/tech domain."""
 
 from .base import Persona
 
@@ -23,7 +23,7 @@ You are an engineer-founder who sees the world through the lens of first-princip
 ### Patterns:
 - Short declarative sentences. Lots of periods. Not commas.
 - Start sentences with "Yeah.", "So.", "I mean.", "Look.", "Honestly."
-- Nervous laugh: "Heh." "Haha." — use sparingly
+- Nervous laugh: "Heh." "Haha."  -  use sparingly
 - Technical precision mixed with meme-speak
 - Reference first principles, physics, engineering constraints
 - Default to explaining WHY something works, not just WHAT happened
@@ -66,7 +66,7 @@ You focus on:
 Your output goes DIRECTLY to a text-to-speech engine. NEVER output:
 - Markdown formatting, URLs, citation markers
 - Any non-speech text
-- Keep it conversational — you're speaking, not writing
+- Keep it conversational  -  you're speaking, not writing
 
 ## Example Responses:
 
@@ -82,12 +82,12 @@ A: "The window for making life multiplanetary might be short. Nobody knows how l
 
 
 class MuskPersona(Persona):
-    """Musk persona — economy/tech domain.
+    """Musk persona  -  economy/tech domain.
 
     First-principles engineer, meme-lord, terminal optimist.
     """
 
-    persona_id = "musk"
+    persona_id = 2
     display_name = "Musk"
     domain = "economy"
 

@@ -23,9 +23,9 @@ class ProviderConfig:
     default: str
 
 
-# ═══════════════════════════════════════════════════════════════════════════════
-# Provider 配置 — 从 providers.toml 加载
-# ═══════════════════════════════════════════════════════════════════════════════
+# -------------------------------------------------------------------------------
+# Provider config — loaded from providers.toml
+# -------------------------------------------------------------------------------
 
 _PROVIDERS: dict[str, ProviderConfig] = {}
 
@@ -49,7 +49,7 @@ def list_providers() -> list[str]:
 
 
 def resolve_provider(provider: str) -> tuple[str, str, str]:
-    """Resolve provider → (base_url, api_key, default_model)."""
+    """Resolve provider  ->  (base_url, api_key, default_model)."""
     cfg = get_provider_config(provider)
     if cfg is None:
         raise ValueError(
@@ -59,9 +59,9 @@ def resolve_provider(provider: str) -> tuple[str, str, str]:
     return cfg.base_url, api_key, cfg.default
 
 
-# ═══════════════════════════════════════════════════════════════════════════════
-# ModelRegistry — 纯运行时索引（数据由 model.load_models() 注入）
-# ═══════════════════════════════════════════════════════════════════════════════
+# -------------------------------------------------------------------------------
+# ModelRegistry — pure runtime index (injected by load_models())
+# -------------------------------------------------------------------------------
 
 class ModelRegistry:
     """Thread-unsafe runtime model index."""
@@ -99,9 +99,9 @@ class ModelRegistry:
         return result
 
 
-# ═══════════════════════════════════════════════════════════════════════════════
-# Model config loader — read models.toml into ModelRegistry
-# ═══════════════════════════════════════════════════════════════════════════════
+# -------------------------------------------------------------------------------
+# Model config loader  -  read models.toml into ModelRegistry
+# -------------------------------------------------------------------------------
 
 def load_models(path: str | Path | None = None) -> int:
     target = Path(path) if path else _MODEL_CONFIG

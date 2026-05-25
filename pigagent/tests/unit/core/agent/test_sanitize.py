@@ -1,5 +1,5 @@
 # tests/unit/core/agent/test_sanitize.py
-"""Tests for core.agent.sanitize — validate_tool_calls, _len_fallback."""
+"""Tests for core.agent.sanitize  -  validate_tool_calls, _len_fallback."""
 
 
 class TestLenFallback:

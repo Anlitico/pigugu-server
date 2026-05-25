@@ -1,5 +1,5 @@
 # tests/unit/test_volcengine_provider.py
-"""Unit tests for VolcengineProvider — validation, thinking format, message serialization."""
+"""Unit tests for VolcengineProvider  -  validation, thinking format, message serialization."""
 
 import pytest
 

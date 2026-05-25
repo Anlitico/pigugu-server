@@ -1,5 +1,5 @@
 ﻿# pigagent/core/agent/executor.py
-"""ToolExecutor — concurrent tool execution with timeout, error isolation, and status tracking.
+"""ToolExecutor  -  concurrent tool execution with timeout, error isolation, and status tracking.
 
 Executes tool calls from LLM responses. Supports both serial and concurrent modes.
 Each tool result is returned as a structured dict for appending to agent history.

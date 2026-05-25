@@ -1,4 +1,4 @@
-"""GameMode ABC and Trigger — abstract interface for roast game modes."""
+"""GameMode ABC and Trigger  -  abstract interface for roast game modes."""
 
 from __future__ import annotations
 

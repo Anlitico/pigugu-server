@@ -1,5 +1,5 @@
 ﻿# pigagent/context/snapshot.py
-"""ContextSnapshot — wraps list[ConversationRecord] with token counting,
+"""ContextSnapshot  -  wraps list[ConversationRecord] with token counting,
 segment splitting, and compression eligibility checks.
 
 Used by manager.assemble() and ContextCompressor.
@@ -20,7 +20,7 @@ from context.roast import RoastState
 class ContextSnapshot:
     """Point-in-time snapshot of one user's hot conversation records.
 
-    All token counting and segment queries live here — a single source of
+    All token counting and segment queries live here  -  a single source of
     truth for "what does this user's conversation look like right now?"
     """
 

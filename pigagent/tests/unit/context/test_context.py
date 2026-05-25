@@ -1,5 +1,5 @@
 # tests/unit/context/test_context.py
-"""Unit tests for core types and validation — Message serialization, tool call
+"""Unit tests for core types and validation  -  Message serialization, tool call
 validation, token counting, context config constants."""
 
 import pytest
@@ -12,9 +12,9 @@ from config import get_config
 _cfg = get_config()
 
 
-# ═══════════════════════════════════════════════════════════════════════════════
+# -------------------------------------------------------------------------------
 # Token counting
-# ═══════════════════════════════════════════════════════════════════════════════
+# -------------------------------------------------------------------------------
 
 class TestProviderTokenCounting:
     """Token counting: fast (tiktoken) + async (API, falls back to offline)."""
@@ -62,9 +62,9 @@ class TestProviderTokenCounting:
         assert len(msgs) == 1
 
 
-# ═══════════════════════════════════════════════════════════════════════════════
+# -------------------------------------------------------------------------------
 # Context config constants
-# ═══════════════════════════════════════════════════════════════════════════════
+# -------------------------------------------------------------------------------
 
 class TestConstants:
     def test_hot_window_size(self):
@@ -95,9 +95,9 @@ class TestConstants:
         assert _cfg.CONTEXT_L2_PROFILE_MAX_WORDS == 1500
 
 
-# ═══════════════════════════════════════════════════════════════════════════════
+# -------------------------------------------------------------------------------
 # Message serialization
-# ═══════════════════════════════════════════════════════════════════════════════
+# -------------------------------------------------------------------------------
 
 class TestMessageSerialization:
     """Verify Message.to_dict/from_dict roundtrip (used for Redis storage)."""
@@ -123,12 +123,12 @@ class TestMessageSerialization:
         assert not hasattr(m, "turn")
 
 
-# ═══════════════════════════════════════════════════════════════════════════════
+# -------------------------------------------------------------------------------
 # Tool call validation
-# ═══════════════════════════════════════════════════════════════════════════════
+# -------------------------------------------------------------------------------
 
 class TestToolCallValidation:
-    """validate_tool_calls — filter incomplete tool calls before LLM context."""
+    """validate_tool_calls  -  filter incomplete tool calls before LLM context."""
 
     def test_empty_list(self):
         assert validate_tool_calls([]) == []

@@ -64,7 +64,7 @@ class RedisStorage:
     # ── Turns ───────────────────────────────────────────────────────
 
     async def get_hot_turns(self, n: int, *, after_anchor: int = 0) -> list[ConversationRecord]:
-        """Return the last N turns (newest last), oldest→newest order."""
+        """Return the last N turns (newest last), oldest -> newest order."""
         if not self._redis:
             return []
         try:

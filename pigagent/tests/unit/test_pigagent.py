@@ -1,5 +1,5 @@
 # tests/unit/test_pigagent.py
-"""Unit tests for PigAgent — generate_reply, start_roast, stream, tools."""
+"""Unit tests for PigAgent  -  generate_reply, start_roast, stream, tools."""
 
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -48,7 +48,7 @@ def _make_agent(**kwargs):
         "ctx": ctx,
         "redis": redis,
         "pg_pool": pg_pool,
-        "prompts": {"trump": "You are Trump."},
+        "prompts": {1: "You are Trump."},
         "game_modes": {},
         "tools": mock_registry.tools,
         "tool_handlers": mock_registry.tool_handlers,
@@ -109,7 +109,7 @@ class TestGenerateReply:
 
     def test_injects_system_prompt(self):
         agent, ctx, redis, pg = _make_agent(
-            prompts={"default": "You are helpful."},
+            prompts={0: "You are helpful."},
         )
         captured_messages = []
 
@@ -124,7 +124,7 @@ class TestGenerateReply:
         agent.runner = mock
 
         import asyncio
-        asyncio.run(_run_collect(agent.generate_reply("u1", "hello", persona_id="default")))
+        asyncio.run(_run_collect(agent.generate_reply("u1", "hello", persona_id=0)))
 
         assert captured_messages[0].role == "system"
         assert captured_messages[0].content == "You are helpful."
@@ -168,7 +168,7 @@ class TestGenerateReply:
         from roast.state import RoastState
         roast = RoastState.__new__(RoastState)
         roast.user_id = "u1"
-        roast.persona_id = "trump"
+        roast.persona_id = 1
         roast.roast_id = "r1"
         roast.mode = MagicMock()
         roast.mode.__str__ = MagicMock(return_value="roast_together")  # type: ignore[reportAttributeAccessIssue]
@@ -205,7 +205,7 @@ class TestGenerateReply:
 
         import asyncio
         asyncio.run(_run_collect(agent.generate_reply("u1", "hello")))
-        # No persistence without ctx — should not crash
+        # No persistence without ctx  -  should not crash
 
 
 # ── stream ──────────────────────────────────────────────────────────────────
@@ -218,13 +218,13 @@ class TestStream:
 
         import asyncio
         result = asyncio.run(_run_collect(
-            agent.stream([Message.user("hi")], persona_id="trump")
+            agent.stream([Message.user("hi")], persona_id=1)
         ))
         assert result == "abc"
 
     def test_prepends_system_prompt(self):
         agent, ctx, redis, pg = _make_agent(
-            prompts={"test": "SYSTEM"},
+            prompts={0: "SYSTEM"},
         )
         captured = []
 
@@ -238,7 +238,7 @@ class TestStream:
 
         import asyncio
         asyncio.run(_run_collect(
-            agent.stream([Message.user("hi")], persona_id="test")
+            agent.stream([Message.user("hi")], persona_id=0)
         ))
 
         assert captured[0].role == "system"
@@ -250,7 +250,7 @@ class TestStream:
 
         import asyncio
         result = asyncio.run(_run_collect(
-            agent.stream([Message.user("hi")], persona_id="nobody")
+            agent.stream([Message.user("hi")], persona_id=999)
         ))
         assert result == "x"
 
@@ -267,7 +267,7 @@ class TestStartRoast:
         async def _collect():
             chunks = []
             async for t in agent.start_roast(
-                "u1", "trump", "r1", "unknown_mode", "prompt",
+                "u1", 1, "r1", "unknown_mode", "prompt",
             ):
                 chunks.append(t)
             return chunks
@@ -308,7 +308,7 @@ class TestStartRoast:
         with patch("roast.state.RoastState.start", new=AsyncMock(return_value=roast)):
             with patch("roast.pending.consume", _consume):
                 result = asyncio.run(_run_collect(
-                    agent.start_roast("u1", "trump", "r1", "roast_together", "prompt")
+                    agent.start_roast("u1", 1, "r1", "roast_together", "prompt")
                 ))
 
         assert result == "Opening line!"

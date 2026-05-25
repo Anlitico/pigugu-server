@@ -1,5 +1,5 @@
 # pigagent/api/server.py
-"""FastAPI application — runs alongside LiveKit in the same process."""
+"""FastAPI application  -  runs alongside LiveKit in the same process."""
 
 from fastapi import FastAPI
 

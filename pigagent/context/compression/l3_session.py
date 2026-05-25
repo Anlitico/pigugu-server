@@ -1,5 +1,5 @@
 ﻿# pigagent/context/compression/l3_session.py
-"""L3 session compression — recursive summary merge."""
+"""L3 session compression  -  recursive summary merge."""
 
 from __future__ import annotations
 
@@ -20,7 +20,7 @@ def _load(name: str) -> str:
 
 
 async def compress_turns(turns: list[Message], model: str = "qwen3.6-plus") -> str:
-    """First compression: turns → summary."""
+    """First compression: turns  ->  summary."""
     if not turns:
         return ""
     turns_text = "\n".join(f"[{t.role}]: {t.content}" for t in turns)
@@ -36,7 +36,7 @@ async def compress_turns(turns: list[Message], model: str = "qwen3.6-plus") -> s
 
 
 async def merge_summary(existing_summary: str, new_turns: list[Message], model: str = "qwen3.6-plus") -> str:
-    """Merge: existing summary + new turns → updated summary."""
+    """Merge: existing summary + new turns  ->  updated summary."""
     if not existing_summary and not new_turns:
         return ""
     if not existing_summary:

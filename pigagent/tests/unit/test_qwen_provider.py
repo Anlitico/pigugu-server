@@ -1,5 +1,5 @@
 # tests/unit/test_qwen_provider.py
-"""Unit tests for QwenProvider — validation, parameter mapping, message serialization."""
+"""Unit tests for QwenProvider  -  validation, parameter mapping, message serialization."""
 
 import pytest
 

@@ -104,7 +104,7 @@ class CartesiaSTT(STTProvider):
                 base_url=base_url
             )
             
-            logger.info(f"✅ Initialized Cartesia STT plugin")
+            logger.info(f"Initialized Cartesia STT plugin")
             logger.info(f"   Model: {model}")
             logger.info(f"   Language: {language}")
             logger.info(f"   Encoding: {encoding}")
@@ -178,7 +178,7 @@ class DeepgramSTT(STTProvider):
                 http_session=http_session,
             )
             
-            logger.info(f"✅ Initialized Deepgram STT plugin")
+            logger.info(f"Initialized Deepgram STT plugin")
             logger.info(f"   Model: {model}")
             logger.info(f"   Language: {language}")
             logger.info(f"   Sample Rate: {sample_rate} Hz")

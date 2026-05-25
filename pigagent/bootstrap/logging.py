@@ -1,5 +1,5 @@
 # pigagent/bootstrap/logging.py
-"""Loguru configuration — called once at module load time."""
+"""Loguru configuration  -  called once at module load time."""
 
 import sys
 from pathlib import Path

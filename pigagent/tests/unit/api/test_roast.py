@@ -14,7 +14,7 @@ class TestRoastStartRequest:
         from api.roast import RoastStartRequest
         req = RoastStartRequest(
             user_id="u1",
-            persona_id="trump",
+            persona_id=1,
             roast_id="r1",
             mode_id="roast_together",
             prompt="news text",
@@ -47,7 +47,7 @@ class TestEventStream:
         with patch("api.roast.get_pig_agent", return_value=mock_agent):
             import asyncio
             events = asyncio.run(_collect_events(_event_stream(
-                "u1", "trump", "r1", "roast_together", "news text",
+                "u1", 1, "r1", "roast_together", "news text",
             )))
 
         assert events[0].startswith("data: ")
@@ -70,7 +70,7 @@ class TestEventStream:
         with patch("api.roast.get_pig_agent", return_value=mock_agent):
             import asyncio
             events = asyncio.run(_collect_events(_event_stream(
-                "u1", "trump", "r1", "roast_together", "news",
+                "u1", 1, "r1", "roast_together", "news",
             )))
 
         assert any('"error"' in e for e in events)
@@ -96,7 +96,7 @@ class TestStartRoastEndpoint:
             client = TestClient(app)
             response = client.post("/roast/start", json={
                 "user_id": "u1",
-                "persona_id": "trump",
+                "persona_id": 1,
                 "roast_id": "r1",
                 "mode_id": "unknown",
                 "prompt": "test",
@@ -125,7 +125,7 @@ class TestStartRoastEndpoint:
             client = TestClient(app)
             response = client.post("/roast/start", json={
                 "user_id": "u1",
-                "persona_id": "trump",
+                "persona_id": 1,
                 "roast_id": "r1",
                 "mode_id": "roast_together",
                 "prompt": "test prompt",

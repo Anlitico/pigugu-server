@@ -1,12 +1,12 @@
 ﻿# pigagent/context/compression/compressor.py
-"""ContextCompressor — unified compression pipeline.
+"""ContextCompressor  -  unified compression pipeline.
 
 Two scenarios (auto-detected via ContextSnapshot):
-  free_chat  → L2 extract + L3 merge
-  roast      → L2 extract + L3 merge + L4 roast compress
+  free_chat   ->  L2 extract + L3 merge
+  roast       ->  L2 extract + L3 merge + L4 roast compress
 
-Phase 1 — Concurrent LLM calls
-Phase 2 — Sequential writes: Redis first, then PG
+Phase 1  -  Concurrent LLM calls
+Phase 2  -  Sequential writes: Redis first, then PG
 """
 
 from __future__ import annotations
@@ -141,8 +141,8 @@ class ContextCompressor:
     ) -> tuple[list, list | None, int]:
         """Extract L3/L4 message groups from snapshot.
 
-        free_chat: all records → L3.
-        roast:     pre_roast → L3, roast → L4 if token threshold met.
+        free_chat: all records  ->  L3.
+        roast:     pre_roast  ->  L3, roast  ->  L4 if token threshold met.
 
         Returns (l3_msgs, l4_msgs | None, end_turn).
         """

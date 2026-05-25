@@ -1,5 +1,5 @@
 ﻿# pigagent/core/agent/__init__.py
-"""Core agent infrastructure — runner, state, interrupt, executor, tools, stop conditions."""
+"""Core agent infrastructure  -  runner, state, interrupt, executor, tools, stop conditions."""
 
 from .stop import StepResult, step_count_is, no_tool_calls
 from .state import AgentState, StateStatus

@@ -1,10 +1,10 @@
 ﻿# pigagent/context/schema.py
 """Core data structures for the 4-layer agent context architecture.
 
-Layer 1 — System Prompt (injected by PigAgent, not stored in context)
-Layer 2 — User Preference (~1-2K, prefix-cached)
-Layer 3 — Session Context (dynamic: raw turns + summaries)
-Layer 4 — Active Roast (transient: prompt → summary → raw turns)
+Layer 1  -  System Prompt (injected by PigAgent, not stored in context)
+Layer 2  -  User Preference (~1-2K, prefix-cached)
+Layer 3  -  Session Context (dynamic: raw turns + summaries)
+Layer 4  -  Active Roast (transient: prompt  ->  summary  ->  raw turns)
 
 Token Budget: 200K cap, dynamically allocated at assembly time.
 """
@@ -21,7 +21,7 @@ from core.agent.sanitize import _len_fallback, validate_tool_calls
 
 @dataclass
 class ConversationRecord:
-    """A stored turn — Redis/PG intermediate between Message and AgentConversation.
+    """A stored turn  -  Redis/PG intermediate between Message and AgentConversation.
 
     turn_number is the global counter. roast_instance_id is embedded in the data
     so assembly can determine boundaries without reading meta.
@@ -89,7 +89,7 @@ class ConversationRecord:
 class SummaryRecord:
     """A stored summary with embedded position info.
 
-    end_turn anchors the summary to the turn timeline — all turns ≤ end_turn
+    end_turn anchors the summary to the turn timeline  -  all turns ≤ end_turn
     are covered by this summary.
     """
 
@@ -180,8 +180,8 @@ class UserMemory:
 class RoastContext:
     """Active roast data. Loaded when the latest record has an active roast_instance_id.
 
-    4a — prompt: RAW game rules, preserved verbatim by L4 compression (never passed to LLM).
-    4b — summary: L4-compressed gameplay history.
+    4a  -  prompt: RAW game rules, preserved verbatim by L4 compression (never passed to LLM).
+    4b  -  summary: L4-compressed gameplay history.
 
     Roast lifecycle is data-driven: active while records carry roast_instance_id,
     ends via 24h staleness or new roast_instance_id. No explicit cleanup needed.
@@ -217,24 +217,24 @@ class RoastContext:
 class WorkingContext:
     """Per-user LLM-visible context. Hot-path assembled from Redis < 5ms.
 
-    L3 — single recursive summary (anchor via SummaryRecord.end_turn)
-    L4 — roast context (only if active roast)
-    L2 — user memory profile
+    L3  -  single recursive summary (anchor via SummaryRecord.end_turn)
+    L4  -  roast context (only if active roast)
+    L2  -  user memory profile
     """
 
     user_id: str
 
-    # L3 — Session
+    # L3  -  Session
     raw_turns: list = field(default_factory=list)
     summary: str = ""                # recursive conversation summary
     summary_end_turn: int = 0        # anchor: all turns ≤ this are covered
     game_state: dict = field(default_factory=dict)
     meta: dict = field(default_factory=dict)
 
-    # L4 — Active Roast
+    # L4  -  Active Roast
     roast: RoastContext | None = None
 
-    # L2 — User Memory
+    # L2  -  User Memory
     user_memory: UserMemory | None = None
 
     # Budget
@@ -243,7 +243,7 @@ class WorkingContext:
     def to_messages(self, *, token_counter=None) -> list:
         """Assemble context messages: L2 profile + L3 summary + L4 roast + raw turns.
 
-        L1 (system prompt) is NOT included — the caller (PigAgent) injects it.
+        L1 (system prompt) is NOT included  -  the caller (PigAgent) injects it.
         """
         from core.llm.types import Message
 
@@ -263,7 +263,7 @@ class WorkingContext:
             result.append(Message.user(f"[Game scenario + history]\n{self.roast.summary}"))
             budget.layer_4_roast_prompt = tc(self.roast.summary)
 
-        # raw_turns are oldest→newest (RPUSH order)
+        # raw_turns are oldest -> newest (RPUSH order)
         for turn in self.raw_turns:
             if isinstance(turn, ConversationRecord):
                 result.append(turn.to_message())

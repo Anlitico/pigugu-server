@@ -1,5 +1,5 @@
 ﻿# pigagent/context/compression/l4_roast.py
-"""L4 roast compression — game-aware summary with prompt preservation."""
+"""L4 roast compression  -  game-aware summary with prompt preservation."""
 
 from __future__ import annotations
 

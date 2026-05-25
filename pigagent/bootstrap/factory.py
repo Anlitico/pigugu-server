@@ -3,7 +3,7 @@
 Component factory: STT/TTS per session, PigAgent + storage as global singletons.
 
 Storage (Redis + PG pool) is initialized at module load time. If either fails,
-the process exits — there is no fallback.
+the process exits  -  there is no fallback.
 """
 
 import os
@@ -107,7 +107,7 @@ def _init_pg_pool():
     except RuntimeError:
         _pg_pool = asyncio.run(_create())
     else:
-        # Running loop exists — schedule but can't await here.
+        # Running loop exists  -  schedule but can't await here.
         # Defer to first use via lazy init pattern.
         _pg_pool = database_url  # store URL, create pool on first access
         logger.info("[Factory] PG pool deferred (event loop already running)")
@@ -266,7 +266,7 @@ def create_agent_components(config=None, persona=None):
 
     pig_agent = get_pig_agent()
 
-    # ── TTS (per session — persona voice/speed/emotion) ────────────────
+    # ── TTS (per session  -  persona voice/speed/emotion) ────────────────
 
     cartesia_api_key = os.getenv("CARTESIA_API_KEY")
 

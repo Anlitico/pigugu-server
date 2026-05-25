@@ -1,5 +1,5 @@
 ﻿# pigagent/core/llm/providers/volcengine.py
-"""Volcengine Ark provider — OpenAI-compatible API (Doubao models)"""
+"""Volcengine Ark provider  -  OpenAI-compatible API (Doubao models)"""
 
 from __future__ import annotations
 
@@ -240,7 +240,7 @@ class VolcengineProvider(LLMProvider):
             body.setdefault("extra_body", {})["thinking"] = think_cfg
 
         # ── Web Search (tool-based, not extra_body) ──
-        # Volcengine provides "联网内容插件" (Web Search plugin tool),
+        # Volcengine provides a Web Search plugin tool,
         # not a native enable_search parameter like Qwen.
 
         # ── Structured output ──
@@ -278,7 +278,7 @@ class VolcengineProvider(LLMProvider):
         d = m.to_openai_dict()
         if m.partial and m.role == "assistant":
             # Volcengine continuation mode: prefix=True on the assistant message.
-            # Ref: https://www.volcengine.com/docs/82379/1359497 (续写模式)
+            # Ref: https://www.volcengine.com/docs/82379/1359497 (continuation mode)
             d["prefix"] = True
         return d
 

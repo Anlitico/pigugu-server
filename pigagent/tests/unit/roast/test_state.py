@@ -8,7 +8,7 @@ def _make(**kw):
     """Construct a RoastState for testing (bypasses Redis)."""
     state = RoastState.__new__(RoastState)
     state.user_id = kw.get("user_id", "u1")
-    state.persona_id = kw.get("persona_id", "trump")
+    state.persona_id = kw.get("persona_id", 1)
     state.roast_id = kw.get("roast_id", "n1")
     state.mode = kw.get("mode", Mode.ROAST_TOGETHER)
     state.roast_instance_id = kw.get("roast_instance_id", "test-id")

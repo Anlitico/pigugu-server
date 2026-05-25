@@ -1,5 +1,5 @@
 ﻿# pigagent/context/storage/pg.py
-"""PostgreSQL I/O for context module — turns, facts, profile, recovery."""
+"""PostgreSQL I/O for context module  -  turns, facts, profile, recovery."""
 
 from __future__ import annotations
 

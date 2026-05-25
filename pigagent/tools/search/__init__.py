@@ -1,4 +1,4 @@
-"""tools.search — web search providers for agent tool use.
+"""tools.search  -  web search providers for agent tool use.
 
 Exposes:
     SearchProvider      - ABC for standalone search APIs

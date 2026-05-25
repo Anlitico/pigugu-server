@@ -1,4 +1,4 @@
-"""Tests for tools.web_search — create_web_search_tool factory."""
+"""Tests for tools.web_search  -  create_web_search_tool factory."""
 
 import asyncio
 

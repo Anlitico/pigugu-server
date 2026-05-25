@@ -1,4 +1,4 @@
-"""SearchProvider ABC — standalone search API interface for tool-based web search.
+"""SearchProvider ABC  -  standalone search API interface for tool-based web search.
 
 Concrete providers (Perplexity, Tavily, etc.) implement the search() method.
 The Tool handler in tools/web_search.py delegates to any SearchProvider instance.

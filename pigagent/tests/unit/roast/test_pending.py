@@ -1,4 +1,4 @@
-"""Tests for roast.pending — consume and write."""
+"""Tests for roast.pending  -  consume and write."""
 
 import pytest
 from unittest.mock import AsyncMock, MagicMock

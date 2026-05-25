@@ -1,5 +1,5 @@
 # tests/unit/context/test_compression.py
-"""Unit tests for context compression — L2 facts, L3 session, L4 roast edge cases."""
+"""Unit tests for context compression  -  L2 facts, L3 session, L4 roast edge cases."""
 
 import asyncio
 
@@ -48,7 +48,7 @@ class TestFactExtraction:
 
 
 class TestL3SessionEdgeCases:
-    """L3 compression edge cases — no external LLM calls."""
+    """L3 compression edge cases  -  no external LLM calls."""
 
     def test_compress_turns_empty(self):
         from context.compression.l3_session import compress_turns
@@ -67,7 +67,7 @@ class TestL3SessionEdgeCases:
 
 
 class TestL4RoastEdgeCases:
-    """L4 roast compression edge cases — no external LLM calls."""
+    """L4 roast compression edge cases  -  no external LLM calls."""
 
     def test_compress_roast_empty_turns_no_summary(self):
         from context.compression.l4_roast import compress_roast

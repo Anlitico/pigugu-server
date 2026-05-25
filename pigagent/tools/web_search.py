@@ -1,4 +1,4 @@
-"""Web Search Tool — creates a Tool from a SearchProvider.
+"""Web Search Tool  -  creates a Tool from a SearchProvider.
 
 Each provider (Perplexity, Tavily, etc.) implements the SearchProvider ABC.
 This module wraps any provider into a Tool that the LLM can call via function calling.

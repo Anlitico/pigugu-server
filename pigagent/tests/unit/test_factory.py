@@ -1,5 +1,5 @@
 # tests/unit/test_factory.py
-"""Unit tests for bootstrap/factory.py — singleton creation, validation."""
+"""Unit tests for bootstrap/factory.py  -  singleton creation, validation."""
 
 import os
 from unittest.mock import MagicMock, patch

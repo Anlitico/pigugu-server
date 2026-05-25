@@ -1,5 +1,5 @@
 # pigagent/lk/session.py
-"""LiveKit session wiring — registers event handlers and starts the session."""
+"""LiveKit session wiring  -  registers event handlers and starts the session."""
 
 from __future__ import annotations
 
@@ -35,7 +35,8 @@ async def run(ctx: JobContext) -> None:
         except Exception as e:
             logger.warning(f"Failed to parse job metadata: {e}")
 
-    persona_id = metadata.get("persona", "trump")
+    raw = metadata.get("persona", 1)
+    persona_id = int(raw)
     persona = get_persona(persona_id)
     logger.info(
         f"Persona: {persona.persona_id} ({persona.display_name}, domain={persona.domain})"
@@ -78,7 +79,7 @@ async def run(ctx: JobContext) -> None:
     logger.info(f"[DEBUG] STT: {type(stt_plugin).__name__}, TTS: {type(tts_plugin).__name__}")
     logger.info(f"[DEBUG] LLM: PigAgent with {pig_agent.model}")
 
-    # Resolve user_id: app passes directly, device passes device_id → lookup later
+    # Resolve user_id: app passes directly, device passes device_id  ->  lookup later
     user_id = metadata.get("user_id", "") or metadata.get("device_id", "")
 
     bridge = PigAgentVoiceBridge(
@@ -161,7 +162,7 @@ async def run(ctx: JobContext) -> None:
                 timer.data["llm_first_token"] = time.perf_counter() - m.duration + m.ttft
             logger.info(
                 f"[LLM] TTFT: {m.ttft:.3f}s, "
-                f"Tokens: {m.prompt_tokens}→{m.completion_tokens}"
+                f"Tokens: {m.prompt_tokens} -> {m.completion_tokens}"
             )
         elif isinstance(m, TTSMetrics):
             logger.info(
@@ -188,7 +189,7 @@ async def run(ctx: JobContext) -> None:
     @session.on("function_tools_executed")
     def on_function_tools_executed(event):
         for fc, fo in event.zipped():
-            logger.info(f"[TOOL] {fc.name} → {str(fo.result)[:200] if fo and fo.result else 'ok'}")
+            logger.info(f"[TOOL] {fc.name}  ->  {str(fo.result)[:200] if fo and fo.result else 'ok'}")
 
     @session.on("error")
     def on_error(event):
@@ -196,7 +197,7 @@ async def run(ctx: JobContext) -> None:
 
     @session.on("close")
     def on_close(event):
-        logger.info(f"[SESSION] Closed — reason: {event.reason}")
+        logger.info(f"[SESSION] Closed  -  reason: {event.reason}")
 
     # ── Start ─────────────────────────────────────────────────────────
     logger.info(f"Starting voice agent session... ({len(ctx.room.remote_participants)} participants)")
@@ -211,5 +212,5 @@ async def run(ctx: JobContext) -> None:
     if config.ENABLE_POLICY_SEARCH:
         logger.info(f"[SEARCH] Enabled, backend={config.POLICY_SEARCH_BACKEND}")
 
-    logger.info("Agent ready — waiting for voice input...")
+    logger.info("Agent ready  -  waiting for voice input...")
     await asyncio.Event().wait()

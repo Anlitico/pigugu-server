@@ -1,5 +1,5 @@
 ﻿# pigagent/core/llm/__init__.py
-"""LLM package — Types, Provider, Registry"""
+"""LLM package  -  Types, Provider, Registry"""
 
 from loguru import logger
 
@@ -19,9 +19,9 @@ from .providers.volcengine import VolcengineProvider
 from .registry import ModelRegistry, get_provider_config, resolve_provider, load_models, list_providers
 
 
-# ═══════════════════════════════════════════════════════════════════════════════
-# Provider instance pool — pre-built at import time, keyed by provider_id
-# ═══════════════════════════════════════════════════════════════════════════════
+# -------------------------------------------------------------------------------
+# Provider instance pool  -  pre-built at import time, keyed by provider_id
+# -------------------------------------------------------------------------------
 
 _pool: dict[str, LLMProvider] = {}
 
@@ -55,7 +55,7 @@ def _build_pool() -> None:
 def get_llm(model: str = "qwen-plus") -> LLMProvider:
     """Return the provider instance for the given model.
 
-    Resolves model → provider backend via ModelRegistry, then returns
+    Resolves model  ->  provider backend via ModelRegistry, then returns
     the pre-built instance for that backend.
     """
     info = ModelRegistry.get(model)

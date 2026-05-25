@@ -1,5 +1,5 @@
 # tests/unit/test_types.py
-"""Unit tests for types — Message, ToolCall, ToolSpec, ChatResponse, TokenUsage, ModelInfo."""
+"""Unit tests for types  -  Message, ToolCall, ToolSpec, ChatResponse, TokenUsage, ModelInfo."""
 
 from core.llm.types import (
     Message, ToolCall, ToolSpec, ChatResponse, ChatDelta,

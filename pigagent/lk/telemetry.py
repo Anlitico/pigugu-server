@@ -60,15 +60,15 @@ class TurnTimer:
         total = t5 - start
 
         logger.info("=" * 60)
-        logger.info(f"  [TIMING] Turn #{d['turn_id']} — Total lag: {total:.3f}s")
+        logger.info(f"  [TIMING] Turn #{d['turn_id']}  -  Total lag: {total:.3f}s")
         if t0 and t1:
-            logger.info(f"  T0→T1 STT:   {(t1 - t0):+.3f}s")
+            logger.info(f"  T0 -> T1 STT:   {(t1 - t0):+.3f}s")
         if t2 and t2_5:
-            logger.info(f"  T2→T2.5 TTFT: {(t2_5 - t2):+.3f}s")
+            logger.info(f"  T2 -> T2.5 TTFT: {(t2_5 - t2):+.3f}s")
         if t2_5 and t4:
-            logger.info(f"  T2.5→T4 LLM: {(t4 - t2_5):+.3f}s")
+            logger.info(f"  T2.5 -> T4 LLM: {(t4 - t2_5):+.3f}s")
         if t3 and t5:
-            logger.info(f"  T3→T5 TTS:   {(t5 - t3):+.3f}s")
+            logger.info(f"  T3 -> T5 TTS:   {(t5 - t3):+.3f}s")
 
         if total < 2.0:
             logger.info("  VERDICT: EXCELLENT (<2s)")

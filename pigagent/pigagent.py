@@ -1,13 +1,13 @@
-"""PigAgent — pigugu voice agent: LLM orchestration, context, tools, roast.
+"""PigAgent  -  pigugu voice agent: LLM orchestration, context, tools, roast.
 
 Owns all content-level logic (system prompt, context assembly, tool execution,
 game mode triggers). The voice bridge (lk.bridge) handles the LiveKit
-pipeline adaptation — PigAgent itself has zero LiveKit dependency.
+pipeline adaptation  -  PigAgent itself has zero LiveKit dependency.
 
 Public API:
-    agent.generate_reply(user_id, user_text, persona_id)  — high-level entry
-    agent.stream(messages, persona_id)                    — low-level ReAct loop
-    agent.start_roast(user_id, persona_id, roast_id, mode_id) — begin roast game
+    agent.generate_reply(user_id, user_text, persona_id)   -  high-level entry
+    agent.stream(messages, persona_id)                     -  low-level ReAct loop
+    agent.start_roast(user_id, persona_id, roast_id, mode_id)  -  begin roast game
 """
 
 from __future__ import annotations
@@ -26,12 +26,12 @@ from roast.pending import consume
 from roast.state import RoastState
 from roast.types import Mode
 
-_ROAST_USER_TAG = "[System — Game Background]"
+_ROAST_USER_TAG = "[System  -  Game Background]"
 _ROAST_TRIGGER_TAG = "[System]"
 
 
 class PigAgent:
-    """Pigugu agent — all LLM/content logic. Zero LiveKit dependency."""
+    """Pigugu agent  -  all LLM/content logic. Zero LiveKit dependency."""
 
     def __init__(
         self,
@@ -40,7 +40,7 @@ class PigAgent:
         redis,
         pg_pool,
         model: str = "qwen3.6-plus",
-        prompts: dict[str, str] | None = None,
+        prompts: dict[int, str] | None = None,
         game_modes: dict[str, Any] | None = None,
         tools: list | None = None,
         tool_handlers: dict | None = None,
@@ -53,7 +53,7 @@ class PigAgent:
         self.ctx = ctx
         self._redis = redis
         self._pg_pool = pg_pool
-        self._prompts: dict[str, str] = prompts or {}
+        self._prompts: dict[int, str] = prompts or {}
         self._game_modes: dict[str, Any] = game_modes or {}
 
         if tools is None:
@@ -97,9 +97,9 @@ class PigAgent:
         user_id: str,
         user_text: str,
         *,
-        persona_id: str = "",
+        persona_id: int = 1,
     ) -> AsyncIterator[str]:
-        """Complete reply pipeline: load context → assemble → stream → persist.
+        """Complete reply pipeline: load context  ->  assemble  ->  stream  ->  persist.
 
         The single entry point for the voice bridge. Handles:
         - Context loading from Redis/PG
@@ -169,7 +169,7 @@ class PigAgent:
         self,
         messages: list[Message],
         *,
-        persona_id: str = "",
+        persona_id: int = 1,
         search: dict | None = None,
         interrupt_key: str | None = None,
     ) -> AsyncIterator[str]:
@@ -188,7 +188,7 @@ class PigAgent:
     async def start_roast(
         self,
         user_id: str,
-        persona_id: str,
+        persona_id: int,
         roast_id: str,
         mode_id: str,
         prompt: str,
@@ -215,7 +215,7 @@ class PigAgent:
             pg_pool=self._pg_pool,
         )
 
-        # Persist roast body to context — loaded automatically on each turn
+        # Persist roast body to context  -  loaded automatically on each turn
         roast_body = self._build_roast_body(
             game_mode=game_mode,
             prompt=prompt,
@@ -235,7 +235,7 @@ class PigAgent:
             f"roast_id={roast_id} mode={mode_id} user={user_id}"
         )
 
-        # Trigger opening reply — roast body is already in context
+        # Trigger opening reply  -  roast body is already in context
         async for text in self.generate_reply(
             user_id, "Game start",
             persona_id=persona_id,
@@ -266,10 +266,10 @@ class PigAgent:
         roast_state,
         game_mode,
     ) -> AsyncIterator[str]:
-        """Roast pipeline: consume pending → stream → tick.
+        """Roast pipeline: consume pending  ->  stream  ->  tick.
 
         Roast body (news + game rules) was already persisted to context
-        by start_roast() — it loads via ctx.load() in generate_reply().
+        by start_roast()  -  it loads via ctx.load() in generate_reply().
         """
         # 1. Consume pending trigger prompt
         try:
@@ -285,7 +285,7 @@ class PigAgent:
         async for text in self.runner.stream(messages):
             yield text
 
-        # 3. Tick — fire-and-forget, don't block the reply
+        # 3. Tick  -  fire-and-forget, don't block the reply
         asyncio.create_task(self._tick_roast(roast_state, game_mode, messages))
 
     async def _tick_roast(self, roast_state, game_mode, messages) -> None:
@@ -328,7 +328,7 @@ class PigAgent:
     # ── Context-managed run (standalone, non-LiveKit) ─────────────────
 
     async def run(
-        self, *, user_id: str, persona_id: str = "",
+        self, *, user_id: str, persona_id: int = 1,
         interrupt_key: str | None = None,
     ) -> StepResult:
         """Non-streaming run with context hooks."""

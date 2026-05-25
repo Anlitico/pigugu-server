@@ -1,9 +1,9 @@
-"""RoastTogether — 一起吐槽: roast a hot topic together with the user.
+"""RoastTogether — roast a hot topic together with the user.
 
 State (extra):
-    user_energy  — 0.0-1.0, engagement level per turn
-    best_take    — the user's spiciest line so far
-    best_take_turn — which turn it happened
+    user_energy   -  0.0-1.0, engagement level per turn
+    best_take     -  the user's spiciest line so far
+    best_take_turn  -  which turn it happened
 """
 
 from __future__ import annotations
@@ -20,7 +20,7 @@ if TYPE_CHECKING:
 
 
 def _compute_energy(text: str) -> float:
-    """Heuristic energy score from a user message. 0.0 (flat) — 1.0 (on fire).
+    """Heuristic energy score from a user message. 0.0 (flat)  -  1.0 (on fire).
 
     Six signals, each contributing a capped sub-score:
 
@@ -115,7 +115,7 @@ class RoastTogetherMode(GameMode):
         energy = _compute_energy(text)
         state.extra["user_energy"] = energy
 
-        # Track best quote — only if genuinely quotable
+        # Track best quote  -  only if genuinely quotable
         if (
             len(text) >= self._QUOTABLE_MIN_LENGTH
             and energy >= self._QUOTABLE_MIN_ENERGY

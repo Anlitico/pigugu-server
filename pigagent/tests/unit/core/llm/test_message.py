@@ -1,5 +1,5 @@
 # tests/unit/core/llm/test_message.py
-"""Tests for Message serialization — to_dict/from_dict roundtrip and edge cases."""
+"""Tests for Message serialization  -  to_dict/from_dict roundtrip and edge cases."""
 
 from core.llm.types import Message, ToolCall
 

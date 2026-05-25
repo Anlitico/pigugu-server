@@ -1,5 +1,5 @@
 # tests/unit/test_personas.py
-"""Unit tests for personas — PersonaRegistry and individual personas."""
+"""Unit tests for personas  -  PersonaRegistry and individual personas."""
 
 import pytest
 
@@ -9,22 +9,22 @@ class TestPersonaRegistry:
         from personas import PersonaRegistry
         PersonaRegistry.register_defaults()
         ids = PersonaRegistry.list_ids()
-        assert "trump" in ids
-        assert "musk" in ids
-        assert "james" in ids
+        assert 1 in ids
+        assert 2 in ids
+        assert 3 in ids
 
     def test_get_returns_persona(self):
         from personas import PersonaRegistry, Persona
         PersonaRegistry.register_defaults()
-        p = PersonaRegistry.get("trump")
+        p = PersonaRegistry.get(1)
         assert isinstance(p, Persona)
-        assert p.persona_id == "trump"
+        assert p.persona_id == 1
 
     def test_get_unknown_falls_back_to_trump(self):
         from personas import PersonaRegistry
         PersonaRegistry.register_defaults()
-        p = PersonaRegistry.get("nonexistent")
-        assert p.persona_id == "trump"
+        p = PersonaRegistry.get(999)
+        assert p.persona_id == 1
 
     def test_get_by_domain(self):
         from personas import PersonaRegistry
@@ -43,16 +43,16 @@ class TestPersonaRegistry:
 
     def test_convenience_get_persona(self):
         from personas import get_persona, Persona
-        p = get_persona("trump")
+        p = get_persona(1)
         assert isinstance(p, Persona)
-        assert p.persona_id == "trump"
+        assert p.persona_id == 1
 
 
 class TestTrumpPersona:
     def test_basic_fields(self):
         from personas import TrumpPersona
         p = TrumpPersona()
-        assert p.persona_id == "trump"
+        assert p.persona_id == 1
         assert "Trump" in p.display_name
         assert p.domain == "politics"
 
@@ -86,7 +86,7 @@ class TestMuskPersona:
     def test_basic_fields(self):
         from personas import MuskPersona
         p = MuskPersona()
-        assert p.persona_id == "musk"
+        assert p.persona_id == 2
         assert "Musk" in p.display_name
 
     def test_get_full_prompt(self):
@@ -107,7 +107,7 @@ class TestJamesPersona:
     def test_basic_fields(self):
         from personas import JamesPersona
         p = JamesPersona()
-        assert p.persona_id == "james"
+        assert p.persona_id == 3
 
     def test_get_full_prompt(self):
         from personas import JamesPersona

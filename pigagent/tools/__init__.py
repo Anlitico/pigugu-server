@@ -1,6 +1,6 @@
-"""tools — pigugu agent tool definitions.
+"""tools  -  pigugu agent tool definitions.
 
-Concrete tool instances — each file defines a Tool(...) object.
+Concrete tool instances  -  each file defines a Tool(...) object.
 Registration into ToolRegistry happens in PigAgent._create_default_tools().
 """
 

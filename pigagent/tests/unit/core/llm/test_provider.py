@@ -1,5 +1,5 @@
 # tests/unit/core/llm/test_provider.py
-"""Tests for LLMProvider base class — count_tokens and _tokenize."""
+"""Tests for LLMProvider base class  -  count_tokens and _tokenize."""
 
 import asyncio
 

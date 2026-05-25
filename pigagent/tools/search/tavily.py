@@ -1,4 +1,4 @@
-"""Tavily Search Provider — Tavily Search API integration.
+"""Tavily Search Provider  -  Tavily Search API integration.
 
 Uses the Tavily Python SDK for web search with AI-generated answers.
 Supports configurable search depth and max results.

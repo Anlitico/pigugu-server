@@ -1,9 +1,9 @@
 # tests/unit/context/test_snapshot.py
-"""Unit tests for ContextSnapshot — segment splitting, scenario detection, conversion."""
+"""Unit tests for ContextSnapshot  -  segment splitting, scenario detection, conversion."""
 
 
 class TestContextSnapshot:
-    """ContextSnapshot — segment splitting, scenario detection, conversion."""
+    """ContextSnapshot  -  segment splitting, scenario detection, conversion."""
 
     @staticmethod
     def _rec(turn_number, role="user", content="", roast_instance_id=None):

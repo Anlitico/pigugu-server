@@ -1,4 +1,4 @@
-"""Prompt templates — loaded from .j2 files and cached."""
+"""Prompt templates  -  loaded from .j2 files and cached."""
 
 from __future__ import annotations
 

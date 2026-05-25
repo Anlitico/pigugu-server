@@ -1,5 +1,5 @@
 ﻿# pigagent/core/llm/provider.py
-"""LLM Provider 抽象基类"""
+"""LLM Provider abstract base class"""
 
 from __future__ import annotations
 
@@ -10,7 +10,7 @@ from .types import Message, ChatResponse, ChatDelta
 
 
 class LLMProvider(ABC):
-    """Stateless LLM provider — every parameter is per-call.
+    """Stateless LLM provider  -  every parameter is per-call.
 
     === Tool Calling (5/5 providers) ==========================================
 
@@ -20,15 +20,15 @@ class LLMProvider(ABC):
 
     tool_choice: str | None
         Controls whether and how the model calls tools.
-        ``None`` / ``"auto"`` — model decides (default)
-        ``"required"``       — must call at least one tool
-        ``"none"``           — never call tools
-        ``"<function_name>"`` — force a specific function
+        ``None`` / ``"auto"``  -  model decides (default)
+        ``"required"``        -  must call at least one tool
+        ``"none"``            -  never call tools
+        ``"<function_name>"``  -  force a specific function
 
         Provider translation:
-        Qwen / DeepSeek / Grok / Doubao — passes through as-is, specific function
+        Qwen / DeepSeek / Grok / Doubao  -  passes through as-is, specific function
         wrapped as ``{"type":"function","function":{"name":"<fn>"}}``.
-        Gemini — ``AUTO`` / ``ANY`` / ``NONE``; specific function uses
+        Gemini  -  ``AUTO`` / ``ANY`` / ``NONE``; specific function uses
         ``allowed_function_names``.
 
     parallel_tool_calls: bool = True
@@ -49,44 +49,44 @@ class LLMProvider(ABC):
     thinking: dict | None
         Enable extended reasoning (chain-of-thought / thinking tokens).
         Schema: ``{"enabled": bool, "budget": int | None}``
-        - ``enabled`` — toggle thinking mode
-        - ``budget``  — max thinking tokens (None = provider default, 0 = unlimited)
+        - ``enabled``  -  toggle thinking mode
+        - ``budget``   -  max thinking tokens (None = provider default, 0 = unlimited)
 
         Reasoning content is streamed via ``ChatDelta.reasoning_content``.
 
         Provider translation:
-        Qwen     — extra_body: {enable_thinking: True, thinking_budget: N}
-        DeepSeek — extra_body: {thinking: {type: "enabled"}}; passes reasoning_effort
-        Grok     — reasoning_effort top-level parameter
-        Gemini   — thinking_config: {thinking_budget: N}
-        Doubao   — thinking: {type: "enabled"}
+        Qwen      -  extra_body: {enable_thinking: True, thinking_budget: N}
+        DeepSeek  -  extra_body: {thinking: {type: "enabled"}}; passes reasoning_effort
+        Grok      -  reasoning_effort top-level parameter
+        Gemini    -  thinking_config: {thinking_budget: N}
+        Doubao    -  thinking: {type: "enabled"}
 
     === Web Search (4/5, DeepSeek unsupported) ===============================
 
     search: dict | None
         Enable built-in web search (provider-native, not tool-based).
         Schema: ``{"enabled": bool, "force": bool}``
-        - ``enabled`` — toggle search
-        - ``force``   — force search regardless of query (default: model decides)
+        - ``enabled``  -  toggle search
+        - ``force``    -  force search regardless of query (default: model decides)
 
         Provider translation:
-        Qwen     — extra_body: {enable_search: True, search_options: {search_strategy: "agent"}}
-        Grok     — Chat: tools=[{type: "web_search"}] + tool_choice: "required"
+        Qwen      -  extra_body: {enable_search: True, search_options: {search_strategy: "agent"}}
+        Grok      -  Chat: tools=[{type: "web_search"}] + tool_choice: "required"
                     Responses API: native support
-        Gemini   — tools: [{googleSearch: {}}]; force = dynamic threshold 1.0
-        Doubao   — Web Search plugin
+        Gemini    -  tools: [{googleSearch: {}}]; force = dynamic threshold 1.0
+        Doubao    -  Web Search plugin
 
     === Structured Output (5/5) ==============================================
 
     response_format: dict | None
         Constrain output to JSON.
         Schema: ``{"type": "json_object" | "json_schema", "schema": {...}}``
-        - ``type``   — "json_object" (free-form JSON) or "json_schema" (with schema)
-        - ``schema`` — JSON Schema dict (required when type="json_schema")
+        - ``type``    -  "json_object" (free-form JSON) or "json_schema" (with schema)
+        - ``schema``  -  JSON Schema dict (required when type="json_schema")
 
         Provider translation:
-        Qwen / DeepSeek / Grok / Doubao — {type, json_schema: {name, schema}}
-        Gemini — response_mime_type: "application/json" + response_json_schema
+        Qwen / DeepSeek / Grok / Doubao  -  {type, json_schema: {name, schema}}
+        Gemini  -  response_mime_type: "application/json" + response_json_schema
 
     === Prefix / Continuation =================================================
 
@@ -96,10 +96,10 @@ class LLMProvider(ABC):
         msg = Message.assistant("The three reasons are", partial=True)
 
     Provider translation:
-        Qwen     — {"role": "assistant", "content": "...", "partial": True}
-        DeepSeek — {"role": "assistant", "content": "...", "prefix": True}
-        Doubao   — continuation mode
-        Grok / Gemini — plain assistant message appended (no native parameter)
+        Qwen      -  {"role": "assistant", "content": "...", "partial": True}
+        DeepSeek  -  {"role": "assistant", "content": "...", "prefix": True}
+        Doubao    -  continuation mode
+        Grok / Gemini  -  plain assistant message appended (no native parameter)
 
     === Escape Hatch ==========================================================
 
@@ -127,7 +127,7 @@ class LLMProvider(ABC):
         response_format: dict | None = None,
         **kwargs,
     ) -> ChatResponse:
-        """非流式调用"""
+        """Non-streaming call"""
 
     @abstractmethod
     def chat_stream(

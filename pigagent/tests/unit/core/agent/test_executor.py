@@ -1,5 +1,5 @@
 # tests/unit/core/agent/test_executor.py
-"""Tests for core.agent.executor — ToolExecutor, ToolResult, ToolExecutionResult."""
+"""Tests for core.agent.executor  -  ToolExecutor, ToolResult, ToolExecutionResult."""
 
 import asyncio
 

@@ -128,7 +128,7 @@ class CartesiaTTS(TTSProvider):
                 base_url=base_url
             )
             
-            logger.info(f"✅ Initialized Cartesia TTS plugin")
+            logger.info(f"Initialized Cartesia TTS plugin")
             logger.info(f"   Model: {model}")
             logger.info(f"   Voice: {voice if isinstance(voice, str) else 'custom embedding'}")
             logger.info(f"   Language: {language}")

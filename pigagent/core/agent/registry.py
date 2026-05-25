@@ -1,4 +1,4 @@
-"""ToolRegistry — collects Tool instances and provides tools/tool_handlers lists."""
+"""ToolRegistry  -  collects Tool instances and provides tools/tool_handlers lists."""
 
 from __future__ import annotations
 
@@ -33,7 +33,7 @@ class ToolRegistry:
 
     @property
     def tool_handlers(self) -> dict[str, ToolHandler]:
-        """Name → handler mapping (for ToolExecutor)."""
+        """Name  ->  handler mapping (for ToolExecutor)."""
         return {tool.name: tool.execute for tool in self._items.values()}
 
     def __len__(self) -> int:

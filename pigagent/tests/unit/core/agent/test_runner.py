@@ -1,5 +1,5 @@
 # tests/unit/core/agent/test_runner.py
-"""Tests for core.agent.runner — AgentRunner, RunnerConfig."""
+"""Tests for core.agent.runner  -  AgentRunner, RunnerConfig."""
 
 import asyncio
 

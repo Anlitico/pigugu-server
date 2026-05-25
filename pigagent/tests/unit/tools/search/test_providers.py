@@ -1,4 +1,4 @@
-"""Tests for tools.search providers — Perplexity and Tavily."""
+"""Tests for tools.search providers  -  Perplexity and Tavily."""
 
 import pytest
 

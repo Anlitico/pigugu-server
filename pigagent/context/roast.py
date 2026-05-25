@@ -1,5 +1,5 @@
 ﻿# pigagent/context/roast.py
-"""Roast state — pure functions over ConversationRecord lists.
+"""Roast state  -  pure functions over ConversationRecord lists.
 
 Roast ends when:
   1. A new roast_instance_id appears (starts a different roast)
@@ -12,7 +12,7 @@ from context.schema import ConversationRecord
 
 
 class RoastState:
-    """Pure functions. Input = list[ConversationRecord], oldest→newest."""
+    """Pure functions. Input = list[ConversationRecord], oldest -> newest."""
 
     _STALE_SECONDS = 24 * 3600  # 24h
 
@@ -22,9 +22,9 @@ class RoastState:
     def assign_roast_instance_id(history: list[ConversationRecord], current: ConversationRecord) -> str | None:
         """Assign roast_instance_id to the current record.
 
-        1. current already has roast_instance_id → keep it (roast prompt)
-        2. Previous roast is active (not stale) → inherit
-        3. Otherwise → None (free chat)
+        1. current already has roast_instance_id  ->  keep it (roast prompt)
+        2. Previous roast is active (not stale)  ->  inherit
+        3. Otherwise  ->  None (free chat)
         """
         if current.roast_instance_id:
             return current.roast_instance_id

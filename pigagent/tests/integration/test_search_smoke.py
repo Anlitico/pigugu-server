@@ -1,4 +1,4 @@
-"""Integration tests for search providers — real API calls.
+"""Integration tests for search providers  -  real API calls.
 
 Requires PERPLEXITY_API_KEY and TAVILY_API_KEY in pigagent/.env.
 Run: pytest tests/integration/test_search_smoke.py -v --tb=short
@@ -25,9 +25,9 @@ def _install_check(package: str):
         pytest.skip(f"{package} not installed")
 
 
-# ═══════════════════════════════════════════════════════════════════════════════
+# -------------------------------------------------------------------------------
 # Perplexity
-# ═══════════════════════════════════════════════════════════════════════════════
+# -------------------------------------------------------------------------------
 
 @pytest.mark.asyncio
 class TestPerplexityProvider:
@@ -78,9 +78,9 @@ class TestPerplexityTool:
         assert len(result["content"]) > 0
 
 
-# ═══════════════════════════════════════════════════════════════════════════════
+# -------------------------------------------------------------------------------
 # Tavily
-# ═══════════════════════════════════════════════════════════════════════════════
+# -------------------------------------------------------------------------------
 
 @pytest.mark.asyncio
 class TestTavilyProvider:
@@ -134,9 +134,9 @@ class TestTavilyTool:
         assert len(result["content"]) > 0
 
 
-# ═══════════════════════════════════════════════════════════════════════════════
+# -------------------------------------------------------------------------------
 # Cross-provider
-# ═══════════════════════════════════════════════════════════════════════════════
+# -------------------------------------------------------------------------------
 
 @pytest.mark.asyncio
 class TestCrossProvider:
@@ -150,7 +150,7 @@ class TestCrossProvider:
             assert isinstance(r.provider, str)
             assert isinstance(r.model, str)
 
-        # Static check — the type system enforces this at import time
+        # Static check  -  the type system enforces this at import time
         from tools.search import PerplexityProvider, TavilyProvider
         assert issubclass(PerplexityProvider, __import__("tools.search.base", fromlist=["SearchProvider"]).SearchProvider)
         assert issubclass(TavilyProvider, __import__("tools.search.base", fromlist=["SearchProvider"]).SearchProvider)

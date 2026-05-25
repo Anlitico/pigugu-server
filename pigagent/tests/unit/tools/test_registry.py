@@ -1,4 +1,4 @@
-"""Tests for core.agent.registry — ToolRegistry."""
+"""Tests for core.agent.registry  -  ToolRegistry."""
 
 import pytest
 

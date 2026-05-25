@@ -1,9 +1,9 @@
 # pigagent/lk/bridge.py
-"""PigAgentVoiceBridge — pure LiveKit adaptation layer, zero business logic.
+"""PigAgentVoiceBridge  -  pure LiveKit adaptation layer, zero business logic.
 
-Converts LiveKit ChatContext → user text, delegates to PigAgent.generate_reply(),
+Converts LiveKit ChatContext  ->  user text, delegates to PigAgent.generate_reply(),
 yields text chunks to LiveKit's TTS pipeline. No filler, no search, no roast
-routing — PigAgent owns all of that.
+routing  -  PigAgent owns all of that.
 """
 
 from __future__ import annotations
@@ -24,7 +24,7 @@ class PigAgentVoiceBridge:
         self,
         *,
         pig_agent,
-        persona_id: str = "",
+        persona_id: int = 1,
         user_id: str = "",
         stt=None,
         tts=None,

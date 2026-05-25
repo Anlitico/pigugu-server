@@ -1,4 +1,4 @@
-"""RoastState — a single roast game session's mutable state."""
+"""RoastState  -  a single roast game session's mutable state."""
 
 from __future__ import annotations
 
@@ -19,12 +19,12 @@ _ACTIVE_TTL = 86400  # 24h
 class RoastState:
     """Mutable state for one roast game session.
 
-    Created via RoastState.start() — the only public constructor.
-    Deserialized via RoastState.from_dict() — for loading from Redis/PG.
+    Created via RoastState.start()  -  the only public constructor.
+    Deserialized via RoastState.from_dict()  -  for loading from Redis/PG.
     """
 
     user_id: str
-    persona_id: str
+    persona_id: int
     roast_id: str
     mode: Mode
     roast_instance_id: str = field(default_factory=lambda: str(uuid.uuid4()))
@@ -50,7 +50,7 @@ class RoastState:
     def from_dict(cls, data: dict) -> RoastState:
         state = cls.__new__(cls)
         state.user_id = data["user_id"]
-        state.persona_id = data.get("persona_id", "")
+        state.persona_id = data.get("persona_id", 0)
         state.roast_id = data.get("roast_id", "")
         state.mode = Mode(data["mode"]) if isinstance(data["mode"], str) else data["mode"]
         state.roast_instance_id = data["roast_instance_id"]
@@ -65,7 +65,7 @@ class RoastState:
     async def start(
         cls,
         user_id: str,
-        persona_id: str,
+        persona_id: int,
         roast_id: str,
         mode: Mode,
         *,

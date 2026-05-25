@@ -18,7 +18,7 @@ class Persona(ABC):
     """
 
     # ── Identity (set by subclass) ────────────────────────────────────
-    persona_id: str = ""           # "trump" | "musk" | "james"
+    persona_id: int = 0            # 1-16, maps to firmware key
     display_name: str = ""
     domain: str = ""               # Mapped to news topic domain
 
@@ -38,7 +38,7 @@ class Persona(ABC):
     def personality_prompt(self) -> str:
         """The core personality system prompt.
 
-        Must NOT include mood/news/mode/ending injection — those are layered
+        Must NOT include mood/news/mode/ending injection  -  those are layered
         on top by ContextAssembler.
         """
 
