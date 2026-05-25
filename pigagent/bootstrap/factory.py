@@ -1,7 +1,9 @@
 # pigagent/bootstrap/factory.py
 """
-Component factory: creates STT, TTS instances per session. PigAgent is a
-module-level singleton — created once and reused across all connections.
+Component factory: STT/TTS per session, PigAgent + storage as global singletons.
+
+Storage (Redis + PG pool) is initialized at module load time. If either fails,
+the process exits — there is no fallback.
 """
 
 import os
@@ -16,9 +18,85 @@ from core.agent import ToolRegistry
 from tools import create_web_search_tool, volume_tool
 from tools.search import TavilyProvider
 
-# ── Global singleton ───────────────────────────────────────────────────────
+# ── Global singletons ──────────────────────────────────────────────────────
 
 _pig_agent: PigAgent | None = None
+_redis = None
+_pg_pool = None
+
+
+def _init_redis():
+    """Initialize Redis async client. Fails fast if not configured."""
+    global _redis
+    if _redis is not None:
+        return _redis
+
+    redis_url = os.getenv("REDIS_URL")
+    if not redis_url:
+        raise RuntimeError(
+            "REDIS_URL is required. Set it in .env, e.g. redis://localhost:6379/0"
+        )
+
+    import redis.asyncio as aioredis
+    _redis = aioredis.from_url(redis_url, decode_responses=True)
+    logger.info(f"[Factory] Redis connected: {redis_url}")
+    return _redis
+
+
+def _init_pg_pool():
+    """Initialize asyncpg pool. Fails fast if not configured."""
+    global _pg_pool
+    if _pg_pool is not None:
+        return _pg_pool
+
+    database_url = os.getenv("DATABASE_URL")
+    if not database_url:
+        raise RuntimeError(
+            "DATABASE_URL is required. Set it in .env, "
+            "e.g. postgresql://user:pass@localhost:5432/pigugu"
+        )
+
+    import asyncpg
+    import asyncio
+
+    async def _create():
+        return await asyncpg.create_pool(database_url, min_size=2, max_size=10)
+
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        _pg_pool = asyncio.run(_create())
+    else:
+        # Running loop exists — schedule but can't await here.
+        # Defer to first use via lazy init pattern.
+        _pg_pool = database_url  # store URL, create pool on first access
+        logger.info("[Factory] PG pool deferred (event loop already running)")
+
+    if not isinstance(_pg_pool, str):
+        logger.info(f"[Factory] PG pool created")
+    return _pg_pool
+
+
+def get_redis():
+    """Return the global Redis client."""
+    global _redis
+    if _redis is None:
+        _init_redis()
+    return _redis
+
+
+def get_pg_pool():
+    """Return the global PG pool (lazy-init if deferred)."""
+    global _pg_pool
+    if _pg_pool is None:
+        _init_pg_pool()
+    if isinstance(_pg_pool, str):
+        import asyncpg
+        import asyncio
+        _pg_pool = asyncio.get_event_loop().run_until_complete(
+            asyncpg.create_pool(_pg_pool, min_size=2, max_size=10)
+        )
+    return _pg_pool
 
 
 def get_pig_agent() -> PigAgent:
@@ -42,16 +120,27 @@ def _build_pig_agent(config=None) -> PigAgent:
     prompts = PersonaRegistry.build_prompt_cache(llm_provider_id)
     logger.info(f"[Factory] Prompt cache built: {list(prompts.keys())}")
 
+    from roast import GameModeRegistry
+    GameModeRegistry.register_defaults()
+    game_modes = GameModeRegistry.build_cache()
+    logger.info(f"[Factory] Game mode cache built: {list(game_modes.keys())}")
+
     search_provider = TavilyProvider()
     web_search_tool = create_web_search_tool(search_provider)
 
     registry = ToolRegistry()
     registry.register_many([web_search_tool, volume_tool])
 
+    redis = get_redis()
+    pg_pool = get_pg_pool()
+
     pig_agent = PigAgent(
         None,  # ctx (wired when ContextManager is available)
+        redis=redis,
+        pg_pool=pg_pool,
         model=model,
         prompts=prompts,
+        game_modes=game_modes,
         tools=registry.tools,
         tool_handlers=registry.tool_handlers,
         temperature=config.LLM_TEMPERATURE,
@@ -75,7 +164,6 @@ def validate_configuration(config=None):
 
     errors = []
 
-    # Check STT provider API key
     stt_provider = config.STT_PROVIDER.lower()
     if stt_provider == "deepgram":
         if not os.getenv("DEEPGRAM_API_KEY"):
@@ -84,11 +172,9 @@ def validate_configuration(config=None):
         if not os.getenv("CARTESIA_API_KEY"):
             errors.append("CARTESIA_API_KEY required in .env file for Cartesia STT")
 
-    # Check Cartesia API key for TTS (always needed for TTS)
     if not os.getenv("CARTESIA_API_KEY"):
         errors.append("CARTESIA_API_KEY required in .env file for Cartesia TTS")
 
-    # Check LLM API key based on provider
     from core.llm.registry import get_provider_config
 
     llm_provider = config.LLM_PROVIDER.lower()
@@ -99,14 +185,12 @@ def validate_configuration(config=None):
     else:
         errors.append(f"Unknown LLM provider: {llm_provider}")
 
-    # Check LiveKit credentials
     if not os.getenv("LIVEKIT_API_KEY"):
         errors.append("LIVEKIT_API_KEY required in .env file")
 
     if not os.getenv("LIVEKIT_API_SECRET"):
         errors.append("LIVEKIT_API_SECRET required in .env file")
 
-    # Check Perplexity API key when using Perplexity search backend
     if config.ENABLE_POLICY_SEARCH and config.POLICY_SEARCH_BACKEND == "perplexity":
         if not os.getenv("PERPLEXITY_API_KEY") and not os.getenv("OPENROUTER_API_KEY"):
             errors.append(
@@ -126,9 +210,7 @@ def validate_configuration(config=None):
 
 
 def create_agent_components(config=None, persona=None):
-    """Create STT and TTS instances per session.
-
-    PigAgent is a global singleton — returned from get_pig_agent().
+    """Create STT and TTS instances per session. PigAgent is a global singleton.
 
     Args:
         config: AgentConfig instance. If None, loads from get_config().

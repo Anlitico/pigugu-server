@@ -390,9 +390,11 @@ async def entrypoint(ctx: JobContext):
     if ModelCapability.WEB_SEARCH not in model_info.capabilities:
         logger.info("Provider doesn't support web_search, will use tool-based search")
 
+    user_id = ctx.room.name  # TODO: resolve from session auth
     bridge = PigAgentVoiceBridge(
         pig_agent=pig_agent,
         persona_id=persona_id,
+        user_id=user_id,
         stt=stt_plugin,
         tts=tts_plugin,
         vad=vad,

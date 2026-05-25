@@ -52,6 +52,14 @@ class GameModeRegistry:
         cls._initialized = True
 
 
+    @classmethod
+    def build_cache(cls) -> dict[str, GameMode]:
+        """Pre-build {mode_id: GameMode} for all registered modes."""
+        if not cls._initialized:
+            cls.register_defaults()
+        return {str(k): v for k, v in cls._modes.items()}
+
+
 def get_game_mode(mode: Mode | str = Mode.ROAST_TOGETHER) -> GameMode:
     """Convenience: get a game mode."""
     return GameModeRegistry.get(mode)

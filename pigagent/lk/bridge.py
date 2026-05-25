@@ -15,13 +15,11 @@ from collections.abc import AsyncIterator
 from typing import Any
 
 from loguru import logger
-from livekit.agents.types import NOT_GIVEN, NotGivenOr
+from livekit.agents.types import NOT_GIVEN
 from livekit.agents.voice.agent import ModelSettings
 from livekit.agents.llm import ChatContext, ChatMessage
 
 from core.llm.types import Message
-from core.agent.runner import AgentRunner, RunnerConfig
-from core.agent.stop import no_tool_calls
 from tools.search.utils import build_search_messages
 
 
@@ -40,6 +38,7 @@ class PigAgentVoiceBridge:
         *,
         pig_agent,
         persona_id: str = "",
+        user_id: str = "",
         stt=None,
         tts=None,
         vad=None,
@@ -50,6 +49,7 @@ class PigAgentVoiceBridge:
     ):
         self._pig = pig_agent
         self._persona_id = persona_id
+        self._user_id = user_id
 
         # ── LiveKit pipeline plugins ──────────────────────────────────
         self.stt = stt
@@ -164,11 +164,21 @@ class PigAgentVoiceBridge:
 
         search_param = {"enabled": True} if use_search else None
 
+        # Check for active roast session — PigAgent handles all roast logic
+        roast_state = await self._pig.get_active_roast(self._user_id)
+
         async def _stream():
-            async for text in self._pig.stream(
-                messages, persona_id=self._persona_id, search=search_param,
-            ):
-                yield text
+            if roast_state:
+                async for text in self._pig.stream_roast(
+                    messages, persona_id=self._persona_id,
+                    roast_state=roast_state, search=search_param,
+                ):
+                    yield text
+            else:
+                async for text in self._pig.stream(
+                    messages, persona_id=self._persona_id, search=search_param,
+                ):
+                    yield text
 
         if filler:
             self._filler_yielded_at = time.perf_counter()
