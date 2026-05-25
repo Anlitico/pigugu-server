@@ -398,9 +398,6 @@ async def entrypoint(ctx: JobContext):
         stt=stt_plugin,
         tts=tts_plugin,
         vad=vad,
-        enable_filler_words=config.ENABLE_FILLER_WORDS,
-        fillers=persona.fillers,
-        enable_policy_search=config.ENABLE_POLICY_SEARCH,
         allow_interruptions=config.ENABLE_INTERRUPTIONS,
     )
 
@@ -499,10 +496,6 @@ async def entrypoint(ctx: JobContext):
                 logger.info("🤖 [DEBUG] Agent started speaking")
                 # === TIMING: Record T5 - agent started speaking and log summary ===
                 turn_timing["agent_start_speaking"] = time.perf_counter()
-                # Capture filler yield timestamp from agent if available
-                if hasattr(bridge, '_filler_yielded_at') and bridge._filler_yielded_at is not None:
-                    turn_timing["filler_yielded"] = bridge._filler_yielded_at
-                    bridge._filler_yielded_at = None
                 logger.info(f"⏱️ [TIMING] T5: Agent started speaking at {turn_timing['agent_start_speaking']:.3f}")
                 log_turn_timing_summary()
                 # Send signal to frontend for timing

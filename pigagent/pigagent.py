@@ -2,14 +2,12 @@
 
 Owns all content-level logic (system prompt, context assembly, tool execution,
 game mode triggers). The voice bridge (lk.bridge) handles the LiveKit
-pipeline integration — PigAgent itself has zero LiveKit dependency.
+pipeline adaptation — PigAgent itself has zero LiveKit dependency.
 
 Public API:
-    PigAgent(model=...)         — create an agent
-    agent.stream(messages)      — normal chat ReAct loop
-    agent.stream_roast(messages)— roast chat with consume/tick pipeline
-    agent.start_roast(...)      — begin a roast game session
-    agent.run(user_id=...)      — context-managed standalone run
+    agent.generate_reply(user_text, user_id, persona_id)  — high-level entry
+    agent.stream(messages, persona_id)                    — low-level ReAct loop
+    agent.start_roast(user_id, persona_id, news_id, mode) — begin roast game
 """
 
 from __future__ import annotations
@@ -29,11 +27,7 @@ _ROAST_TRIGGER_TAG = "[系统提示]"
 
 
 class PigAgent:
-    """Pigugu agent — LLM orchestration and content logic.
-
-    Zero LiveKit dependency. The bridge (lk.bridge.PigAgentVoiceBridge)
-    handles all voice pipeline integration.
-    """
+    """Pigugu agent — all LLM/content logic. Zero LiveKit dependency."""
 
     def __init__(
         self,
@@ -76,7 +70,80 @@ class PigAgent:
     def model(self) -> str:
         return self._model
 
-    # ── Normal chat ────────────────────────────────────────────────────
+    # ── High-level entry point (called by bridge) ─────────────────────
+
+    async def generate_reply(
+        self,
+        user_text: str,
+        *,
+        user_id: str = "",
+        persona_id: str = "",
+    ) -> AsyncIterator[str]:
+        """Complete reply pipeline: load context → assemble → stream → persist.
+
+        The single entry point for the voice bridge. Handles:
+        - Context loading from Redis/PG
+        - System prompt injection
+        - Roast game routing (consume pending, inject body, tick)
+        - Turn persistence after stream completes
+        """
+        if not user_text.strip():
+            return
+
+        # 1. Build new user message
+        new_msg = Message.user(user_text.strip())
+
+        # 2. Load context from Redis/PG
+        messages: list[Message] = []
+        if self.ctx and user_id:
+            try:
+                messages = await self.ctx.load(user_id=user_id)
+            except Exception as e:
+                logger.warning(f"[PigAgent] load context failed: {e}")
+
+        messages.append(new_msg)
+
+        # 3. Prepend system prompt
+        prompt = self._prompts.get(persona_id, "")
+        if prompt:
+            messages.insert(0, Message.system(prompt))
+
+        # 4. Check roast routing
+        roast_state = await self.get_active_roast(user_id)
+        game_mode = None
+        if roast_state:
+            mode_id = str(roast_state.mode) if hasattr(roast_state, "mode") else ""
+            game_mode = self._game_modes.get(mode_id)
+
+        # 5. Stream and collect response
+        response_chunks: list[str] = []
+        logger.info(
+            f"[PigAgent] generate_reply user={user_id} persona={persona_id} "
+            f"roast={roast_state is not None} msgs={len(messages)}"
+        )
+
+        if roast_state and game_mode:
+            async for text in self._stream_roast(
+                messages, roast_state, game_mode,
+            ):
+                response_chunks.append(text)
+                yield text
+        else:
+            async for text in self.runner.stream(messages):
+                response_chunks.append(text)
+                yield text
+
+        logger.info(
+            f"[PigAgent] Reply complete: {self.runner.last_step_count} steps, "
+            f"status={self.runner.last_status}"
+        )
+
+        # 6. Persist turn
+        if self.ctx and user_id:
+            full_response = "".join(response_chunks)
+            await self._save_turn(user_id, new_msg.content, full_response)
+
+    # ── Low-level stream (no side effects, used by tests) ──────────────
 
     async def stream(
         self,
@@ -86,27 +153,17 @@ class PigAgent:
         search: dict | None = None,
         interrupt_key: str | None = None,
     ) -> AsyncIterator[str]:
-        """Stream the ReAct loop, prepending the persona system prompt."""
+        """Low-level ReAct loop. No context loading, no persistence."""
         prompt = self._prompts.get(persona_id, "")
         if prompt:
             messages = [Message.system(prompt)] + messages
-
-        logger.info(
-            f"[PigAgent] Stream, persona={persona_id}, "
-            f"interrupt_key={interrupt_key}"
-        )
 
         async for text in self.runner.stream(
             messages, search=search, interrupt_key=interrupt_key,
         ):
             yield text
 
-        logger.info(
-            f"[PigAgent] Stream complete: {self.runner.last_step_count} steps, "
-            f"status={self.runner.last_status}"
-        )
-
-    # ── Roast chat ─────────────────────────────────────────────────────
+    # ── Roast ──────────────────────────────────────────────────────────
 
     async def start_roast(
         self,
@@ -117,7 +174,7 @@ class PigAgent:
         *,
         news_content: str = "",
     ) -> dict | None:
-        """Start a roast game session. Returns state metadata dict for callers."""
+        """Start a roast game session. Returns state metadata dict."""
         game_mode = self._game_modes.get(mode_id)
         if game_mode is None:
             logger.error(f"[PigAgent] Unknown game mode: {mode_id}")
@@ -136,7 +193,6 @@ class PigAgent:
             pg_pool=self._pg_pool,
         )
 
-        # Build roast body for first-turn injection
         state.extra["_roast_body"] = self._build_roast_body(
             game_mode=game_mode,
             news_content=news_content,
@@ -148,67 +204,7 @@ class PigAgent:
         )
         return state.to_dict()
 
-    async def stream_roast(
-        self,
-        messages: list[Message],
-        *,
-        persona_id: str = "",
-        roast_state,
-        search: dict | None = None,
-        interrupt_key: str | None = None,
-    ) -> AsyncIterator[str]:
-        """Roast pipeline: consume pending → inject context → stream → tick.
-
-        Wraps the normal stream() with roast-specific pre/post processing.
-        roast_state is a RoastState instance (from start_roast or loaded from Redis).
-        """
-        # 0. Resolve game mode from state
-        mode_id = str(roast_state.mode) if hasattr(roast_state, "mode") else ""
-        game_mode = self._game_modes.get(mode_id)
-
-        # 1. Consume pending trigger prompt
-        try:
-            from roast.pending import consume
-            pending_prompt = await consume(roast_state.roast_id, self._redis)
-            if pending_prompt:
-                messages.append(Message.user(
-                    f"{_ROAST_TRIGGER_TAG}\n{pending_prompt}"
-                ))
-                logger.info(f"[PigAgent] Injected pending prompt for {roast_state.roast_id}")
-        except Exception as e:
-            logger.warning(f"[PigAgent] consume_pending failed: {e}")
-
-        # 2. First turn: inject roast body (game background)
-        if roast_state.turn_count == 0:
-            roast_body = roast_state.extra.get("_roast_body", "")
-            if roast_body:
-                messages.append(Message.user(
-                    f"{_ROAST_USER_TAG}\n{roast_body}"
-                ))
-                logger.info(f"[PigAgent] Injected roast body (first turn)")
-
-        # 3. Normal LLM stream
-        async for text in self.stream(
-            messages, persona_id=persona_id, search=search,
-            interrupt_key=interrupt_key,
-        ):
-            yield text
-
-        # 4. Tick — advance state, check triggers
-        if game_mode:
-            try:
-                records = messages
-                triggered = await game_mode.tick(
-                    roast_state, records=records,
-                    redis=self._redis, pg_pool=self._pg_pool,
-                )
-                if triggered:
-                    logger.info(f"[PigAgent] Trigger fired: {triggered[:80]}...")
-            except Exception as e:
-                logger.error(f"[PigAgent] tick failed: {e}")
-
     async def get_active_roast(self, user_id: str):
-        """Return active RoastState for user, or None."""
         try:
             from roast.state import RoastState
             return await RoastState._load_active(user_id, self._redis)
@@ -217,7 +213,6 @@ class PigAgent:
             return None
 
     async def close_roast(self, user_id: str) -> None:
-        """Close the active roast session for user."""
         try:
             from roast.state import RoastState
             state = await RoastState._load_active(user_id, self._redis)
@@ -227,8 +222,65 @@ class PigAgent:
         except Exception as e:
             logger.error(f"[PigAgent] close_roast failed: {e}")
 
+    # ── Internal ───────────────────────────────────────────────────────
+
+    async def _stream_roast(
+        self,
+        messages: list[Message],
+        roast_state,
+        game_mode,
+    ) -> AsyncIterator[str]:
+        """Roast pipeline: consume pending → inject body → stream → tick."""
+        # 1. Consume pending trigger prompt
+        try:
+            from roast.pending import consume
+            pending_prompt = await consume(roast_state.roast_id, self._redis)
+            if pending_prompt:
+                messages.append(Message.user(
+                    f"{_ROAST_TRIGGER_TAG}\n{pending_prompt}"
+                ))
+        except Exception as e:
+            logger.warning(f"[PigAgent] consume_pending failed: {e}")
+
+        # 2. First turn: inject roast body
+        if roast_state.turn_count == 0:
+            roast_body = roast_state.extra.get("_roast_body", "")
+            if roast_body:
+                messages.append(Message.user(
+                    f"{_ROAST_USER_TAG}\n{roast_body}"
+                ))
+
+        # 3. Stream LLM
+        async for text in self.runner.stream(messages):
+            yield text
+
+        # 4. Tick — check triggers
+        try:
+            triggered = await game_mode.tick(
+                roast_state, records=messages,
+                redis=self._redis, pg_pool=self._pg_pool,
+            )
+            if triggered:
+                logger.info(f"[PigAgent] Trigger fired: {triggered[:80]}...")
+        except Exception as e:
+            logger.error(f"[PigAgent] tick failed: {e}")
+
+    async def _save_turn(
+        self, user_id: str, user_content: str, assistant_content: str,
+    ) -> None:
+        """Persist one conversation turn to Redis/PG."""
+        try:
+            await self.ctx.add_turn(
+                user_id=user_id, role="user", content=user_content,
+            )
+            if assistant_content:
+                await self.ctx.add_turn(
+                    user_id=user_id, role="assistant", content=assistant_content,
+                )
+        except Exception as e:
+            logger.error(f"[PigAgent] save_turn failed: {e}")
+
     def _build_roast_body(self, *, game_mode, news_content: str = "") -> str:
-        """Assemble the roast body for first-turn injection."""
         parts: list[str] = []
         if news_content.strip():
             parts.append(f"## 新闻背景\n{news_content.strip()}")
@@ -243,9 +295,7 @@ class PigAgent:
         self, *, user_id: str, persona_id: str = "",
         interrupt_key: str | None = None,
     ) -> StepResult:
-        """Run the agent loop with context from Redis/PG (non-streaming)."""
-        effective_key = interrupt_key
-        self.runner._interrupt_key = effective_key
+        """Non-streaming run with context hooks."""
         ctx = self._require_ctx()
         prompt = self._prompts.get(persona_id, "")
         initial_count = 0

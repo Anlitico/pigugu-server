@@ -1,16 +1,13 @@
 # pigagent/lk/bridge.py
-"""PigAgentVoiceBridge — minimal duck-type bridge to LiveKit AgentSession.
+"""PigAgentVoiceBridge — pure LiveKit adaptation layer, zero business logic.
 
-Does NOT inherit from livekit.agents.Agent. Just satisfies the attribute
-interface that AgentActivity accesses at runtime. All LLM/content logic
-lives in PigAgent; LiveKit only handles STT → VAD → TTS audio pipeline.
+Converts LiveKit ChatContext → user text, delegates to PigAgent.generate_reply(),
+yields text chunks to LiveKit's TTS pipeline. No filler, no search, no roast
+routing — PigAgent owns all of that.
 """
 
 from __future__ import annotations
 
-import asyncio
-import random
-import time
 from collections.abc import AsyncIterator
 from typing import Any
 
@@ -19,19 +16,9 @@ from livekit.agents.types import NOT_GIVEN
 from livekit.agents.voice.agent import ModelSettings
 from livekit.agents.llm import ChatContext, ChatMessage
 
-from core.llm.types import Message
-from tools.search.utils import build_search_messages
-
 
 class PigAgentVoiceBridge:
-    """Bridges PigAgent into LiveKit's AgentSession pipeline.
-
-    Satisfies the duck-type interface that AgentActivity accesses:
-    - id, label, instructions, tools, chat_ctx
-    - llm_node() — THE core method, delegates to PigAgent
-    - on_user_turn_completed() — filler words, search flag
-    - stt, tts, vad — passed through to LiveKit pipeline
-    """
+    """Pure adapter: satisfies AgentSession's duck-type interface."""
 
     def __init__(
         self,
@@ -42,9 +29,6 @@ class PigAgentVoiceBridge:
         stt=None,
         tts=None,
         vad=None,
-        enable_filler_words: bool = False,
-        fillers: list[str] | None = None,
-        enable_policy_search: bool = False,
         allow_interruptions: bool = True,
     ):
         self._pig = pig_agent
@@ -55,43 +39,25 @@ class PigAgentVoiceBridge:
         self.stt = stt
         self.tts = tts
         self.vad = vad
-        self.llm = NOT_GIVEN  # llm_node() handles LLM, not a plugin
+        self.llm = NOT_GIVEN  # llm_node() handles LLM
 
         # ── AgentSession-required identity ────────────────────────────
         self.id = "pigugu_agent"
         self.label = "Pigugu Voice Agent"  # type: ignore[reportCallIssue]
 
-        # ── LiveKit Agent abstractions (all empty — PigAgent owns these) ──
-        self.instructions: str = ""  # LiveKit's Instructions type not importable
+        # ── LiveKit Agent abstractions (unused, PigAgent owns all) ────
+        self.instructions: str = ""
         self.tools: list[Any] = []
         self.chat_ctx: ChatContext = ChatContext.empty()
 
         # ── Internal state (mutated by AgentActivity) ─────────────────
         self._activity: Any = None
         self._turn_handling: dict = {}
-
-        # ── Turn detection / interruption config ─────────────────────
         self._allow_interruptions = allow_interruptions
 
-        # ── PigAgent feature flags ───────────────────────────────────
-        self._enable_filler_words = enable_filler_words
-        self._fillers = fillers or []
-        self._enable_policy_search = enable_policy_search
+    # ── Properties AgentActivity accesses ─────────────────────────────
 
-        # ── Per-turn state ───────────────────────────────────────────
-        self._pending_filler: str | None = None
-        self._filler_yielded_at: float | None = None
-        self._use_search: bool = False
-
-    # ── Properties AgentActivity accesses ───────────────────────────────
-
-    @property
-    def label(self) -> str:
-        return "Pigugu Voice Agent"
-
-    @label.setter
-    def label(self, value: str) -> None:
-        pass
+    label = "Pigugu Voice Agent"  # type: ignore[reportCallIssue]
 
     @property
     def allow_interruptions(self):
@@ -117,34 +83,17 @@ class PigAgentVoiceBridge:
     def stt_node(self):
         return None
 
-    # ── Lifecycle ───────────────────────────────────────────────────────
+    # ── Lifecycle ─────────────────────────────────────────────────────
 
     async def on_exit(self) -> None:
         pass
 
-    # ── User turn hook ──────────────────────────────────────────────────
-
     async def on_user_turn_completed(
         self, turn_ctx: ChatContext, new_message: ChatMessage
     ) -> None:
-        """Called by AgentActivity when STT detects end of user turn."""
-        user_text = (new_message.text_content or "").strip()
+        pass
 
-        # Filler word injection
-        if self._enable_filler_words and self._fillers and len(user_text.split()) > 5:
-            filler = random.choice(self._fillers)
-            self._pending_filler = filler
-            turn_ctx.add_message(
-                role="system",
-                content=f'You already began your reply with: "{filler}". '
-                        f"Continue from there. Do NOT repeat it.",
-            )
-            logger.info(f'[Bridge] Filler queued: "{filler}"')
-
-        # Policy search flag
-        self._use_search = self._enable_policy_search
-
-    # ── LLM node (THE core method) ──────────────────────────────────────
+    # ── LLM node ──────────────────────────────────────────────────────
 
     async def llm_node(
         self,
@@ -152,55 +101,19 @@ class PigAgentVoiceBridge:
         tools: list[Any],
         model_settings: ModelSettings,
     ) -> AsyncIterator[str]:
-        """Generate reply via PigAgent. LiveKit passes output to TTS."""
-        filler = self._pending_filler
-        self._pending_filler = None
-        use_search = self._use_search
-        self._use_search = False
+        """Extract user text, delegate to PigAgent, yield for TTS."""
+        user_text = self._extract_user_text(chat_ctx)
+        async for text in self._pig.generate_reply(
+            user_text, user_id=self._user_id, persona_id=self._persona_id,
+        ):
+            yield text
 
-        # Convert LiveKit ChatContext → PigAgent Message list
-        dict_msgs = build_search_messages(chat_ctx.items)
-        messages = [Message(role=m["role"], content=m["content"]) for m in dict_msgs]  # type: ignore[reportArgumentType]
-
-        search_param = {"enabled": True} if use_search else None
-
-        # Check for active roast session — PigAgent handles all roast logic
-        roast_state = await self._pig.get_active_roast(self._user_id)
-
-        async def _stream():
-            if roast_state:
-                async for text in self._pig.stream_roast(
-                    messages, persona_id=self._persona_id,
-                    roast_state=roast_state, search=search_param,
-                ):
-                    yield text
-            else:
-                async for text in self._pig.stream(
-                    messages, persona_id=self._persona_id, search=search_param,
-                ):
-                    yield text
-
-        if filler:
-            self._filler_yielded_at = time.perf_counter()
-            yield filler + " "
-            queue: asyncio.Queue[str | None] = asyncio.Queue()
-
-            async def _buffer():
-                try:
-                    async for chunk in _stream():
-                        await queue.put(chunk)
-                except Exception as e:
-                    logger.error(f"[Bridge] LLM stream failed: {e}")
-                finally:
-                    await queue.put(None)
-
-            asyncio.create_task(_buffer())
-
-            while True:
-                chunk = await queue.get()
-                if chunk is None:
-                    break
-                yield chunk
-        else:
-            async for text in _stream():
-                yield text
+    def _extract_user_text(self, chat_ctx: ChatContext) -> str:
+        """Get the last user message from the chat context."""
+        for item in reversed(chat_ctx.items):
+            role = getattr(item, "role", "")
+            if role == "user":
+                text = getattr(item, "text_content", None)
+                if text:
+                    return text
+        return ""

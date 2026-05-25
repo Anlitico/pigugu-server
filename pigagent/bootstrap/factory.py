@@ -134,8 +134,12 @@ def _build_pig_agent(config=None) -> PigAgent:
     redis = get_redis()
     pg_pool = get_pg_pool()
 
+    from context.manager import ContextManager
+    ctx = ContextManager(redis_client=redis, pg_pool=pg_pool)
+    logger.info("[Factory] ContextManager created")
+
     pig_agent = PigAgent(
-        None,  # ctx (wired when ContextManager is available)
+        ctx,
         redis=redis,
         pg_pool=pg_pool,
         model=model,
