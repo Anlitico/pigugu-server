@@ -32,7 +32,7 @@ services:
       dockerfile: .cicd/Dockerfile.api.local
     ports:
       - "8000:8000"
-    env_file: api/.env
+    env_file: .env
     environment:
       DATABASE_URL: postgresql+asyncpg://pigugu:pigugu@postgres:5432/pigugu
       REDIS_URL: redis://redis:6379/0
@@ -53,7 +53,7 @@ services:
       dockerfile: .cicd/Dockerfile.agent.local
     ports:
       - "8080:8080"
-    env_file: pigagent/.env
+    env_file: .env
     environment:
       DATABASE_URL: postgresql+asyncpg://pigugu:pigugu@postgres:5432/pigugu
       REDIS_URL: redis://redis:6379/0

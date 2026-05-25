@@ -181,6 +181,7 @@ def _build_pig_agent(config=None) -> PigAgent:
         game_modes=game_modes,
         temperature=config.LLM_TEMPERATURE,
         max_tokens=config.LLM_MAX_TOKENS,
+        max_iterations=config.AGENT_MAX_STEPS,
     )
     logger.info(f"[Factory] PigAgent singleton created with model={model}")
     return pig_agent

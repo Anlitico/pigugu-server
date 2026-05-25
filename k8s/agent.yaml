@@ -60,11 +60,6 @@ spec:
             secretKeyRef:
               name: pigugu-secrets
               key: DEEPGRAM_API_KEY
-        - name: XAI_API_KEY
-          valueFrom:
-            secretKeyRef:
-              name: pigugu-secrets
-              key: XAI_API_KEY
         - name: DASHSCOPE_API_KEY
           valueFrom:
             secretKeyRef:

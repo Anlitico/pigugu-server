@@ -118,26 +118,14 @@ class AgentConfig(BaseSettings):
     #   ("qwen", "qwen-us", "deepseek", etc.)
     LLM_PROVIDER: str = Field(default_factory=lambda: get_config_value("LLM_PROVIDER", "qwen"))
 
-    # LLM_MODEL: unified model field  -  when set, takes priority over QWEN_MODEL
-    LLM_MODEL: str = Field(default_factory=lambda: get_config_value("LLM_MODEL", ""))
-
-    # Legacy per-provider model fields (still supported)
     QWEN_MODEL: str = Field(default_factory=lambda: get_config_value("QWEN_MODEL", "qwen-plus"))
 
     # LLM Settings
-    # Lightweight model for background tasks (segment end detection, compression)
-    SEGMENT_DETECT_MODEL: str = Field(default_factory=lambda: get_config_value("SEGMENT_DETECT_MODEL", "qwen3.6-flash"))
-
     LLM_TEMPERATURE: float = Field(default_factory=lambda: float(get_config_value("LLM_TEMPERATURE", 0.6)))
     LLM_MAX_TOKENS: Optional[int] = Field(default_factory=lambda: int(get_config_value("LLM_MAX_TOKENS")) if get_config_value("LLM_MAX_TOKENS") else None)
 
     def resolve_model(self) -> str:
-        """Resolve the effective model name.
-
-        Priority: LLM_MODEL > provider-specific field (QWEN_MODEL)
-        """
-        if self.LLM_MODEL:
-            return self.LLM_MODEL
+        """Resolve the effective model name."""
         return self.QWEN_MODEL
 
     def create_provider(self):
@@ -169,47 +157,26 @@ class AgentConfig(BaseSettings):
     
     # Agent Settings
     AGENT_WORKERS: int = Field(default_factory=lambda: int(get_config_value("AGENT_WORKERS", 2)))
-    AGENT_LOG_CONVERSATIONS: bool = Field(default_factory=lambda: get_bool_config_value("AGENT_LOG_CONVERSATIONS", True))
     ENABLE_INTERRUPTIONS: bool = Field(default_factory=lambda: get_bool_config_value("ENABLE_INTERRUPTIONS", True))
-    SILENCE_THRESHOLD: float = Field(default_factory=lambda: float(get_config_value("SILENCE_THRESHOLD", 30.0)))
+    AGENT_MAX_STEPS: int = Field(default_factory=lambda: int(get_config_value("AGENT_MAX_STEPS", 5)))
 
     # Context Module  -  compression / extraction tuning
     CONTEXT_HOT_WINDOW_SIZE: int = Field(default_factory=lambda: int(get_config_value("CONTEXT_HOT_WINDOW_SIZE", 500)))
     CONTEXT_TOKEN_BUDGET_CAP: int = Field(default_factory=lambda: int(get_config_value("CONTEXT_TOKEN_BUDGET_CAP", 200_000)))
     CONTEXT_ROAST_COMPRESSION_RATIO: float = Field(default_factory=lambda: float(get_config_value("CONTEXT_ROAST_COMPRESSION_RATIO", 0.05)))
     CONTEXT_ROAST_COMPRESSION_MIN_TOKENS: int = Field(default_factory=lambda: int(get_config_value("CONTEXT_ROAST_COMPRESSION_MIN_TOKENS", 1000)))
-    AGENT_MAX_STEPS: int = Field(default_factory=lambda: int(get_config_value("AGENT_MAX_STEPS", 5)))
     CONTEXT_MAX_TURNS: int = Field(default_factory=lambda: int(get_config_value("CONTEXT_MAX_TURNS", 400)))
     CONTEXT_L3_COMPRESS_MAX_WORDS: int = Field(default_factory=lambda: int(get_config_value("CONTEXT_L3_COMPRESS_MAX_WORDS", 5000)))
     CONTEXT_L3_MERGE_MAX_WORDS: int = Field(default_factory=lambda: int(get_config_value("CONTEXT_L3_MERGE_MAX_WORDS", 8000)))
     CONTEXT_L4_ROAST_MAX_WORDS: int = Field(default_factory=lambda: int(get_config_value("CONTEXT_L4_ROAST_MAX_WORDS", 5000)))
     CONTEXT_L2_PROFILE_MAX_WORDS: int = Field(default_factory=lambda: int(get_config_value("CONTEXT_L2_PROFILE_MAX_WORDS", 1500)))
     
-    # Welcome Greeting
-    ENABLE_WELCOME_GREETING: bool = Field(default_factory=lambda: get_bool_config_value("ENABLE_WELCOME_GREETING", True))
-    WELCOME_GREETING: str = Field(default_factory=lambda: get_config_value("WELCOME_GREETING", "Hello! It's Trump here. I'm the best AI assistant you'll ever talk to, believe me. What can I do for you today?"))
-    
     # Advanced Agent Features
     ENABLE_PREEMPTIVE_SYNTHESIS: bool = Field(default_factory=lambda: get_bool_config_value("ENABLE_PREEMPTIVE_SYNTHESIS", True))
-    ENABLE_TURN_DETECTOR: bool = Field(default_factory=lambda: get_bool_config_value("ENABLE_TURN_DETECTOR", True))
-    ENABLE_FILLER_WORDS: bool = Field(default_factory=lambda: get_bool_config_value("ENABLE_FILLER_WORDS", False))
     ENABLE_POLICY_SEARCH: bool = Field(default_factory=lambda: get_bool_config_value("ENABLE_POLICY_SEARCH", False))
-    FORCE_POLICY_SEARCH: bool = Field(default_factory=lambda: get_bool_config_value("FORCE_POLICY_SEARCH", False))
-    
+
     # Policy Search Backend: "built_in" (default) or "perplexity"
     POLICY_SEARCH_BACKEND: str = Field(default_factory=lambda: get_config_value("POLICY_SEARCH_BACKEND", "built_in"))
-    
-    # Perplexity Search Configuration (only used when POLICY_SEARCH_BACKEND = "perplexity")
-    PERPLEXITY_SEARCH_MODEL: str = Field(default_factory=lambda: get_config_value("PERPLEXITY_SEARCH_MODEL", "sonar-pro"))
-    PERPLEXITY_SEARCH_BASE_URL: str = Field(default_factory=lambda: get_config_value("PERPLEXITY_SEARCH_BASE_URL", "https://api.perplexity.ai"))
-    
-    # Agent Mode: 1 = Default, 2 = Interrupt Mode
-    AGENT_MODE: int = Field(default_factory=lambda: int(get_config_value("AGENT_MODE", 1)))
-    INTERRUPT_INTERVAL_SECONDS: float = Field(default_factory=lambda: float(get_config_value("INTERRUPT_INTERVAL_SECONDS", 30.0)))
-    
-    # Advanced Settings (Phase 5)
-    ENGAGEMENT_THRESHOLD: float = Field(default_factory=lambda: float(get_config_value("ENGAGEMENT_THRESHOLD", 0.7)))
-    DEBATE_MODE_SILENCE_MULTIPLIER: float = Field(default_factory=lambda: float(get_config_value("DEBATE_MODE_SILENCE_MULTIPLIER", 1.5)))
     
     # Logging
     LOG_LEVEL: str = Field(default_factory=lambda: get_config_value("LOG_LEVEL", "INFO"))

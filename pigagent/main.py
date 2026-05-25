@@ -8,8 +8,8 @@ All session wiring in lk/session.py, all business logic in pigagent.py.
 import os
 import threading
 
-from dotenv import load_dotenv
-load_dotenv()
+from dotenv import load_dotenv, find_dotenv
+load_dotenv(find_dotenv())
 
 import bootstrap.logging  # noqa: F401  -  must be after load_dotenv()
 from lk.entrypoint import main as lk_main
