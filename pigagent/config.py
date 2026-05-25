@@ -55,15 +55,15 @@ def get_config_value(key: str, default: Any = None) -> Any:
     """
     env_value = os.getenv(key)
     if env_value is not None and env_value != "":
-        config_logger.debug(f"Config {key}: from environment")
+        config_logger.trace(f"Config {key}: from environment")
         return env_value
 
     config_value = CONFIG_FILE_DATA.get(key)
     if config_value is not None and config_value != "":
-        config_logger.debug(f"Config {key}: from .config file")
+        config_logger.trace(f"Config {key}: from .config file")
         return config_value
 
-    config_logger.debug(f"Config {key}: using default={default}")
+    config_logger.trace(f"Config {key}: using default={default}")
     return default
 
 
@@ -190,18 +190,53 @@ class AgentConfig(BaseSettings):
         # Environment variables can override any setting.
 
 
+_config_cache: AgentConfig | None = None
+
+
 def get_config() -> AgentConfig:
-    """
-    Get agent configuration
+    """Get agent configuration (singleton, cached after first call).
 
     Configuration is loaded from environment variables, then flat .config TOML.
     """
+    global _config_cache
+    if _config_cache is not None:
+        return _config_cache
+
     config_logger.info("=" * 70)
-    config_logger.info(f"Loading Agent Configuration")
+    config_logger.info("Loading Agent Configuration")
     config_logger.info("Config sources: environment, then .config")
     config_logger.info("=" * 70)
 
-    config = AgentConfig()
+    _config_cache = AgentConfig()
+    _log_config_summary(_config_cache)
+    return _config_cache
 
-    return config
+
+def _log_config_summary(cfg: AgentConfig) -> None:
+    """Print all config values at INFO level once after loading."""
+    fields = [
+        ("LIVEKIT_URL", cfg.LIVEKIT_URL),
+        ("STT_PROVIDER", cfg.STT_PROVIDER),
+        ("DEEPGRAM", f"model={cfg.DEEPGRAM_STT_MODEL} lang={cfg.DEEPGRAM_STT_LANGUAGE} rate={cfg.DEEPGRAM_STT_SAMPLE_RATE} diarization={cfg.DEEPGRAM_ENABLE_DIARIZATION}"),
+        ("CARTESIA_STT", f"model={cfg.CARTESIA_STT_MODEL} lang={cfg.CARTESIA_STT_LANGUAGE} encoding={cfg.CARTESIA_STT_ENCODING} rate={cfg.CARTESIA_STT_SAMPLE_RATE}"),
+        ("CARTESIA_TTS", f"model={cfg.CARTESIA_TTS_MODEL} voice={cfg.CARTESIA_TTS_VOICE} lang={cfg.CARTESIA_TTS_LANGUAGE} speed={cfg.CARTESIA_TTS_SPEED} emotion={cfg.CARTESIA_TTS_EMOTION} volume={cfg.CARTESIA_TTS_VOLUME}"),
+        ("LLM_PROVIDER", cfg.LLM_PROVIDER),
+        ("QWEN_MODEL", cfg.QWEN_MODEL),
+        ("LLM_TEMPERATURE", cfg.LLM_TEMPERATURE),
+        ("LLM_MAX_TOKENS", cfg.LLM_MAX_TOKENS),
+        ("AGENT_WORKERS", cfg.AGENT_WORKERS),
+        ("AGENT_MAX_STEPS", cfg.AGENT_MAX_STEPS),
+        ("ENABLE_INTERRUPTIONS", cfg.ENABLE_INTERRUPTIONS),
+        ("ENABLE_PREEMPTIVE_SYNTHESIS", cfg.ENABLE_PREEMPTIVE_SYNTHESIS),
+        ("ENABLE_POLICY_SEARCH", cfg.ENABLE_POLICY_SEARCH),
+        ("POLICY_SEARCH_BACKEND", cfg.POLICY_SEARCH_BACKEND),
+        ("CONTEXT_HOT_WINDOW_SIZE", cfg.CONTEXT_HOT_WINDOW_SIZE),
+        ("CONTEXT_TOKEN_BUDGET_CAP", cfg.CONTEXT_TOKEN_BUDGET_CAP),
+        ("CONTEXT_MAX_TURNS", cfg.CONTEXT_MAX_TURNS),
+        ("LOG_LEVEL", cfg.LOG_LEVEL),
+        ("LOG_TO_FILE", cfg.LOG_TO_FILE),
+    ]
+    for name, value in fields:
+        config_logger.info(f"  {name}: {value}")
+    config_logger.info("=" * 70)
 

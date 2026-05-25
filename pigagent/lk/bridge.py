@@ -76,6 +76,10 @@ class PigAgentVoiceBridge:
         return NOT_GIVEN
 
     @property
+    def interruption_detection(self):
+        return NOT_GIVEN
+
+    @property
     def use_tts_aligned_transcript(self):
         return NOT_GIVEN
 
@@ -84,6 +88,9 @@ class PigAgentVoiceBridge:
         return None
 
     # ── Lifecycle ─────────────────────────────────────────────────────
+
+    async def on_enter(self) -> None:
+        pass
 
     async def on_exit(self) -> None:
         pass

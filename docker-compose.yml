@@ -57,6 +57,8 @@ services:
     environment:
       DATABASE_URL: postgresql+asyncpg://pigugu:pigugu@postgres:5432/pigugu
       REDIS_URL: redis://redis:6379/0
+    volumes:
+      - ./logs/pigagent:/pigagent/logs
     depends_on:
       postgres:
         condition: service_healthy

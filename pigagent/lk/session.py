@@ -92,7 +92,12 @@ async def run(ctx: JobContext) -> None:
         allow_interruptions=config.ENABLE_INTERRUPTIONS,
     )
 
-    session = AgentSession(preemptive_generation=config.ENABLE_PREEMPTIVE_SYNTHESIS)
+    from livekit.agents.voice.agent import TurnHandlingOptions
+    session = AgentSession(
+        turn_handling=TurnHandlingOptions(
+            preemptive_generation={"enabled": config.ENABLE_PREEMPTIVE_SYNTHESIS}
+        )
+    )
 
     # ── Interrupt wiring ──────────────────────────────────────────────
     current_interrupt_key: str | None = None
@@ -154,20 +159,14 @@ async def run(ctx: JobContext) -> None:
         if timer.data["speech_created"] is None:
             timer.mark("speech_created")
 
-    @session.on("metrics_collected")
-    def on_metrics_collected(event):
-        m = event.metrics
-        if isinstance(m, LLMMetrics):
-            if timer.data["llm_first_token"] is None and m.ttft > 0:
-                timer.data["llm_first_token"] = time.perf_counter() - m.duration + m.ttft
-            logger.info(
-                f"[LLM] TTFT: {m.ttft:.3f}s, "
-                f"Tokens: {m.prompt_tokens} -> {m.completion_tokens}"
-            )
-        elif isinstance(m, TTSMetrics):
-            logger.info(
-                f"[TTS] TTFB: {m.ttfb:.3f}s, Audio: {m.audio_duration:.2f}s"
-            )
+    @session.on("session_usage_updated")
+    def on_session_usage_updated(event):
+        usage = getattr(event, "usage", None)
+        if usage and usage.model_usage:
+            for mu in usage.model_usage:
+                logger.info(
+                    f"[LLM] model={mu.model_id} tokens={mu.prompt_tokens}->{mu.completion_tokens}"
+                )
 
     @session.on("conversation_item_added")
     def on_conversation_item_added(event):

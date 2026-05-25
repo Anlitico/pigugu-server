@@ -10,6 +10,8 @@ import threading
 
 from dotenv import load_dotenv, find_dotenv
 load_dotenv(find_dotenv())
+# Override with local dev values if present
+load_dotenv(find_dotenv(filename=".env.local"), override=True)
 
 import bootstrap.logging  # noqa: F401  -  must be after load_dotenv()
 from lk.entrypoint import main as lk_main

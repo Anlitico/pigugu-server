@@ -38,6 +38,9 @@ dependencies = [
     "redis~=7.4",
     "asyncpg~=0.31",
 
+    # Search SDKs
+    "tavily-python~=0.7",
+
     # Utilities
     "loguru~=0.7",
     "aiohttp~=3.13",

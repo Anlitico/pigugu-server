@@ -28,6 +28,10 @@ def main() -> None:
         logger.error("Configuration errors  -  please fix and try again.")
         exit(1)
 
+    # Pre-load VAD on main thread before worker threads start
+    from bootstrap.factory import get_vad
+    get_vad()
+
     logger.info("Configuration validated, starting workers...")
 
     cli.run_app(

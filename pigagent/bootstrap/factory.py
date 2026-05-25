@@ -59,9 +59,13 @@ def get_vad():
     """Return the global VAD (Voice Activity Detection) singleton."""
     global _vad
     if _vad is None:
-        from livekit.plugins import silero  # type: ignore[reportAttributeAccessIssue]
-        _vad = silero.VAD.load()
-        logger.info("[Factory] VAD loaded")
+        try:
+            from livekit.plugins import silero  # type: ignore[reportAttributeAccessIssue]
+            _vad = silero.VAD.load()
+            logger.info("[Factory] VAD loaded")
+        except RuntimeError as e:
+            logger.warning(f"[Factory] VAD unavailable: {e}")
+            return None
     return _vad
 
 
@@ -132,10 +136,15 @@ def get_pg_pool():
         _init_pg_pool()
     if isinstance(_pg_pool, str):
         import asyncpg  # type: ignore[reportMissingImports]
-        import asyncio
-        _pg_pool = asyncio.get_event_loop().run_until_complete(
-            asyncpg.create_pool(_pg_pool, min_size=2, max_size=10)
-        )
+        import asyncio, concurrent.futures
+
+        async def _create(url):
+            url = url.replace("+asyncpg", "")
+            return await asyncpg.create_pool(url, min_size=2, max_size=10)
+
+        with concurrent.futures.ThreadPoolExecutor() as pool:
+            _pg_pool = pool.submit(lambda: asyncio.run(_create(_pg_pool))).result()
+        logger.info("[Factory] PG pool created (via thread)")
     return _pg_pool
 
 
