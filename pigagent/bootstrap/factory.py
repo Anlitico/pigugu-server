@@ -13,7 +13,7 @@ from loguru import logger
 from config import get_config
 from core.audio.stt import create_stt
 from core.audio.tts import create_tts
-from pigagent import PigAgent
+from agent import PigAgent
 
 
 # ── Global singletons ──────────────────────────────────────────────────────

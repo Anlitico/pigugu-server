@@ -19,7 +19,7 @@ class TestRoastStartEndpoint:
             pytest.skip("DASHSCOPE_US_API_KEY not set")
 
         from api.server import create_app
-        from pigagent import PigAgent
+        from agent import PigAgent
         from personas import PersonaRegistry
         from roast import GameModeRegistry
 

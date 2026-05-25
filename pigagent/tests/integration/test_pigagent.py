@@ -16,7 +16,7 @@ load_dotenv(dotenv_path=Path(__file__).parent.parent.parent / ".env", override=T
 
 def _make_test_agent():
     """Create a PigAgent with real LLM, mocked storage."""
-    from pigagent import PigAgent
+    from agent import PigAgent
     from personas import PersonaRegistry
 
     PersonaRegistry.register_defaults()
@@ -96,17 +96,18 @@ class TestStartRoast:
     def test_start_roast_streams_reply(self):
         if not os.getenv("DASHSCOPE_US_API_KEY"):
             pytest.skip("DASHSCOPE_US_API_KEY not set")
-        if not os.getenv("REDIS_URL"):
+        redis_url = os.getenv("REDIS_URL")
+        if not redis_url:
             pytest.skip("REDIS_URL not set — roast needs Redis")
 
         import redis.asyncio as aioredis
-        redis_client = aioredis.from_url(os.getenv("REDIS_URL"), decode_responses=True)
+        redis_client = aioredis.from_url(redis_url, decode_responses=True)
 
         from roast import GameModeRegistry
         GameModeRegistry.register_defaults()
         game_modes = GameModeRegistry.build_cache()
 
-        from pigagent import PigAgent
+        from agent import PigAgent
         from personas import PersonaRegistry
         PersonaRegistry.register_defaults()
         prompts = PersonaRegistry.build_prompt_cache("qwen-us")

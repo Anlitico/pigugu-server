@@ -10,7 +10,6 @@ API Keys (MUST be provided by environment variables, usually .env locally):
 - DEEPGRAM_API_KEY (if using Deepgram STT)
 - CARTESIA_API_KEY (if using Cartesia STT/TTS)
 - DASHSCOPE_API_KEY
-- XAI_API_KEY (if using Grok LLM)
 """
 
 import os
@@ -116,15 +115,14 @@ class AgentConfig(BaseSettings):
     
     # LLM Configuration
     # LLM_PROVIDER: provider ID used to resolve api_key / base_url
-    #   ("qwen", "qwen-us", "grok", "xai", "deepseek", etc.)
+    #   ("qwen", "qwen-us", "deepseek", etc.)
     LLM_PROVIDER: str = Field(default_factory=lambda: get_config_value("LLM_PROVIDER", "qwen"))
 
-    # LLM_MODEL: unified model field  -  when set, takes priority over QWEN_MODEL/GROK_MODEL
+    # LLM_MODEL: unified model field  -  when set, takes priority over QWEN_MODEL
     LLM_MODEL: str = Field(default_factory=lambda: get_config_value("LLM_MODEL", ""))
 
     # Legacy per-provider model fields (still supported)
     QWEN_MODEL: str = Field(default_factory=lambda: get_config_value("QWEN_MODEL", "qwen-plus"))
-    GROK_MODEL: str = Field(default_factory=lambda: get_config_value("GROK_MODEL", "grok-4-fast-reasoning"))
 
     # LLM Settings
     # Lightweight model for background tasks (segment end detection, compression)
@@ -136,13 +134,10 @@ class AgentConfig(BaseSettings):
     def resolve_model(self) -> str:
         """Resolve the effective model name.
 
-        Priority: LLM_MODEL > provider-specific field (QWEN_MODEL / GROK_MODEL)
+        Priority: LLM_MODEL > provider-specific field (QWEN_MODEL)
         """
         if self.LLM_MODEL:
             return self.LLM_MODEL
-        provider = self.LLM_PROVIDER.lower()
-        if provider in ("grok", "xai"):
-            return self.GROK_MODEL
         return self.QWEN_MODEL
 
     def create_provider(self):
@@ -240,15 +235,6 @@ def get_config() -> AgentConfig:
     config_logger.info("=" * 70)
 
     config = AgentConfig()
-
-    # Log the actual model being used and its source
-    file_grok = CONFIG_FILE_DATA.get("GROK_MODEL")
-    if os.getenv("GROK_MODEL"):
-        config_logger.info(f"GROK_MODEL: {config.GROK_MODEL} (from environment)")
-    elif file_grok:
-        config_logger.info(f"GROK_MODEL: {config.GROK_MODEL} (from .config file)")
-    else:
-        config_logger.info(f"GROK_MODEL: {config.GROK_MODEL} (using default)")
 
     return config
 

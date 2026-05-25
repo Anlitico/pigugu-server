@@ -1,0 +1,7 @@
+{
+  "include": ["."],
+  "exclude": ["**/__pycache__", "**/.pytest_cache"],
+  "pythonVersion": "3.13",
+  "pythonPlatform": "Windows",
+  "typeCheckingMode": "basic"
+}

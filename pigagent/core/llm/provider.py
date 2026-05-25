@@ -26,7 +26,7 @@ class LLMProvider(ABC):
         ``"<function_name>"``  -  force a specific function
 
         Provider translation:
-        Qwen / DeepSeek / Grok / Doubao  -  passes through as-is, specific function
+        Qwen / DeepSeek / Doubao  -  passes through as-is, specific function
         wrapped as ``{"type":"function","function":{"name":"<fn>"}}``.
         Gemini  -  ``AUTO`` / ``ANY`` / ``NONE``; specific function uses
         ``allowed_function_names``.
@@ -42,7 +42,7 @@ class LLMProvider(ABC):
     max_tokens: int | None               output token limit
     stop: list[str] | None               stop sequences
     seed: int | None                     reproducibility (Qwen/DeepSeek/Doubao;
-                                          Grok/Gemini silently ignore)
+                                          Gemini silently ignore)
 
     === Thinking / Reasoning (5/5) ===========================================
 
@@ -57,7 +57,6 @@ class LLMProvider(ABC):
         Provider translation:
         Qwen      -  extra_body: {enable_thinking: True, thinking_budget: N}
         DeepSeek  -  extra_body: {thinking: {type: "enabled"}}; passes reasoning_effort
-        Grok      -  reasoning_effort top-level parameter
         Gemini    -  thinking_config: {thinking_budget: N}
         Doubao    -  thinking: {type: "enabled"}
 
@@ -71,8 +70,6 @@ class LLMProvider(ABC):
 
         Provider translation:
         Qwen      -  extra_body: {enable_search: True, search_options: {search_strategy: "agent"}}
-        Grok      -  Chat: tools=[{type: "web_search"}] + tool_choice: "required"
-                    Responses API: native support
         Gemini    -  tools: [{googleSearch: {}}]; force = dynamic threshold 1.0
         Doubao    -  Web Search plugin
 
@@ -85,7 +82,7 @@ class LLMProvider(ABC):
         - ``schema``  -  JSON Schema dict (required when type="json_schema")
 
         Provider translation:
-        Qwen / DeepSeek / Grok / Doubao  -  {type, json_schema: {name, schema}}
+        Qwen / DeepSeek / Doubao  -  {type, json_schema: {name, schema}}
         Gemini  -  response_mime_type: "application/json" + response_json_schema
 
     === Prefix / Continuation =================================================
@@ -99,7 +96,7 @@ class LLMProvider(ABC):
         Qwen      -  {"role": "assistant", "content": "...", "partial": True}
         DeepSeek  -  {"role": "assistant", "content": "...", "prefix": True}
         Doubao    -  continuation mode
-        Grok / Gemini  -  plain assistant message appended (no native parameter)
+        Gemini  -  plain assistant message appended (no native parameter)
 
     === Escape Hatch ==========================================================
 

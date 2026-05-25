@@ -13,3 +13,4 @@ default = "qwen-plus"
 base_url = "https://ark.cn-beijing.volces.com/api/v3"
 env = "ARK_API_KEY"
 default = "doubao-seed-1-6-251015"
+

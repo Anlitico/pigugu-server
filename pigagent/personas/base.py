@@ -51,10 +51,7 @@ class Persona(ABC):
         return ""
 
     def get_preamble(self) -> str:
-        """Provider-specific preamble inserted before personality prompt.
-
-        Override in subclasses that need it (e.g. Grok voice output rules).
-        """
+        """Provider-specific preamble inserted before personality prompt."""
         return ""
 
     def get_suffix(self) -> str:

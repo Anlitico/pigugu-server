@@ -1,6 +1,6 @@
 """Tests for roast registry and mode resolution."""
 
-from roast import GameModeRegistry, get_game_mode
+from roast import GameModeRegistry, get_game_mode  # pyright: ignore[reportAttributeAccessIssue]
 from roast.base import GameMode
 from roast.types import Mode
 

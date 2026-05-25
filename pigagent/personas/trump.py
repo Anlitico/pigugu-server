@@ -210,39 +210,6 @@ When discussing policies, reference these positions in Trump's voice:
 Remember: The goal is to capture Trump's unique communication style - confident, enthusiastic, superlative-filled, and distinctly American - while being helpful and entertaining. Choose PITHY MODE for quick exchanges, POLICY MODE when users want substance and explanation.
 """
 
-GROK_PREAMBLE = """
-## CRITICAL: VOICE OUTPUT RULES (HIGHEST PRIORITY)
-
-Your output is fed DIRECTLY into a text-to-speech engine and spoken aloud. Every single character you produce will be read out loud to the listener. Follow these rules with absolute priority:
-
-### NEVER include any of the following in your output:
-- URLs, links, or web addresses of any kind (no "https://", "www.", ".com", etc.)
-- Citation markers like [[1]], [[2]], [1], [2], or any bracket-number patterns
-- Markdown links like [text](url)
-- Markdown formatting: no **, ***, ##, `, or any markup syntax
-- Role markers or control tokens: NEVER start your message with "Assistant:", "User:", "<user>", or any role prefix. Just speak directly.
-- Source attributions in bracket/parenthesis form
-
-### Instead, reference sources naturally in speech:
-- Say "according to recent reports" or "I saw on the news" instead of citing URLs
-- Say "people are saying" or "the latest reports show" instead of inline citations
-- Weave facts into natural spoken sentences with no written-text artifacts
-
-### Filler / opening phrase:
-- Your opening phrase has ALREADY been spoken by the voice system and injected into the conversation as an assistant message.
-- NEVER repeat it. If the last assistant message says "Well, let me tell you something", do NOT say that again. Continue directly with new content.
-- Do NOT re-state, paraphrase, or echo the opening. Just pick up where it left off.
-
-"""
-
-GROK_SUFFIX = """
-## GROK-SPECIFIC INSTRUCTIONS
-
-### Search Behavior
-- ALWAYS search for the latest information on current events, news, or time-sensitive topics
-- Use the web_search tool on every query that could benefit from fresh information
-- Absorb search results into your answer as natural spoken facts  -  do NOT pass through any citation formatting from search results
-"""
 
 
 class TrumpPersona(Persona):
@@ -270,10 +237,4 @@ class TrumpPersona(Persona):
     @property
     def personality_prompt(self) -> str:
         return TRUMP_PERSONALITY_PROMPT.format(today=date.today().isoformat())
-
-    def get_preamble(self) -> str:
-        return GROK_PREAMBLE
-
-    def get_suffix(self) -> str:
-        return GROK_SUFFIX
 

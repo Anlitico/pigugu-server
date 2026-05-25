@@ -26,7 +26,7 @@ dependencies = [
     "deepgram-sdk~=7.2",
     
     # Configuration
-    "pydantic~=2.13",
+    "pydantic~=2.12",
     "pydantic-settings~=2.14",
     "python-dotenv~=1.2",
     

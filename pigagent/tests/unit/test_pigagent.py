@@ -13,7 +13,7 @@ from core.llm.types import Message
 
 def _make_agent(**kwargs):
     """Create a PigAgent with all required dependencies mocked."""
-    from pigagent import PigAgent
+    from agent import PigAgent
 
     ctx = MagicMock()
     ctx.load = AsyncMock(return_value=[])
@@ -327,7 +327,7 @@ class TestStartRoast:
 class TestDefaultTools:
     def test_returns_valid_registry(self):
         from unittest.mock import patch, MagicMock
-        from pigagent import PigAgent
+        from agent import PigAgent
 
         search_tool = MagicMock()
         search_tool.name = "web_search"
@@ -348,7 +348,7 @@ class TestDefaultTools:
 
     def test_web_search_has_execute_handler(self):
         from unittest.mock import patch, MagicMock
-        from pigagent import PigAgent
+        from agent import PigAgent
 
         search_tool = MagicMock()
         search_tool.name = "web_search"
@@ -368,7 +368,7 @@ class TestDefaultTools:
 
     def test_volume_control_has_execute_handler(self):
         from unittest.mock import patch, MagicMock
-        from pigagent import PigAgent
+        from agent import PigAgent
 
         search_tool = MagicMock()
         search_tool.name = "web_search"
