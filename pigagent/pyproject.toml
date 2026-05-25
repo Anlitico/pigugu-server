@@ -15,24 +15,28 @@ dependencies = [
     
     # AI Providers
     "dashscope~=1.25",
-    "openai~=2.14",
+    "openai~=2.38",
     
     # Audio Processing
-    "numpy~=2.3",
+    "numpy~=2.4",
     "soundfile~=0.13",
     "sounddevice~=0.5",
     
     # Direct API SDKs (for latency testing)
-    "deepgram-sdk~=3.9",
+    "deepgram-sdk~=7.2",
     
     # Configuration
-    "pydantic~=2.12",
-    "pydantic-settings~=2.12",
+    "pydantic~=2.13",
+    "pydantic-settings~=2.14",
     "python-dotenv~=1.2",
     
     # HTTP API
-    "fastapi~=0.115",
-    "uvicorn[standard]~=0.34",
+    "fastapi~=0.136",
+    "uvicorn[standard]~=0.48",
+
+    # Storage
+    "redis~=7.4",
+    "asyncpg~=0.31",
 
     # Utilities
     "loguru~=0.7",
