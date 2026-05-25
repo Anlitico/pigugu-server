@@ -97,7 +97,7 @@ class CartesiaSTT(STTProvider):
             self._stt = cartesia.STT(
                 model=model,
                 language=language,
-                encoding=encoding,
+                encoding=encoding,  # type: ignore[reportArgumentType]
                 sample_rate=sample_rate,
                 api_key=self.api_key,
                 http_session=http_session,

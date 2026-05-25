@@ -14,9 +14,7 @@ from config import get_config
 from core.audio.stt import create_stt
 from core.audio.tts import create_tts
 from pigagent import PigAgent
-from core.agent import ToolRegistry
-from tools import create_web_search_tool, volume_tool
-from tools.search import TavilyProvider
+
 
 # ── Global singletons ──────────────────────────────────────────────────────
 
@@ -56,7 +54,7 @@ def _init_pg_pool():
             "e.g. postgresql://user:pass@localhost:5432/pigugu"
         )
 
-    import asyncpg
+    import asyncpg  # type: ignore[reportMissingImports]
     import asyncio
 
     async def _create():
@@ -91,7 +89,7 @@ def get_pg_pool():
     if _pg_pool is None:
         _init_pg_pool()
     if isinstance(_pg_pool, str):
-        import asyncpg
+        import asyncpg  # type: ignore[reportMissingImports]
         import asyncio
         _pg_pool = asyncio.get_event_loop().run_until_complete(
             asyncpg.create_pool(_pg_pool, min_size=2, max_size=10)
@@ -125,12 +123,6 @@ def _build_pig_agent(config=None) -> PigAgent:
     game_modes = GameModeRegistry.build_cache()
     logger.info(f"[Factory] Game mode cache built: {list(game_modes.keys())}")
 
-    search_provider = TavilyProvider()
-    web_search_tool = create_web_search_tool(search_provider)
-
-    registry = ToolRegistry()
-    registry.register_many([web_search_tool, volume_tool])
-
     redis = get_redis()
     pg_pool = get_pg_pool()
 
@@ -145,8 +137,6 @@ def _build_pig_agent(config=None) -> PigAgent:
         model=model,
         prompts=prompts,
         game_modes=game_modes,
-        tools=registry.tools,
-        tool_handlers=registry.tool_handlers,
         temperature=config.LLM_TEMPERATURE,
         max_tokens=config.LLM_MAX_TOKENS,
     )

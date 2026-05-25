@@ -1,5 +1,5 @@
 # pigagent/lk/__init__.py
-"""LiveKit integration — bridge PigAgent to LiveKit AgentSession."""
+"""LiveKit integration module — bridge, session wiring, telemetry, CLI entry."""
 
 from lk.bridge import PigAgentVoiceBridge
 

@@ -115,7 +115,7 @@ class CartesiaTTS(TTSProvider):
             self._tts = cartesia.TTS(
                 model=model,
                 language=language,
-                encoding=encoding,
+                encoding=encoding,  # type: ignore[reportArgumentType]
                 voice=voice,
                 speed=speed,
                 emotion=emotion,

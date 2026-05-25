@@ -1,9 +1,4 @@
-"""ToolRegistry — collects Tool instances and provides tools/tool_handlers lists.
-
-The registry is the bridge between Tool definitions and PigAgentConfig.
-Its .tools and .tool_handlers properties produce the exact types that
-PigAgentConfig expects — zero conversion needed.
-"""
+"""ToolRegistry — collects Tool instances and provides tools/tool_handlers lists."""
 
 from __future__ import annotations
 
@@ -13,18 +8,7 @@ from core.llm.types import ToolSpec
 
 
 class ToolRegistry:
-    """Collects Tool instances and provides lists for PigAgentConfig.
-
-    Usage:
-        registry = ToolRegistry()
-        registry.register(web_search_tool)
-        registry.register_many([tool_a, tool_b])
-
-        config = PigAgentConfig(
-            tools=registry.tools,
-            tool_handlers=registry.tool_handlers,
-        )
-    """
+    """Collects Tool instances for PigAgent's RunnerConfig."""
 
     def __init__(self) -> None:
         self._items: dict[str, Tool] = {}

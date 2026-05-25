@@ -52,6 +52,11 @@ class PigAgent:
         self._prompts: dict[str, str] = prompts or {}
         self._game_modes: dict[str, Any] = game_modes or {}
 
+        if tools is None:
+            default_registry = self._create_default_tools()
+            tools = default_registry.tools
+            tool_handlers = default_registry.tool_handlers
+
         runner_config = RunnerConfig(
             model=model,
             tools=tools or [],
@@ -65,6 +70,17 @@ class PigAgent:
         )
         self._model = model
         self.runner = AgentRunner(runner_config)
+
+    @staticmethod
+    def _create_default_tools():
+        """Create the default tool set: web_search + volume_control."""
+        from tools import create_web_search_tool, volume_tool
+        from tools.search import TavilyProvider
+        from core.agent import ToolRegistry
+        registry = ToolRegistry()
+        registry.register(create_web_search_tool(TavilyProvider()))
+        registry.register(volume_tool)
+        return registry
 
     @property
     def model(self) -> str:
@@ -174,7 +190,11 @@ class PigAgent:
         *,
         news_content: str = "",
     ) -> dict | None:
-        """Start a roast game session. Returns state metadata dict."""
+        """Start a roast game session. Persists roast body to context.
+
+        The roast body (news background + game rules) is saved as a tagged
+        user message so it loads naturally via ctx.load() in subsequent turns.
+        """
         game_mode = self._game_modes.get(mode_id)
         if game_mode is None:
             logger.error(f"[PigAgent] Unknown game mode: {mode_id}")
@@ -193,10 +213,20 @@ class PigAgent:
             pg_pool=self._pg_pool,
         )
 
-        state.extra["_roast_body"] = self._build_roast_body(
+        # Persist roast body to context — loaded automatically on each turn
+        roast_body = self._build_roast_body(
             game_mode=game_mode,
             news_content=news_content,
         )
+        if roast_body and self.ctx:
+            try:
+                await self.ctx.add_turn(
+                    user_id=user_id,
+                    role="user",
+                    content=f"{_ROAST_USER_TAG}\n{roast_body}",
+                )
+            except Exception as e:
+                logger.error(f"[PigAgent] Failed to persist roast body: {e}")
 
         logger.info(
             f"[PigAgent] Roast started: {state.roast_id} "
@@ -230,7 +260,11 @@ class PigAgent:
         roast_state,
         game_mode,
     ) -> AsyncIterator[str]:
-        """Roast pipeline: consume pending → inject body → stream → tick."""
+        """Roast pipeline: consume pending → stream → tick.
+
+        Roast body (news + game rules) was already persisted to context
+        by start_roast() — it loads via ctx.load() in generate_reply().
+        """
         # 1. Consume pending trigger prompt
         try:
             from roast.pending import consume
@@ -242,19 +276,11 @@ class PigAgent:
         except Exception as e:
             logger.warning(f"[PigAgent] consume_pending failed: {e}")
 
-        # 2. First turn: inject roast body
-        if roast_state.turn_count == 0:
-            roast_body = roast_state.extra.get("_roast_body", "")
-            if roast_body:
-                messages.append(Message.user(
-                    f"{_ROAST_USER_TAG}\n{roast_body}"
-                ))
-
-        # 3. Stream LLM
+        # 2. Stream LLM
         async for text in self.runner.stream(messages):
             yield text
 
-        # 4. Tick — check triggers
+        # 3. Tick — check triggers
         try:
             triggered = await game_mode.tick(
                 roast_state, records=messages,
@@ -269,12 +295,13 @@ class PigAgent:
         self, user_id: str, user_content: str, assistant_content: str,
     ) -> None:
         """Persist one conversation turn to Redis/PG."""
+        ctx = self._require_ctx()
         try:
-            await self.ctx.add_turn(
+            await ctx.add_turn(
                 user_id=user_id, role="user", content=user_content,
             )
             if assistant_content:
-                await self.ctx.add_turn(
+                await ctx.add_turn(
                     user_id=user_id, role="assistant", content=assistant_content,
                 )
         except Exception as e:
