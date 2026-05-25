@@ -1,13 +1,8 @@
-﻿# pigagent/core/agent/state.py
-"""Agent state machine — status tracking for React agent loops (voice-first).
+# pigagent/core/agent/state.py
+"""Agent state — per-chat data object, created fresh for each stream() / run().
 
-State transitions:
-  RUNNING     ──→ SUCCESS       (agent loop completed normally)
-  RUNNING     ──→ ERROR         (unexpected exception)
-  RUNNING     ──→ INTERRUPTED   (user VAD / explicit cancel)
-  (any)       ──→ FAIL          (stop condition met, e.g. max iterations)
-
-One AgentState per request (= one user turn = one agent loop execution).
+Holds all mutable state for a single agent loop execution. Stop conditions
+and hooks read from it. AgentRunner carries no per-call state.
 """
 
 from __future__ import annotations
@@ -17,14 +12,7 @@ from enum import Enum
 
 
 class StateStatus(Enum):
-    """Agent request lifecycle states.
-
-    Covers all paths in a voice agent loop:
-      - Normal completion (SUCCESS)
-      - Exception (ERROR)
-      - User interrupt via VAD (INTERRUPTED)
-      - Safety stop, e.g. max iterations (FAIL)
-    """
+    """Agent request lifecycle states."""
 
     RUNNING = "running"
     SUCCESS = "success"
@@ -35,26 +23,23 @@ class StateStatus(Enum):
 
 @dataclass
 class AgentState:
-    """Per-request state carried through a single agent loop execution.
+    """Per-chat data object — one per stream() / run() call.
 
-    'request' = one user turn = one AgentRunner.run() invocation.
-    For pigugu's one-user-one-session model, a new AgentState is created
-    for each turn within the entrypoint coroutine.
+    Created fresh at the start of each agent loop. Holds step counter,
+    tool call tracking, and terminal status. Read by stop conditions and
+    after-step hooks.
     """
 
     status: str = field(default=StateStatus.RUNNING.value)
-
-    # ── Runtime-only (not serialized) ───────────────────────────────────
+    current_step: int = 0
+    last_had_tool_calls: bool = False
 
     _exception: Exception | None = field(default=None, repr=False)
     _traceback: str | None = field(default=None, repr=False)
     _fail_reason: str | None = field(default=None, repr=False)
 
-    # ── Properties ──────────────────────────────────────────────────────
-
     @property
     def is_terminal(self) -> bool:
-        """True if the state is terminal (loop should exit)."""
         return self.status in {
             StateStatus.SUCCESS.value,
             StateStatus.FAIL.value,

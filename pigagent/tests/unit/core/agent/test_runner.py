@@ -77,10 +77,10 @@ class TestAgentRunner:
             on_before_step=_make_load([MockMessage("user", "hi")]),
             on_after_step=_noop,
         ))
-        assert runner.current_step == 1
+        assert runner.last_step_count == 1
         assert result.content == "Hello!"
         assert result.tool_calls is None
-        assert runner.state.status == StateStatus.SUCCESS.value
+        assert runner.last_status == StateStatus.SUCCESS.value
 
     def test_multi_step_with_tools(self, monkeypatch):
         from core.llm.types import ToolCall
@@ -104,7 +104,7 @@ class TestAgentRunner:
             on_before_step=_make_load([MockMessage("user", "find x")]),
             on_after_step=_flush,
         ))
-        assert runner.current_step == 2
+        assert runner.last_step_count == 2
         assert result.content == "found it"
         assert any(getattr(m, "role", "") == "tool" for m in messages)
 
@@ -124,7 +124,7 @@ class TestAgentRunner:
             on_before_step=_make_load([MockMessage("user", "loop")]),
             on_after_step=_noop,
         ))
-        assert runner.current_step == 2
+        assert runner.last_step_count == 2
 
     def test_status_on_error(self, monkeypatch):
         class FailingProvider:
@@ -138,7 +138,7 @@ class TestAgentRunner:
             on_before_step=_make_load([MockMessage("user", "hi")]),
             on_after_step=_noop,
         ))
-        assert runner.state.status == StateStatus.ERROR.value
+        assert runner.last_status == StateStatus.ERROR.value
 
     def test_on_after_step_called_on_error(self, monkeypatch):
         called = False
@@ -184,5 +184,5 @@ class TestAgentRunner:
             return await task
 
         result = asyncio.run(_run())
-        assert runner.state.status == StateStatus.INTERRUPTED.value
+        assert runner.last_status == StateStatus.INTERRUPTED.value
         assert result.finish_reason == "interrupted"

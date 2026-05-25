@@ -1,9 +1,7 @@
-﻿# pigagent/bootstrap/factory.py
+# pigagent/bootstrap/factory.py
 """
-Component factory: creates STT, PigAgent, TTS instances from configuration.
-
-Also handles tool registration — assembles the ToolRegistry from tool
-definitions in pigagent.tools and passes them to PigAgentConfig.
+Component factory: creates STT, TTS instances per session. PigAgent is a
+module-level singleton — created once and reused across all connections.
 """
 
 import os
@@ -13,10 +11,54 @@ from loguru import logger
 from config import get_config
 from core.audio.stt import create_stt
 from core.audio.tts import create_tts
-from pigagent import PigAgent, PigAgentConfig
+from pigagent import PigAgent
 from core.agent import ToolRegistry
 from tools import create_web_search_tool, volume_tool
 from tools.search import TavilyProvider
+
+# ── Global singleton ───────────────────────────────────────────────────────
+
+_pig_agent: PigAgent | None = None
+
+
+def get_pig_agent() -> PigAgent:
+    """Return the global PigAgent singleton."""
+    global _pig_agent
+    if _pig_agent is None:
+        _pig_agent = _build_pig_agent()
+    return _pig_agent
+
+
+def _build_pig_agent(config=None) -> PigAgent:
+    """Build the PigAgent singleton (called once at first use)."""
+    if config is None:
+        config = get_config()
+
+    model = config.resolve_model()
+    llm_provider_id = config.LLM_PROVIDER.lower()
+
+    from personas import PersonaRegistry
+    PersonaRegistry.register_defaults()
+    prompts = PersonaRegistry.build_prompt_cache(llm_provider_id)
+    logger.info(f"[Factory] Prompt cache built: {list(prompts.keys())}")
+
+    search_provider = TavilyProvider()
+    web_search_tool = create_web_search_tool(search_provider)
+
+    registry = ToolRegistry()
+    registry.register_many([web_search_tool, volume_tool])
+
+    pig_agent = PigAgent(
+        None,  # ctx (wired when ContextManager is available)
+        model=model,
+        prompts=prompts,
+        tools=registry.tools,
+        tool_handlers=registry.tool_handlers,
+        temperature=config.LLM_TEMPERATURE,
+        max_tokens=config.LLM_MAX_TOKENS,
+    )
+    logger.info(f"[Factory] PigAgent singleton created with model={model}")
+    return pig_agent
 
 
 def validate_configuration(config=None):
@@ -84,11 +126,13 @@ def validate_configuration(config=None):
 
 
 def create_agent_components(config=None, persona=None):
-    """Create STT, PigAgent, and TTS components based on configuration.
+    """Create STT and TTS instances per session.
+
+    PigAgent is a global singleton — returned from get_pig_agent().
 
     Args:
         config: AgentConfig instance. If None, loads from get_config().
-        persona: Persona instance for TTS voice override. If None, uses config defaults.
+        persona: Persona instance for TTS voice override.
 
     Returns:
         Tuple of (stt, pig_agent, tts) instances.
@@ -96,7 +140,6 @@ def create_agent_components(config=None, persona=None):
     if config is None:
         config = get_config()
 
-    # Get API keys from environment variables
     deepgram_api_key = os.getenv("DEEPGRAM_API_KEY")
     cartesia_api_key = os.getenv("CARTESIA_API_KEY")
 
@@ -125,41 +168,12 @@ def create_agent_components(config=None, persona=None):
     else:
         raise ValueError(f"Unknown STT provider: {stt_provider}")
 
-    # ── LLM Provider + PigAgent ─────────────────────────────────────────
+    # ── PigAgent (global singleton) ─────────────────────────────────────
 
-    provider = config.create_provider()
-
-    # Build instructions from persona
-    llm_provider_id = config.LLM_PROVIDER.lower()
-    if persona is not None and hasattr(persona, "get_full_prompt"):
-        instructions = persona.get_full_prompt(llm_provider_id)
-    else:
-        from config import get_personality_prompt
-        instructions = get_personality_prompt(llm_provider_id)
-
-    model = config.resolve_model()
-
-    # Assemble tool registry — create providers, create tools, register
-    search_provider = TavilyProvider()
-    web_search_tool = create_web_search_tool(search_provider)
-
-    registry = ToolRegistry()
-    registry.register_many([web_search_tool, volume_tool])
-
-    pig_agent = PigAgent(None, PigAgentConfig(
-        model=model,
-        system_prompt_id=persona.persona_id if persona else "",
-        tools=registry.tools,
-        tool_handlers=registry.tool_handlers,
-        temperature=config.LLM_TEMPERATURE,
-        max_tokens=config.LLM_MAX_TOKENS,
-    ))
-
-    logger.info(f"[Factory] PigAgent created with model={model}")
+    pig_agent = get_pig_agent()
 
     # ── TTS ────────────────────────────────────────────────────────────
 
-    # Use persona voice if provided, else config default
     tts_voice = config.CARTESIA_TTS_VOICE
     tts_speed = config.CARTESIA_TTS_SPEED
     tts_emotion = None
@@ -171,7 +185,6 @@ def create_agent_components(config=None, persona=None):
             tts_speed = persona.tts_speed
         tts_emotion = persona.tts_emotion
 
-    # Parse emotion from config if persona doesn't provide one
     if tts_emotion is None and config.CARTESIA_TTS_EMOTION:
         tts_emotion = [e.strip() for e in config.CARTESIA_TTS_EMOTION.split(",")]
 

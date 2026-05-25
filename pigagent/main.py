@@ -21,19 +21,16 @@ from dotenv import load_dotenv
 from loguru import logger
 
 from livekit.agents import (
-    Agent,
     AgentSession,
     AutoSubscribe,
     JobContext,
     WorkerOptions,
-    StopResponse,
     cli,
 )
 from livekit.agents.voice import room_io
 from livekit import rtc
 from livekit.plugins import silero
 
-# Import our modular components
 from config import get_config
 from core.llm.types import ModelCapability
 from core.llm.registry import ModelRegistry
@@ -42,6 +39,7 @@ from roast import GameModeRegistry, get_game_mode
 from bootstrap.factory import create_agent_components, validate_configuration
 from roast.types import Mode
 from core.agent.interrupt import get_interrupt_manager
+from lk import PigAgentVoiceBridge
 
 load_dotenv()
 
@@ -78,21 +76,6 @@ if config.LOG_TO_FILE:
         enqueue=True,  # Thread-safe logging
     )
     logger.info(f"File logging enabled: {config.LOG_FILE_PATH}")
-
-
-class LiveKitAgentAdapter(Agent):
-    """LiveKit Agent adapter — thin wrapper, all logic in PigAgent."""
-
-    def __init__(self, pig_agent, **kwargs):
-        super().__init__(**kwargs)
-        self._pig = pig_agent
-
-    async def on_user_turn_completed(self, turn_ctx, new_message):
-        await self._pig.on_user_turn_completed(turn_ctx, new_message)
-
-    async def llm_node(self, chat_ctx, tools, model_settings):
-        async for text in self._pig.generate_reply(chat_ctx):
-            yield text
 
 
 async def entrypoint(ctx: JobContext):
@@ -388,59 +371,43 @@ async def entrypoint(ctx: JobContext):
     stt_plugin = stt.get_plugin() if hasattr(stt, 'get_plugin') else stt
     tts_plugin = tts.get_plugin() if hasattr(tts, 'get_plugin') else tts
 
-    # LLM plugin not needed — LiveKitAgentAdapter overrides llm_node() with PigAgent
-    # We pass a dummy to satisfy LiveKit AgentSession type check (never called)
-    from livekit.plugins import openai as _lk_openai
-    _dummy_llm = _lk_openai.LLM(model="gpt-4.1", api_key="unused")
-
     logger.info(f"[DEBUG] STT plugin: {type(stt_plugin).__name__}")
     logger.info(f"[DEBUG] TTS plugin: {type(tts_plugin).__name__}")
-    logger.info(f"[DEBUG] LLM: PigAgent with {pig_agent.config.model}")
+    logger.info(f"[DEBUG] LLM: PigAgent with {pig_agent.model}")
 
     # Build VAD (Voice Activity Detection)
     vad = silero.VAD.load()
 
-    # Build instructions from persona only (stable KV-cache prefix)
-    llm_provider_id = config.LLM_PROVIDER.lower()
-    instructions = persona.get_full_prompt(llm_provider_id)
-    logger.info(f"Using persona '{persona.persona_id}' prompt (provider={llm_provider_id})")
+    # ── PigAgentVoiceBridge — no Agent inheritance, no dummy LLM ────────
+    # All LLM/content logic lives in PigAgent; the bridge only satisfies
+    # AgentSession's duck-type interface for the voice pipeline.
 
     min_ep = 0.5
     max_ep = 2.0
 
-    agent_kwargs = {
-        "instructions": instructions,
-        "stt": stt_plugin,
-        "llm": _dummy_llm,          # 不会被用 — llm_node() override 了
-        "tts": tts_plugin,
-        "vad": vad,
-        "allow_interruptions": config.ENABLE_INTERRUPTIONS,
-        "min_endpointing_delay": min_ep,
-        "max_endpointing_delay": max_ep,
-    }
-
     # Warn if model lacks native web_search; tool-based search will be used instead
-    model_info = ModelRegistry.get(pig_agent.config.model)
+    model_info = ModelRegistry.get(pig_agent.model)
     if ModelCapability.WEB_SEARCH not in model_info.capabilities:
         logger.info("Provider doesn't support web_search, will use tool-based search")
 
-    # Create LiveKitAgentAdapter — our LiveKit adapter wrapping PigAgent
-    pig_agent.configure(
-        game_mode=game_mode,
-        roast_body=roast_body,
-        fillers=persona.fillers,
+    bridge = PigAgentVoiceBridge(
+        pig_agent=pig_agent,
+        persona_id=persona_id,
+        stt=stt_plugin,
+        tts=tts_plugin,
+        vad=vad,
         enable_filler_words=config.ENABLE_FILLER_WORDS,
+        fillers=persona.fillers,
         enable_policy_search=config.ENABLE_POLICY_SEARCH,
+        allow_interruptions=config.ENABLE_INTERRUPTIONS,
     )
 
-    agent = LiveKitAgentAdapter(pig_agent=pig_agent, **agent_kwargs)
-
-    # Create AgentSession (manages the runtime)
+    # Create AgentSession (manages the STT → bridge.llm_node → TTS pipeline)
     session = AgentSession(
         preemptive_generation=config.ENABLE_PREEMPTIVE_SYNTHESIS,
     )
 
-    logger.info("Agent and session created (VAD + PigAgent + LiveKit pipeline)")
+    logger.info("Agent and session created (VAD + PigAgentVoiceBridge + LiveKit pipeline)")
 
     # ── Interrupt wiring ────────────────────────────────────────────
     # When user starts speaking while agent is responding, trigger
@@ -531,9 +498,9 @@ async def entrypoint(ctx: JobContext):
                 # === TIMING: Record T5 - agent started speaking and log summary ===
                 turn_timing["agent_start_speaking"] = time.perf_counter()
                 # Capture filler yield timestamp from agent if available
-                if hasattr(pig_agent, '_filler_yielded_at') and pig_agent._filler_yielded_at is not None:
-                    turn_timing["filler_yielded"] = pig_agent._filler_yielded_at
-                    pig_agent._filler_yielded_at = None
+                if hasattr(bridge, '_filler_yielded_at') and bridge._filler_yielded_at is not None:
+                    turn_timing["filler_yielded"] = bridge._filler_yielded_at
+                    bridge._filler_yielded_at = None
                 logger.info(f"⏱️ [TIMING] T5: Agent started speaking at {turn_timing['agent_start_speaking']:.3f}")
                 log_turn_timing_summary()
                 # Send signal to frontend for timing
@@ -663,7 +630,6 @@ async def entrypoint(ctx: JobContext):
                 logger.error(f"❌ [SESSION] Close error: {event.error}")
         
         logger.info("✅ Starting voice agent session...")
-        logger.info(f"🔍 [DEBUG] Agent instructions length: {len(instructions)} chars")
         logger.info(f"🔍 [DEBUG] Room participants: {len(ctx.room.remote_participants)}")
         
         
@@ -677,7 +643,7 @@ async def entrypoint(ctx: JobContext):
         )
         
         # Start the session with the agent - this runs the session in background tasks
-        await session.start(agent, room=ctx.room, room_options=room_options)
+        await session.start(bridge, room=ctx.room, room_options=room_options)
         
         logger.info("✅ Session started successfully!")
         logger.info(f"🔍 [DEBUG] Session state - agent: {session.agent_state}, user: {session.user_state}")
@@ -786,13 +752,12 @@ Your response:"""
 
                                 logger.info(f"🔍 [MODE 2] Calling LLM for interrupt generation")
 
-                                # Call LLM using PigAgent's provider
-                                provider = pig_agent.provider
-                                messages = [Message.user(interrupt_prompt)]
+                                # Call LLM via PigAgent stream
+                                from core.llm.types import Message as PigMessage
+                                messages = [PigMessage.user(interrupt_prompt)]
                                 interrupt_msg = ""
-                                async for delta in provider.chat_stream(messages, model=pig_agent.config.model):
-                                    if delta.content:
-                                        interrupt_msg += delta.content
+                                async for text in pig_agent.stream(messages):
+                                    interrupt_msg += text
                                 
                                 interrupt_msg = interrupt_msg.strip()
                                 logger.info(f"🔍 [MODE 2] LLM generated interrupt: '{interrupt_msg[:100]}{'...' if len(interrupt_msg) > 100 else ''}'")
@@ -851,23 +816,6 @@ Your response:"""
         
     # Keep agent running
     logger.info("Agent session started. Press Ctrl+C to stop.")
-
-
-async def handle_text_message(pig_agent, ctx: JobContext, message: str):
-    """Handle text messages via PigAgent"""
-    try:
-        messages = [Message.user(message)]
-        response = await pig_agent.run_once(messages)
-        
-        # Send response back
-        await ctx.room.local_participant.publish_data(
-            response.encode('utf-8'),
-            reliable=True
-        )
-        logger.info(f"🤖 Agent: {response}")
-        
-    except Exception as e:
-        logger.error(f"Error handling text message: {e}")
 
 
 if __name__ == "__main__":

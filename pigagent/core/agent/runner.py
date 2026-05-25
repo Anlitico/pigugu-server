@@ -1,13 +1,9 @@
-﻿# pigagent/core/agent/runner.py
-"""AgentRunner — generic React agent loop with composable stop conditions.
+# pigagent/core/agent/runner.py
+"""AgentRunner — generic ReAct agent loop with composable stop conditions.
 
-Design:
-  - Load context ONCE at start (on_before_step)
-  - Loop in memory: LLM call → tool execution → append results
-  - Flush to Redis/PG ONCE at end (on_after_step, in finally)
-
-This ensures no data loss on interrupt or error, while avoiding
-unnecessary Redis I/O inside the loop.
+Stateless design: all per-call mutable state (current_step, AgentState,
+last_result) is held in local variables. The instance itself is pure config
++ executor — safe to reuse across concurrent calls.
 """
 
 from __future__ import annotations
@@ -52,10 +48,10 @@ class RunnerConfig:
 
 
 class AgentRunner:
-    """Generic React agent loop runner.
+    """ReAct agent loop runner — config + executor, zero per-call allocation.
 
-    Loads context once, runs the tool-calling loop entirely in memory,
-    and flushes all results to Redis/PG once at the end (in finally).
+    All mutable state (step counter, AgentState, last result) is local to
+    each stream() / run() call. The instance is safe for concurrent reuse.
     """
 
     def __init__(self, config: RunnerConfig):
@@ -76,9 +72,9 @@ class AgentRunner:
             max_concurrency=config.max_tool_concurrency,
         )
 
-        self.state = AgentState(status=StateStatus.RUNNING.value)
-        self.current_step: int = 0
-        self.last_result: StepResult | None = None
+        # Read-only snapshot from the last completed call (for logging).
+        self.last_step_count: int = 0
+        self.last_status: str = ""
 
     # ── Public ──────────────────────────────────────────────────────────
 
@@ -100,24 +96,23 @@ class AgentRunner:
         search: dict | None = None,
         interrupt_key: str | None = None,
     ) -> AsyncIterator[str]:
-        """Stream the agent ReAct loop, yielding text chunks in real time.
+        """Stream the ReAct loop, yielding text chunks for TTS.
 
-        Takes messages directly (no ContextManager required).
-        Text from each LLM call is yielded immediately for TTS.
-        Tool execution happens transparently between LLM calls.
+        All state is local — safe for concurrent calls on the same instance.
         """
-        self._interrupt_key = interrupt_key
         msgs = list(messages)
-        self.current_step = 0
-        self.state = AgentState(status=StateStatus.RUNNING.value)
+        state = AgentState(status=StateStatus.RUNNING.value)
 
         try:
-            while not self._should_stop():
-                self.current_step += 1
-                logger.debug(f"[Runner] Stream step {self.current_step}")
+            while not self._should_stop(state):
+                state.current_step += 1
+                step = state.current_step
+                logger.debug(f"[Runner] Stream step {step}")
 
                 provider = get_llm(self._model)
-                openai_tools = [t.to_openai_schema() for t in self._tools] if self._tools else None
+                openai_tools = (
+                    [t.to_openai_schema() for t in self._tools] if self._tools else None
+                )
 
                 collected: list[str] = []
                 tool_calls: list | None = None
@@ -142,13 +137,12 @@ class AgentRunner:
                         finish = delta.finish_reason
 
                 content = "".join(collected)
-                self.last_result = StepResult(
-                    messages=msgs, content=content,
-                    tool_calls=tool_calls, finish_reason=finish,
-                )
+                state.last_had_tool_calls = bool(tool_calls)
 
                 if tool_calls:
-                    msgs.append(self._make_assistant_msg(self.last_result))
+                    msgs.append(self._make_assistant_msg(
+                        StepResult(tool_calls=tool_calls, content=content, finish_reason=finish)
+                    ))
                     exec_result = await self._executor.run(tool_calls)
                     for tr in exec_result.results:
                         msgs.append(Message.tool(
@@ -158,14 +152,22 @@ class AgentRunner:
                         ))
                     continue
 
-                msgs.append(self._make_assistant_msg(self.last_result))
-                self.state.status = StateStatus.SUCCESS.value
+                msgs.append(self._make_assistant_msg(
+                    StepResult(content=content, finish_reason=finish)
+                ))
+                state.status = StateStatus.SUCCESS.value
+                self.last_step_count = state.current_step
+                self.last_status = state.status
                 return
 
         except InterruptedException:
-            self.state.status = StateStatus.INTERRUPTED.value
+            state.status = StateStatus.INTERRUPTED.value
+            self.last_step_count = state.current_step
+            self.last_status = state.status
         except Exception:
-            self.state.status = StateStatus.ERROR.value
+            state.status = StateStatus.ERROR.value
+            self.last_step_count = state.current_step
+            self.last_status = state.status
             raise
 
     # ── Internal: interrupt-guarded loop ────────────────────────────────
@@ -207,9 +209,9 @@ class AgentRunner:
                     await loop_task
                 except asyncio.CancelledError:
                     pass
-                self.state.status = StateStatus.INTERRUPTED.value
+                self.last_status = StateStatus.INTERRUPTED.value
                 logger.info(f"[Runner] Interrupted: {key}")
-                return self.last_result or StepResult(finish_reason="interrupted")
+                return StepResult(finish_reason="interrupted")
         finally:
             manager.cleanup(key)
 
@@ -220,21 +222,22 @@ class AgentRunner:
     ) -> StepResult:
         """Load context once, loop in memory, flush in finally."""
         messages: list = []
+        state = AgentState(status=StateStatus.RUNNING.value)
+        last_result: StepResult | None = None
 
         try:
             loaded = await on_before_step()
             messages = list(loaded) if loaded else []
-            while not self._should_stop():
-                self.current_step += 1
-                logger.debug(f"[Runner] Step {self.current_step}")
+            while not self._should_stop(state):
+                state.current_step += 1
+                logger.debug(f"[Runner] Step {state.current_step}")
 
                 result = await self._run_step(messages)
-                self.last_result = result
+                last_result = result
+                state.last_had_tool_calls = bool(result.tool_calls)
 
                 if result.tool_calls:
-                    # Record assistant message with tool calls
                     messages.append(self._make_assistant_msg(result))
-                    # Execute tools, append results to messages
                     exec_result = await self._executor.run(result.tool_calls)
                     for tr in exec_result.results:
                         messages.append(Message.tool(
@@ -244,34 +247,36 @@ class AgentRunner:
                         ))
                     continue
 
-                # No tool calls — final answer, exit loop
                 messages.append(self._make_assistant_msg(result))
                 break
 
         except InterruptedException:
-            self.state.status = StateStatus.INTERRUPTED.value
-            logger.info(f"[Runner] Interrupted at step {self.current_step}")
+            state.status = StateStatus.INTERRUPTED.value
+            logger.info(f"[Runner] Interrupted at step {state.current_step}")
         except Exception as e:
-            logger.error(f"[Runner] Step {self.current_step} failed: {e}")
-            self.state.status = StateStatus.ERROR.value
+            logger.error(f"[Runner] Step {state.current_step} failed: {e}")
+            state.status = StateStatus.ERROR.value
         finally:
-            if self.state.is_running:
-                self.state.status = StateStatus.SUCCESS.value
-            # Flush all messages to Redis/PG — guaranteed execution
-            await on_after_step(messages, self.state)
+            if state.is_running:
+                state.status = StateStatus.SUCCESS.value
+            await on_after_step(messages, state)
+            self.last_step_count = state.current_step
+            self.last_status = state.status
             logger.info(
-                f"[Runner] Loop ended: {self.current_step} steps, "
-                f"status={self.state.status}, flushed {len(messages)} messages"
+                f"[Runner] Loop ended: {state.current_step} steps, "
+                f"status={state.status}, flushed {len(messages)} messages"
             )
 
-        return self.last_result or StepResult()
+        return last_result or StepResult()
 
-    # ── Internal: single step (non-streaming) ────────────────────────────
+    # ── Internal: single step (non-streaming) ───────────────────────────
 
     async def _run_step(self, messages: list[Message]) -> StepResult:
         """Execute a single LLM call and parse the response."""
         provider = get_llm(self._model)
-        openai_tools = [t.to_openai_schema() for t in self._tools] if self._tools else None
+        openai_tools = (
+            [t.to_openai_schema() for t in self._tools] if self._tools else None
+        )
 
         response: ChatResponse = await provider.chat(
             messages=messages,
@@ -295,10 +300,10 @@ class AgentRunner:
 
     # ── Internal: helpers ───────────────────────────────────────────────
 
-    def _should_stop(self) -> bool:
+    def _should_stop(self, state: AgentState) -> bool:
         for condition in self._stop_when:
             try:
-                if condition(self):
+                if condition(state):
                     logger.info(
                         f"[Runner] Stop condition met: "
                         f"{getattr(condition, '__name__', condition)}"
