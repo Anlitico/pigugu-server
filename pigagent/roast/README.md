@@ -41,7 +41,7 @@ API request (user starts game):
                                   extra=game_mode.init_extra(), redis=redis)
 
 Each user turn (PigAgent.generate_reply):
-  1. prompt = await consume_pending_prompt(state.roast_id, redis)
+  1. prompt = await consume_pending_prompt(state.roast_instance_id, redis)
   2. stream(messages) → LLM reply
   3. asyncio.create_task(game_mode.tick(state, records, redis))
 
@@ -63,5 +63,5 @@ Game end:
 | Key | Backend | Purpose |
 |-----|---------|---------|
 | `roast:state:active:{user_id}` | Redis | Current session (TTL 24h) |
-| `roast:{roast_id}:pending_prompt` | Redis | Trigger prompt for next turn |
+| `roast:{roast_instance_id}:pending_prompt` | Redis | Trigger prompt for next turn |
 | `roast_states` table | PG | Historical records (async write) |

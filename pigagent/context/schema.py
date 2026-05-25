@@ -23,7 +23,7 @@ from core.agent.sanitize import _len_fallback, validate_tool_calls
 class ConversationRecord:
     """A stored turn — Redis/PG intermediate between Message and AgentConversation.
 
-    turn_number is the global counter. roast_id is embedded in the data
+    turn_number is the global counter. roast_instance_id is embedded in the data
     so assembly can determine boundaries without reading meta.
     """
 
@@ -31,7 +31,7 @@ class ConversationRecord:
     role: str
     content: str
     created_at: float                       # time.time() when recorded
-    roast_id: str | None = None            # None = free chat, str = in this roast
+    roast_instance_id: str | None = None            # None = free chat, str = in this roast
     tool_calls: list | None = None         # [{"id":..., "name":..., "arguments":...}]
     tool_call_id: str | None = None
     name: str | None = None
@@ -52,8 +52,8 @@ class ConversationRecord:
     def to_dict(self) -> dict:
         import json
         d = {"turn": self.turn_number, "role": self.role, "content": self.content}
-        if self.roast_id:
-            d["roast_id"] = self.roast_id
+        if self.roast_instance_id:
+            d["roast_instance_id"] = self.roast_instance_id
         if self.tool_calls:
             d["tool_calls"] = json.dumps(self.tool_calls, ensure_ascii=False)
         if self.tool_call_id:
@@ -76,7 +76,7 @@ class ConversationRecord:
             turn_number=d["turn"],
             role=d["role"],
             content=d["content"],
-            roast_id=d.get("roast_id"),
+            roast_instance_id=d.get("roast_instance_id"),
             created_at=d.get("ts", 0.0),
             tool_calls=tcs,
             tool_call_id=d.get("tool_call_id"),
@@ -178,16 +178,16 @@ class UserMemory:
 
 @dataclass
 class RoastContext:
-    """Active roast data. Loaded when the latest record has an active roast_id.
+    """Active roast data. Loaded when the latest record has an active roast_instance_id.
 
     4a — prompt: RAW game rules, preserved verbatim by L4 compression (never passed to LLM).
     4b — summary: L4-compressed gameplay history.
 
-    Roast lifecycle is data-driven: active while records carry roast_id,
-    ends via 24h staleness or new roast_id. No explicit cleanup needed.
+    Roast lifecycle is data-driven: active while records carry roast_instance_id,
+    ends via 24h staleness or new roast_instance_id. No explicit cleanup needed.
     """
 
-    roast_id: str
+    roast_instance_id: str
     prompt: str = ""
     turns: list = field(default_factory=list)
     summary: str = ""
@@ -201,11 +201,11 @@ class RoastContext:
 
     @property
     def is_active(self) -> bool:
-        return bool(self.roast_id)
+        return bool(self.roast_instance_id)
 
     def to_meta(self) -> dict:
         return {
-            "roast_id": self.roast_id,
+            "roast_instance_id": self.roast_instance_id,
             "prompt_tokens": self.prompt_tokens,
             "turns_tokens": self.turns_tokens,
             "summary_tokens": self.summary_tokens,

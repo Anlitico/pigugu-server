@@ -25,9 +25,9 @@ class RoastState:
 
     user_id: str
     persona_id: str
-    news_id: str
+    roast_id: str
     mode: Mode
-    roast_id: str = field(default_factory=lambda: str(uuid.uuid4()))
+    roast_instance_id: str = field(default_factory=lambda: str(uuid.uuid4()))
     phase: Phase = Phase.ACTIVE
     turn_count: int = 0
     extra: dict[str, Any] = field(default_factory=dict)
@@ -36,10 +36,10 @@ class RoastState:
 
     def to_dict(self) -> dict[str, Any]:
         return {
-            "roast_id": self.roast_id,
+            "roast_instance_id": self.roast_instance_id,
             "user_id": self.user_id,
             "persona_id": self.persona_id,
-            "news_id": self.news_id,
+            "roast_id": self.roast_id,
             "mode": str(self.mode),
             "phase": str(self.phase),
             "turn_count": self.turn_count,
@@ -51,9 +51,9 @@ class RoastState:
         state = cls.__new__(cls)
         state.user_id = data["user_id"]
         state.persona_id = data.get("persona_id", "")
-        state.news_id = data.get("news_id", "")
+        state.roast_id = data.get("roast_id", "")
         state.mode = Mode(data["mode"]) if isinstance(data["mode"], str) else data["mode"]
-        state.roast_id = data["roast_id"]
+        state.roast_instance_id = data["roast_instance_id"]
         state.phase = Phase(data["phase"]) if isinstance(data["phase"], str) else data["phase"]
         state.turn_count = data.get("turn_count", 0)
         state.extra = data.get("extra", {})
@@ -66,7 +66,7 @@ class RoastState:
         cls,
         user_id: str,
         persona_id: str,
-        news_id: str,
+        roast_id: str,
         mode: Mode,
         *,
         extra: dict[str, Any] | None = None,
@@ -85,20 +85,20 @@ class RoastState:
             if pg_pool:
                 await cls._save_history(prev, pg_pool)
             await cls._delete_active(user_id, redis)
-            logger.info(f"[RoastState] Closed previous: {prev.roast_id}")
+            logger.info(f"[RoastState] Closed previous: {prev.roast_instance_id}")
 
         state = cls.__new__(cls)
         state.user_id = user_id
         state.persona_id = persona_id
-        state.news_id = news_id
+        state.roast_id = roast_id
         state.mode = mode
-        state.roast_id = str(uuid.uuid4())
+        state.roast_instance_id = str(uuid.uuid4())
         state.phase = Phase.ACTIVE
         state.turn_count = 0
         state.extra = dict(extra) if extra else {}
 
         await state._save_active(redis)
-        logger.info(f"[RoastState] Started: {state.roast_id} mode={mode.value}")
+        logger.info(f"[RoastState] Started: {state.roast_instance_id} mode={mode.value}")
         return state
 
     # ── Persistence ──────────────────────────────────────────────────────
@@ -150,18 +150,18 @@ class RoastState:
             async with pg_pool.acquire() as conn:
                 await conn.execute(
                     """
-                    INSERT INTO roast_states (roast_id, user_id, persona_id, news_id,
+                    INSERT INTO roast_states (roast_instance_id, user_id, persona_id, roast_id,
                         mode, phase, turn_count, extra)
                     VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-                    ON CONFLICT (roast_id) DO UPDATE SET
+                    ON CONFLICT (roast_instance_id) DO UPDATE SET
                         phase = EXCLUDED.phase,
                         turn_count = EXCLUDED.turn_count,
                         extra = EXCLUDED.extra
                     """,
-                    state.roast_id,
+                    state.roast_instance_id,
                     state.user_id,
                     state.persona_id,
-                    state.news_id,
+                    state.roast_id,
                     str(state.mode),
                     str(state.phase),
                     state.turn_count,

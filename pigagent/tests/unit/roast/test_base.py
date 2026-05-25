@@ -87,9 +87,9 @@ class TestGameModeTick:
         s = RoastState.__new__(RoastState)
         s.user_id = "u1"
         s.persona_id = "trump"
-        s.news_id = "n1"
+        s.roast_id = "n1"
         s.mode = Mode.ROAST_TOGETHER
-        s.roast_id = "test-id"
+        s.roast_instance_id = "test-id"
         s.phase = kw.pop("phase", Phase.ACTIVE)
         s.turn_count = kw.pop("turn_count", 0)
         s.extra = kw.pop("extra", {})

@@ -3,8 +3,8 @@
 
 All position info is embedded in the data:
   - turn_count → last ConversationRecord.turn_number
-  - roast_id   → ConversationRecord.roast_id
-  - roast start/end → inferred from roast_id transitions
+  - roast_instance_id   → ConversationRecord.roast_instance_id
+  - roast start/end → inferred from roast_instance_id transitions
   - anchor     → SummaryRecord.end_turn
   - compressing → ctx:u1:compressing (independent key)
 """
@@ -85,17 +85,17 @@ class ContextManager:
             tool_calls=tool_calls, tool_call_id=tool_call_id,
             name=name, partial=partial,
         )
-        await self._assign_roast_id(user_id, record)
+        await self._assign_roast_instance_id(user_id, record)
 
         data = json.dumps(record.to_dict(), ensure_ascii=False)
         await store.push_turn(data)
 
         if self._pg_pool:
-            asyncio.create_task(pg.flush_one(turn_count, record.to_message(), record.roast_id))
+            asyncio.create_task(pg.flush_one(turn_count, record.to_message(), record.roast_instance_id))
 
-    async def _assign_roast_id(self, user_id: str, current: ConversationRecord) -> None:
+    async def _assign_roast_instance_id(self, user_id: str, current: ConversationRecord) -> None:
         history = await self._store(user_id).get_hot_turns(20)
-        RoastState.assign_roast_id(history, current)
+        RoastState.assign_roast_instance_id(history, current)
 
     # ── Context Assembly ──────────────────────────────────────────────
 
@@ -125,8 +125,8 @@ class ContextManager:
 
         wc.raw_turns = [_record_to_msg(r) for r in raw_records]
 
-        if snap.roast_id:
-            wc.roast = await self._load_roast_context(user_id, snap.roast_id)
+        if snap.roast_instance_id:
+            wc.roast = await self._load_roast_context(user_id, snap.roast_instance_id)
 
         # Compression trigger — same records, fire-and-forget
         if not await store.is_compressing() and raw_records:
@@ -142,9 +142,9 @@ class ContextManager:
 
     # ── Layer 4: Roast Context ────────────────────────────────────────
 
-    async def _load_roast_context(self, user_id: str, roast_id: str) -> RoastContext:
+    async def _load_roast_context(self, user_id: str, roast_instance_id: str) -> RoastContext:
         store = self._store(user_id)
-        rc = RoastContext(roast_id=roast_id)
+        rc = RoastContext(roast_instance_id=roast_instance_id)
         try:
             rc.prompt = await store.read_roast_prompt()
             rc.summary = await store.read_roast_summary()

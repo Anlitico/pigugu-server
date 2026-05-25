@@ -60,21 +60,21 @@ class ContextSnapshot:
 
     @property
     def roast_start_idx(self) -> int | None:
-        """Index of the first record with a roast_id, or None."""
+        """Index of the first record with a roast_instance_id, or None."""
         for i, r in enumerate(self.records):
-            if r.roast_id:
+            if r.roast_instance_id:
                 return i
         return None
 
     @property
     def scenario(self) -> str:
-        """'roast' if the most recent record has an active roast_id."""
+        """'roast' if the most recent record has an active roast_instance_id."""
         return "roast" if RoastState.is_active(self.records) else "free_chat"
 
     @property
-    def roast_id(self) -> str:
-        """Current roast_id, or empty string."""
-        return RoastState.current_roast_id(self.records) or ""
+    def roast_instance_id(self) -> str:
+        """Current roast_instance_id, or empty string."""
+        return RoastState.current_roast_instance_id(self.records) or ""
 
     @property
     def pre_roast(self) -> list[ConversationRecord]:

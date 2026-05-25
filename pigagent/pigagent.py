@@ -5,13 +5,14 @@ game mode triggers). The voice bridge (lk.bridge) handles the LiveKit
 pipeline adaptation — PigAgent itself has zero LiveKit dependency.
 
 Public API:
-    agent.generate_reply(user_text, user_id, persona_id)  — high-level entry
+    agent.generate_reply(user_id, user_text, persona_id)  — high-level entry
     agent.stream(messages, persona_id)                    — low-level ReAct loop
-    agent.start_roast(user_id, persona_id, news_id, mode) — begin roast game
+    agent.start_roast(user_id, persona_id, roast_id, mode_id) — begin roast game
 """
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import AsyncIterator
 from typing import Any
 
@@ -21,9 +22,12 @@ from core.llm.types import Message
 from core.agent.runner import AgentRunner, RunnerConfig
 from core.agent.stop import StepResult, no_tool_calls
 from context.manager import ContextManager
+from roast.pending import consume
+from roast.state import RoastState
+from roast.types import Mode
 
-_ROAST_USER_TAG = "[系统提示 — 游戏背景]"
-_ROAST_TRIGGER_TAG = "[系统提示]"
+_ROAST_USER_TAG = "[System — Game Background]"
+_ROAST_TRIGGER_TAG = "[System]"
 
 
 class PigAgent:
@@ -90,9 +94,9 @@ class PigAgent:
 
     async def generate_reply(
         self,
+        user_id: str,
         user_text: str,
         *,
-        user_id: str = "",
         persona_id: str = "",
     ) -> AsyncIterator[str]:
         """Complete reply pipeline: load context → assemble → stream → persist.
@@ -185,28 +189,26 @@ class PigAgent:
         self,
         user_id: str,
         persona_id: str,
-        news_id: str,
+        roast_id: str,
         mode_id: str,
-        *,
-        news_content: str = "",
-    ) -> dict | None:
-        """Start a roast game session. Persists roast body to context.
+        prompt: str,
+    ) -> AsyncIterator[str]:
+        """Start a roast game and stream the opening reply.
 
-        The roast body (news background + game rules) is saved as a tagged
-        user message so it loads naturally via ctx.load() in subsequent turns.
+        Called by the API service after resolving the scenario from PG.
+        Creates the roast session, persists the roast body to context,
+        then triggers generate_reply() to deliver the opening lines.
+        Yields text chunks for TTS playback.
         """
         game_mode = self._game_modes.get(mode_id)
         if game_mode is None:
             logger.error(f"[PigAgent] Unknown game mode: {mode_id}")
-            return None
-
-        from roast.state import RoastState
-        from roast.types import Mode
+            return
 
         state = await RoastState.start(
             user_id=user_id,
             persona_id=persona_id,
-            news_id=news_id,
+            roast_id=roast_id,
             mode=Mode(mode_id),
             extra=game_mode.init_extra() if hasattr(game_mode, "init_extra") else None,
             redis=self._redis,
@@ -216,7 +218,7 @@ class PigAgent:
         # Persist roast body to context — loaded automatically on each turn
         roast_body = self._build_roast_body(
             game_mode=game_mode,
-            news_content=news_content,
+            prompt=prompt,
         )
         if roast_body and self.ctx:
             try:
@@ -229,14 +231,19 @@ class PigAgent:
                 logger.error(f"[PigAgent] Failed to persist roast body: {e}")
 
         logger.info(
-            f"[PigAgent] Roast started: {state.roast_id} "
-            f"mode={mode_id} user={user_id}"
+            f"[PigAgent] Roast started: {state.roast_instance_id} "
+            f"roast_id={roast_id} mode={mode_id} user={user_id}"
         )
-        return state.to_dict()
+
+        # Trigger opening reply — roast body is already in context
+        async for text in self.generate_reply(
+            user_id, "Game start",
+            persona_id=persona_id,
+        ):
+            yield text
 
     async def get_active_roast(self, user_id: str):
         try:
-            from roast.state import RoastState
             return await RoastState._load_active(user_id, self._redis)
         except Exception as e:
             logger.warning(f"[PigAgent] get_active_roast failed: {e}")
@@ -244,11 +251,10 @@ class PigAgent:
 
     async def close_roast(self, user_id: str) -> None:
         try:
-            from roast.state import RoastState
             state = await RoastState._load_active(user_id, self._redis)
             if state:
                 await state.close(self._redis, self._pg_pool)
-                logger.info(f"[PigAgent] Roast closed: {state.roast_id}")
+                logger.info(f"[PigAgent] Roast closed: {state.roast_instance_id}")
         except Exception as e:
             logger.error(f"[PigAgent] close_roast failed: {e}")
 
@@ -267,8 +273,7 @@ class PigAgent:
         """
         # 1. Consume pending trigger prompt
         try:
-            from roast.pending import consume
-            pending_prompt = await consume(roast_state.roast_id, self._redis)
+            pending_prompt = await consume(roast_state.roast_instance_id, self._redis)
             if pending_prompt:
                 messages.append(Message.user(
                     f"{_ROAST_TRIGGER_TAG}\n{pending_prompt}"
@@ -280,7 +285,11 @@ class PigAgent:
         async for text in self.runner.stream(messages):
             yield text
 
-        # 3. Tick — check triggers
+        # 3. Tick — fire-and-forget, don't block the reply
+        asyncio.create_task(self._tick_roast(roast_state, game_mode, messages))
+
+    async def _tick_roast(self, roast_state, game_mode, messages) -> None:
+        """Background: advance state, check triggers, persist."""
         try:
             triggered = await game_mode.tick(
                 roast_state, records=messages,
@@ -307,13 +316,13 @@ class PigAgent:
         except Exception as e:
             logger.error(f"[PigAgent] save_turn failed: {e}")
 
-    def _build_roast_body(self, *, game_mode, news_content: str = "") -> str:
+    def _build_roast_body(self, *, game_mode, prompt: str = "") -> str:
         parts: list[str] = []
-        if news_content.strip():
-            parts.append(f"## 新闻背景\n{news_content.strip()}")
+        if prompt.strip():
+            parts.append(f"## News Context\n{prompt.strip()}")
         ext = getattr(game_mode, "system_prompt_extension", "")
         if ext:
-            parts.append(f"## 游戏模式\n{ext}")
+            parts.append(f"## Game Mode\n{ext}")
         return "\n\n".join(parts)
 
     # ── Context-managed run (standalone, non-LiveKit) ─────────────────

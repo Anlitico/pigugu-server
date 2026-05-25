@@ -104,7 +104,8 @@ class PigAgentVoiceBridge:
         """Extract user text, delegate to PigAgent, yield for TTS."""
         user_text = self._extract_user_text(chat_ctx)
         async for text in self._pig.generate_reply(
-            user_text, user_id=self._user_id, persona_id=self._persona_id,
+            self._user_id, user_text,
+            persona_id=self._persona_id,
         ):
             yield text
 

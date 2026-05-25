@@ -107,14 +107,14 @@ class GameMode(ABC):
 
     async def _emit(self, state: RoastState, trigger: Trigger, prompt: str, redis) -> None:
         """Write trigger prompt and update state."""
-        await pending.write(state.roast_id, prompt, redis)
+        await pending.write(state.roast_instance_id, prompt, redis)
 
         if trigger.affects_phase:
             state.phase = Phase.REVIEW
 
         logger.info(
             f"[{self.mode}] Triggered: {trigger.name} "
-            f"roast={state.roast_id} turn={state.turn_count}"
+            f"roast={state.roast_instance_id} turn={state.turn_count}"
         )
 
     # ── Scoring ─────────────────────────────────────────────────────────

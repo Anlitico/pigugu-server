@@ -282,13 +282,13 @@ class TestRedisStorage:
 
     @pytest.mark.asyncio
     async def test_read_roast_meta_returns_dict(self, store, redis_mock):
-        redis_mock.hgetall.return_value = {b"roast_id": b"rx", b"turn_count": b"3"}
+        redis_mock.hgetall.return_value = {b"roast_instance_id": b"rx", b"turn_count": b"3"}
         result = await store.read_roast_meta()
-        assert result == {"roast_id": "rx", "turn_count": "3"}
+        assert result == {"roast_instance_id": "rx", "turn_count": "3"}
 
     @pytest.mark.asyncio
     async def test_write_roast_meta(self, store, redis_mock):
-        await store.write_roast_meta({"roast_id": "rx"})
+        await store.write_roast_meta({"roast_instance_id": "rx"})
         redis_mock.hset.assert_called_once()
 
     @pytest.mark.asyncio

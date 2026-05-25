@@ -31,7 +31,7 @@ class PgStorage:
 
     # ── Turns ──────────────────────────────────────────────────────
 
-    async def flush_one(self, turn_number: int, turn: Message, roast_id: str | None) -> None:
+    async def flush_one(self, turn_number: int, turn: Message, roast_instance_id: str | None) -> None:
         if not self._pg:
             return
         try:
@@ -39,14 +39,14 @@ class PgStorage:
                 await conn.execute(
                     """INSERT INTO agent_conversations
                        (user_id, turn_number, role, content,
-                        tool_calls, tool_call_id, name, partial, roast_id)
+                        tool_calls, tool_call_id, name, partial, roast_instance_id)
                        VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7, $8, $9)
                        ON CONFLICT (user_id, turn_number) DO NOTHING""",
                     self._user_id, turn_number,
                     turn.role, turn.content,
                     _serialize_tool_calls(turn.tool_calls),
                     turn.tool_call_id, turn.name, turn.partial,
-                    roast_id,
+                    roast_instance_id,
                 )
         except Exception as e:
             logger.warning(f"PG flush_one failed: {e}")
@@ -57,18 +57,18 @@ class PgStorage:
         try:
             async with self._pg.acquire() as conn:
                 async with conn.transaction():
-                    for turn_number, turn, roast_id in batch:
+                    for turn_number, turn, roast_instance_id in batch:
                         await conn.execute(
                             """INSERT INTO agent_conversations
                                (user_id, turn_number, role, content,
-                                tool_calls, tool_call_id, name, partial, roast_id)
+                                tool_calls, tool_call_id, name, partial, roast_instance_id)
                                VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7, $8, $9)
                                ON CONFLICT (user_id, turn_number) DO NOTHING""",
                             self._user_id, turn_number,
                             turn.role, turn.content,
                             _serialize_tool_calls(turn.tool_calls),
                             turn.tool_call_id, turn.name, turn.partial,
-                            roast_id,
+                            roast_instance_id,
                         )
             logger.debug(f"Flushed {len(batch)} turns to PG")
         except Exception as e:
@@ -80,18 +80,18 @@ class PgStorage:
         try:
             async with self._pg.acquire() as conn:
                 async with conn.transaction():
-                    for turn_number, turn, roast_id in turns:
+                    for turn_number, turn, roast_instance_id in turns:
                         await conn.execute(
                             """INSERT INTO agent_conversations
                                (user_id, turn_number, role, content,
-                                tool_calls, tool_call_id, name, partial, roast_id)
+                                tool_calls, tool_call_id, name, partial, roast_instance_id)
                                VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7, $8, $9)
                                ON CONFLICT (user_id, turn_number) DO NOTHING""",
                             self._user_id, turn_number,
                             turn.role, turn.content,
                             _serialize_tool_calls(turn.tool_calls),
                             turn.tool_call_id, turn.name, turn.partial,
-                            roast_id,
+                            roast_instance_id,
                         )
             logger.info(f"Persisted {len(turns)} turns to PG")
         except Exception as e:
