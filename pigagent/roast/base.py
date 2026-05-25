@@ -117,8 +117,3 @@ class GameMode(ABC):
             f"roast={state.roast_instance_id} turn={state.turn_count}"
         )
 
-    # ── Scoring ─────────────────────────────────────────────────────────
-
-    def score(self, state: RoastState) -> dict:
-        """Calculate mode-specific scores."""
-        return {"mode": str(self.mode)}

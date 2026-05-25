@@ -18,12 +18,9 @@ from tools.search.base import SearchProvider, SearchResult
 from tools.search.perplexity import PerplexityProvider
 from tools.search.tavily import TavilyProvider
 
-from tools.search.utils import build_search_messages
-
 __all__ = [
     "SearchProvider",
     "SearchResult",
     "PerplexityProvider",
     "TavilyProvider",
-    "build_search_messages",
 ]

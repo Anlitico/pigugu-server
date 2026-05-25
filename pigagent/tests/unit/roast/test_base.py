@@ -72,11 +72,6 @@ class TestGameModeBase:
         state.turn_count = 1
         assert not mode.triggers[0].check(state, [])
 
-    def test_default_score(self):
-        mode = _MinimalMode()
-        state = RoastState.__new__(RoastState)
-        state.user_id = "u1"
-        assert mode.score(state) == {"mode": "roast_together"}
 
 
 class TestGameModeTick:

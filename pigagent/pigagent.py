@@ -20,7 +20,7 @@ from loguru import logger
 
 from core.llm.types import Message
 from core.agent.runner import AgentRunner, RunnerConfig
-from core.agent.stop import StepResult, no_tool_calls
+from core.agent.stop import no_tool_calls
 from context.manager import ContextManager
 from roast.pending import consume
 from roast.state import RoastState
@@ -325,69 +325,7 @@ class PigAgent:
             parts.append(f"## Game Mode\n{ext}")
         return "\n\n".join(parts)
 
-    # ── Context-managed run (standalone, non-LiveKit) ─────────────────
-
-    async def run(
-        self, *, user_id: str, persona_id: int = 1,
-        interrupt_key: str | None = None,
-    ) -> StepResult:
-        """Non-streaming run with context hooks."""
-        ctx = self._require_ctx()
-        prompt = self._prompts.get(persona_id, "")
-        initial_count = 0
-
-        async def _load_context() -> list[Message]:
-            nonlocal initial_count
-            context = await ctx.load(user_id=user_id)
-            if prompt:
-                context.insert(0, Message.system(prompt))
-            initial_count = len(context)
-            return context
-
-        async def _flush_all(messages: list, state) -> None:
-            for msg in messages[initial_count:]:
-                tool_calls = None
-                if msg.tool_calls:
-                    tool_calls = [
-                        {"id": tc.id, "name": tc.name, "arguments": tc.arguments}
-                        for tc in msg.tool_calls
-                    ]
-                await ctx.add_turn(
-                    user_id=user_id, role=msg.role, content=msg.content,
-                    tool_calls=tool_calls, tool_call_id=msg.tool_call_id,
-                    name=msg.name,
-                )
-
-        logger.info(f"[PigAgent] Starting run for user={user_id}")
-        result = await self.runner.run(
-            on_before_step=_load_context, on_after_step=_flush_all,
-        )
-        logger.info(
-            f"[PigAgent] Run complete: {self.runner.last_step_count} steps, "
-            f"status={self.runner.last_status}"
-        )
-        return result
-
-    # ── Context helpers ────────────────────────────────────────────────
-
     def _require_ctx(self) -> ContextManager:
         if self.ctx is None:
             raise RuntimeError("PigAgent created without ContextManager")
         return self.ctx
-
-    async def load(self, *, user_id: str) -> list[Message]:
-        return await self._require_ctx().load(user_id=user_id)
-
-    async def add_turn(
-        self, user_id: str, role: str, content: str, *,
-        tool_calls: list | None = None, tool_call_id: str | None = None,
-        name: str | None = None, partial: bool = False,
-    ) -> None:
-        await self._require_ctx().add_turn(
-            user_id=user_id, role=role, content=content,
-            tool_calls=tool_calls, tool_call_id=tool_call_id,
-            name=name, partial=partial,
-        )
-
-    async def write_game_state(self, *, user_id: str, state: dict) -> None:
-        await self._require_ctx().write_game_state(user_id=user_id, state=state)
