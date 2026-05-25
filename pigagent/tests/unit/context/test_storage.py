@@ -520,6 +520,7 @@ class TestPgStorage:
         tcs = [ToolCall(id="c1", name="f", arguments="{}")]
         result = _serialize_tool_calls(tcs)
         import json
+        assert result is not None
         data = json.loads(result)
         assert data[0]["id"] == "c1"
         assert data[0]["name"] == "f"

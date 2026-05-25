@@ -4,7 +4,6 @@
 from __future__ import annotations
 
 import os
-from typing import AsyncIterator
 
 from ..provider import LLMProvider
 from ..registry import ModelRegistry
@@ -102,7 +101,7 @@ class VolcengineProvider(LLMProvider):
         search: dict | None = None,
         response_format: dict | None = None,
         **kwargs,
-    ) -> AsyncIterator[ChatDelta]:
+    ):
         self._validate(tools, thinking, search, model=model)
         params = self._build_params(
             messages, tools, tool_choice, parallel_tool_calls,
@@ -266,7 +265,7 @@ class VolcengineProvider(LLMProvider):
         if not text:
             return 0
         try:
-            resp = await self._client.post(
+            resp = await self._client.post(  # type: ignore[reportCallIssue]
                 f"{self._base_url}/tokenizer",
                 json={"model": "doubao-seed-1-6-251015", "input": text},
             )

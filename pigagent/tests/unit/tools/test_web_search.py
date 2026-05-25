@@ -4,11 +4,11 @@ import asyncio
 
 from core.agent.registry import ToolRegistry
 from core.llm.types import ToolSpec
-from tools.search.base import SearchResult
+from tools.search.base import SearchProvider, SearchResult
 from tools.web_search import create_web_search_tool
 
 
-class FakeProvider:
+class FakeProvider(SearchProvider):
     """Mock SearchProvider that returns canned results."""
 
     async def search(self, query: str) -> SearchResult:

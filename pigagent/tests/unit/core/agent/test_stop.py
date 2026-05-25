@@ -16,6 +16,7 @@ class TestStepResult:
         from core.agent.stop import StepResult
         tc = ToolCall(id="1", name="test", arguments="{}")
         r = StepResult(tool_calls=[tc], finish_reason="tool_calls", content="let me check")
+        assert r.tool_calls is not None
         assert len(r.tool_calls) == 1
         assert r.content == "let me check"
 

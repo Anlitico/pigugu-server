@@ -13,7 +13,7 @@ class TestLenFallback:
 
     def test_none(self):
         from core.agent.sanitize import _len_fallback
-        assert _len_fallback(None) == 0
+        assert _len_fallback(None) == 0  # type: ignore[reportArgumentType]
 
 
 class TestValidateToolCalls:

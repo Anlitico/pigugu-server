@@ -23,6 +23,7 @@ class TestTrigger:
         )
         state = RoastState.__new__(RoastState)
         state.turn_count = 3
+        assert callable(t.prompt)
         assert t.prompt(state) == "turn 3"
 
     def test_check(self):

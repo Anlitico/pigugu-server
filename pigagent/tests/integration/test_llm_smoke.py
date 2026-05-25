@@ -54,7 +54,7 @@ class TestQwenPlus:
         _need(self.ENV)
         p = get_llm(self.MODEL)
         chunks = []
-        async for d in p.chat_stream(
+        async for d in p.chat_stream(  # type: ignore[reportGeneralTypeIssues]
             model=self.MODEL,
             messages=[Message.user("Count from 1 to 5.")],
             max_tokens=100,
@@ -155,7 +155,7 @@ class TestQwen36Flash:
         _need(self.ENV)
         p = get_llm(self.MODEL)
         chunks = []
-        async for d in p.chat_stream(
+        async for d in p.chat_stream(  # type: ignore[reportGeneralTypeIssues]
             model=self.MODEL,
             messages=[Message.user("Count from 1 to 5.")],
             max_tokens=100,
@@ -210,7 +210,7 @@ class TestQwen36Plus:
         _need(self.ENV)
         p = get_llm(self.MODEL)
         chunks = []
-        async for d in p.chat_stream(
+        async for d in p.chat_stream(  # type: ignore[reportGeneralTypeIssues]
             model=self.MODEL,
             messages=[Message.user("Count from 1 to 5.")],
             max_tokens=100,
@@ -265,7 +265,7 @@ class TestDoubaoSeed:
         _need(self.ENV)
         p = get_llm(self.MODEL)
         chunks = []
-        async for d in p.chat_stream(
+        async for d in p.chat_stream(  # type: ignore[reportGeneralTypeIssues]
             model=self.MODEL,
             messages=[Message.user("Count from 1 to 5.")],
             max_tokens=100,

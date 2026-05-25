@@ -4,7 +4,7 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from typing import AsyncIterator
+from collections.abc import AsyncIterator
 
 from .types import Message, ChatResponse, ChatDelta
 
@@ -130,7 +130,7 @@ class LLMProvider(ABC):
         """非流式调用"""
 
     @abstractmethod
-    async def chat_stream(
+    def chat_stream(
         self,
         messages: list[Message],
         *,
@@ -148,7 +148,7 @@ class LLMProvider(ABC):
         response_format: dict | None = None,
         **kwargs,
     ) -> AsyncIterator[ChatDelta]:
-        """流式调用"""
+        """Streaming call. Implementations are async generators."""
 
     # ── Token Counting ───────────────────────────────────────────────
     #

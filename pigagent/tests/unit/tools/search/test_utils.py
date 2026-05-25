@@ -35,7 +35,7 @@ class TestNormalizeRole:
     def test_empty_and_none(self):
         from tools.search.utils import _normalize_role
         assert _normalize_role("") == "user"
-        assert _normalize_role(None) == "user"
+        assert _normalize_role(None) == "user"  # type: ignore[reportArgumentType]
 
 
 class TestBuildSearchMessages:

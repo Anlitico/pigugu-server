@@ -65,8 +65,8 @@ class _ConcreteProvider(LLMProvider):
     def base_url(self) -> str:
         return "http://test"
 
-    async def chat(self, **kwargs):
+    async def chat(self, messages, *, model, **kwargs):
         raise NotImplementedError
 
-    async def chat_stream(self, **kwargs):
+    def chat_stream(self, messages, *, model, **kwargs):
         raise NotImplementedError
