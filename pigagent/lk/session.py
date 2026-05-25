@@ -11,16 +11,12 @@ from typing import Any
 from loguru import logger
 from livekit import rtc
 from livekit.agents import AgentSession, AutoSubscribe, JobContext
+from livekit.agents.metrics import LLMMetrics, TTSMetrics  # type: ignore[reportUnusedImport] # used via isinstance
 from livekit.agents.voice import room_io
-from livekit.plugins import silero  # type: ignore[reportAttributeAccessIssue]
-
 from config import get_config
-from core.llm.registry import ModelRegistry
-from core.llm.types import ModelCapability
 from core.agent.interrupt import get_interrupt_manager
-from personas import PersonaRegistry, get_persona
-from roast import GameModeRegistry
-from bootstrap.factory import create_agent_components
+from personas import get_persona
+from bootstrap.factory import create_agent_components, get_vad
 from lk.bridge import PigAgentVoiceBridge
 from lk.telemetry import TurnTimer
 
@@ -39,10 +35,7 @@ async def run(ctx: JobContext) -> None:
         except Exception as e:
             logger.warning(f"Failed to parse job metadata: {e}")
 
-    PersonaRegistry.register_defaults()
-    GameModeRegistry.register_defaults()
-
-    persona_id = metadata.get("persona", "trump") if metadata else "trump"
+    persona_id = metadata.get("persona", "trump")
     persona = get_persona(persona_id)
     logger.info(
         f"Persona: {persona.persona_id} ({persona.display_name}, domain={persona.domain})"
@@ -80,16 +73,13 @@ async def run(ctx: JobContext) -> None:
     stt, pig_agent, tts = create_agent_components(config, persona=persona)
     stt_plugin = stt.get_plugin() if hasattr(stt, "get_plugin") else stt
     tts_plugin = tts.get_plugin() if hasattr(tts, "get_plugin") else tts
-    vad = silero.VAD.load()
+    vad = get_vad()
 
     logger.info(f"[DEBUG] STT: {type(stt_plugin).__name__}, TTS: {type(tts_plugin).__name__}")
     logger.info(f"[DEBUG] LLM: PigAgent with {pig_agent.model}")
 
-    model_info = ModelRegistry.get(pig_agent.model)
-    if ModelCapability.WEB_SEARCH not in model_info.capabilities:
-        logger.info("Provider doesn't support web_search, will use tool-based search")
-
-    user_id = ctx.room.name  # TODO: resolve from session auth
+    # Resolve user_id: app passes directly, device passes device_id → lookup later
+    user_id = metadata.get("user_id", "") or metadata.get("device_id", "")
 
     bridge = PigAgentVoiceBridge(
         pig_agent=pig_agent,
@@ -165,7 +155,6 @@ async def run(ctx: JobContext) -> None:
 
     @session.on("metrics_collected")
     def on_metrics_collected(event):
-        from livekit.agents.metrics import LLMMetrics, TTSMetrics
         m = event.metrics
         if isinstance(m, LLMMetrics):
             if timer.data["llm_first_token"] is None and m.ttft > 0:

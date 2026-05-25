@@ -30,6 +30,10 @@ dependencies = [
     "pydantic-settings~=2.12",
     "python-dotenv~=1.2",
     
+    # HTTP API
+    "fastapi~=0.115",
+    "uvicorn[standard]~=0.34",
+
     # Utilities
     "loguru~=0.7",
     "aiohttp~=3.13",

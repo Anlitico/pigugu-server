@@ -21,6 +21,48 @@ from pigagent import PigAgent
 _pig_agent: PigAgent | None = None
 _redis = None
 _pg_pool = None
+_vad = None
+_stt = None
+
+
+def get_stt():
+    """Return the global STT plugin singleton."""
+    global _stt
+    if _stt is not None:
+        return _stt
+    config = get_config()
+    stt_provider = config.STT_PROVIDER.lower()
+    if stt_provider == "deepgram":
+        _stt = create_stt(
+            provider="deepgram",
+            model=config.DEEPGRAM_STT_MODEL,
+            language=config.DEEPGRAM_STT_LANGUAGE,
+            sample_rate=config.DEEPGRAM_STT_SAMPLE_RATE,
+            enable_diarization=config.DEEPGRAM_ENABLE_DIARIZATION,
+            api_key=os.getenv("DEEPGRAM_API_KEY"),
+        )
+    else:
+        _stt = create_stt(
+            provider="cartesia",
+            model=config.CARTESIA_STT_MODEL,
+            language=config.CARTESIA_STT_LANGUAGE,
+            encoding=config.CARTESIA_STT_ENCODING,
+            sample_rate=config.CARTESIA_STT_SAMPLE_RATE,
+            api_key=os.getenv("CARTESIA_API_KEY"),
+            base_url=config.CARTESIA_STT_BASE_URL,
+        )
+    logger.info(f"[Factory] STT loaded: {_stt.model}")
+    return _stt
+
+
+def get_vad():
+    """Return the global VAD (Voice Activity Detection) singleton."""
+    global _vad
+    if _vad is None:
+        from livekit.plugins import silero  # type: ignore[reportAttributeAccessIssue]
+        _vad = silero.VAD.load()
+        logger.info("[Factory] VAD loaded")
+    return _vad
 
 
 def _init_redis():
@@ -204,7 +246,7 @@ def validate_configuration(config=None):
 
 
 def create_agent_components(config=None, persona=None):
-    """Create STT and TTS instances per session. PigAgent is a global singleton.
+    """Create TTS per session. STT, PigAgent, VAD are global singletons.
 
     Args:
         config: AgentConfig instance. If None, loads from get_config().
@@ -216,39 +258,17 @@ def create_agent_components(config=None, persona=None):
     if config is None:
         config = get_config()
 
-    deepgram_api_key = os.getenv("DEEPGRAM_API_KEY")
-    cartesia_api_key = os.getenv("CARTESIA_API_KEY")
+    # ── STT (global singleton) ─────────────────────────────────────────
 
-    # ── STT ────────────────────────────────────────────────────────────
-
-    stt_provider = config.STT_PROVIDER.lower()
-    if stt_provider == "deepgram":
-        stt = create_stt(
-            provider="deepgram",
-            model=config.DEEPGRAM_STT_MODEL,
-            language=config.DEEPGRAM_STT_LANGUAGE,
-            sample_rate=config.DEEPGRAM_STT_SAMPLE_RATE,
-            enable_diarization=config.DEEPGRAM_ENABLE_DIARIZATION,
-            api_key=deepgram_api_key,
-        )
-    elif stt_provider == "cartesia":
-        stt = create_stt(
-            provider="cartesia",
-            model=config.CARTESIA_STT_MODEL,
-            language=config.CARTESIA_STT_LANGUAGE,
-            encoding=config.CARTESIA_STT_ENCODING,
-            sample_rate=config.CARTESIA_STT_SAMPLE_RATE,
-            api_key=cartesia_api_key,
-            base_url=config.CARTESIA_STT_BASE_URL,
-        )
-    else:
-        raise ValueError(f"Unknown STT provider: {stt_provider}")
+    stt = get_stt()
 
     # ── PigAgent (global singleton) ─────────────────────────────────────
 
     pig_agent = get_pig_agent()
 
-    # ── TTS ────────────────────────────────────────────────────────────
+    # ── TTS (per session — persona voice/speed/emotion) ────────────────
+
+    cartesia_api_key = os.getenv("CARTESIA_API_KEY")
 
     tts_voice = config.CARTESIA_TTS_VOICE
     tts_speed = config.CARTESIA_TTS_SPEED
