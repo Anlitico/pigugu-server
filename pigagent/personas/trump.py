@@ -223,7 +223,7 @@ class TrumpPersona(Persona):
     domain = "politics"
 
     # TTS: Cartesia voice for Trump
-    tts_voice = "a0e99841-438c-4a64-b679-ae501e7d6091"
+    tts_voice = "9783574a-63f4-46bf-b56b-928eb52d3140"
 
     # Latency masking fillers
     fillers = TRUMP_FILLERS

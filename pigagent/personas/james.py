@@ -75,7 +75,7 @@ class JamesPersona(Persona):
     display_name = "James"
     domain = "sports"
 
-    tts_voice = "a0e99841-438c-4a64-b679-ae501e7d6091"
+    tts_voice = "9783574a-63f4-46bf-b56b-928eb52d3140"
     tts_speed = 1.1
     fillers = JAMES_FILLERS
     greeting = (

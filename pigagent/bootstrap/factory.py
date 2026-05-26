@@ -130,21 +130,12 @@ def get_redis():
 
 
 def get_pg_pool():
-    """Return the global PG pool (lazy-init if deferred)."""
+    """Return the global PG DSN string (not a pool — connections are created per-operation)."""
     global _pg_pool
     if _pg_pool is None:
         _init_pg_pool()
     if isinstance(_pg_pool, str):
-        import asyncpg  # type: ignore[reportMissingImports]
-        import asyncio, concurrent.futures
-
-        async def _create(url):
-            url = url.replace("+asyncpg", "")
-            return await asyncpg.create_pool(url, min_size=2, max_size=10)
-
-        with concurrent.futures.ThreadPoolExecutor() as pool:
-            _pg_pool = pool.submit(lambda: asyncio.run(_create(_pg_pool))).result()
-        logger.info("[Factory] PG pool created (via thread)")
+        _pg_pool = _pg_pool.replace("+asyncpg", "")
     return _pg_pool
 
 

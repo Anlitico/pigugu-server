@@ -84,22 +84,21 @@ async def run(ctx: JobContext) -> None:
     logger.info(f"[DEBUG] STT: {type(stt_plugin).__name__}, TTS: {type(tts_plugin).__name__}")
     logger.info(f"[DEBUG] LLM: PigAgent with {pig_agent.model}")
 
-    # Resolve user_id: app passes directly, device passes device_id  ->  lookup later
+    # Resolve user_id: metadata (app) > device_id > participant identity
     user_id = metadata.get("user_id", "") or metadata.get("device_id", "")
 
-    from lk.pig_llm import PigAgentLLM
-    pig_llm = PigAgentLLM(pig_agent=pig_agent, persona_id=persona_id, user_id=user_id)
+    from lk.pigllm import PigAgentLLM
+    pigllm = PigAgentLLM()
 
     bridge = PigAgentVoiceBridge(
         pig_agent=pig_agent,
         persona_id=persona_id,
-        user_id=user_id,
     )
 
     from livekit.agents.voice.turn import TurnHandlingOptions
     session = AgentSession(
         stt=stt_plugin,
-        llm=pig_llm,
+        llm=pigllm,
         tts=tts_plugin,
         vad=vad if vad is not None else NOT_GIVEN,
         turn_handling=TurnHandlingOptions(
@@ -225,6 +224,19 @@ async def run(ctx: JobContext) -> None:
     )
 
     await session.start(bridge, room=ctx.room, room_options=room_options)  # type: ignore[reportArgumentType]
+
+    # Resolve user_id from participant identity if not in metadata
+    if not user_id:
+        # session.start() connects the room — now we can see remote participants
+        for identity in ctx.room.remote_participants:
+            user_id = identity
+            break
+    if not user_id:
+        logger.error("No user_id available — refusing to run session without identity")
+        await session.aclose()
+        return
+    bridge._user_id = user_id
+    logger.info(f"User ID resolved: {user_id}")
 
     # Accept TrackSource.UNKNOWN (0) in addition to SOURCE_MICROPHONE (2).
     # LiveKit JS client's LocalAudioTrack may report source="unknown" instead

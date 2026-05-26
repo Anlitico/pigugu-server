@@ -4,12 +4,24 @@
 from __future__ import annotations
 
 import json
+from contextlib import asynccontextmanager
 from datetime import datetime
+from typing import AsyncIterator
 
+import asyncpg  # type: ignore[import-untyped]
 from loguru import logger
 
 from core.llm.types import Message
 from context.schema import UserMemory
+
+
+@asynccontextmanager
+async def _connect(dsn: str) -> AsyncIterator[asyncpg.Connection]:
+    conn = await asyncpg.connect(dsn)
+    try:
+        yield conn
+    finally:
+        await conn.close()
 
 
 def _serialize_tool_calls(tool_calls: list | None) -> str | None:
@@ -35,7 +47,7 @@ class PgStorage:
         if not self._pg:
             return
         try:
-            async with self._pg.acquire() as conn:
+            async with _connect(self._pg) as conn:
                 await conn.execute(
                     """INSERT INTO agent_conversations
                        (user_id, turn_number, role, content,
@@ -49,13 +61,14 @@ class PgStorage:
                     roast_instance_id,
                 )
         except Exception as e:
-            logger.warning(f"PG flush_one failed: {e}")
+            if "Event loop is closed" not in str(e):
+                logger.warning(f"PG flush_one failed: {e}")
 
     async def flush_buffer(self, batch: list[tuple[int, Message, str | None]]) -> None:
         if not self._pg:
             return
         try:
-            async with self._pg.acquire() as conn:
+            async with _connect(self._pg) as conn:
                 async with conn.transaction():
                     for turn_number, turn, roast_instance_id in batch:
                         await conn.execute(
@@ -72,13 +85,14 @@ class PgStorage:
                         )
             logger.debug(f"Flushed {len(batch)} turns to PG")
         except Exception as e:
-            logger.warning(f"PG flush failed: {e}")
+            if "Event loop is closed" not in str(e):
+                logger.warning(f"PG flush failed: {e}")
 
     async def persist_turns(self, turns: list[tuple[int, Message, str | None]]) -> None:
         if not self._pg:
             return
         try:
-            async with self._pg.acquire() as conn:
+            async with _connect(self._pg) as conn:
                 async with conn.transaction():
                     for turn_number, turn, roast_instance_id in turns:
                         await conn.execute(
@@ -101,7 +115,7 @@ class PgStorage:
         if not self._pg:
             return 0
         try:
-            async with self._pg.acquire() as conn:
+            async with _connect(self._pg) as conn:
                 row = await conn.fetchrow(
                     "SELECT COALESCE(MAX(turn_number), 0) FROM agent_conversations "
                     "WHERE user_id = $1",
@@ -119,7 +133,7 @@ class PgStorage:
         if not self._pg:
             return
         try:
-            async with self._pg.acquire() as conn:
+            async with _connect(self._pg) as conn:
                 async with conn.transaction():
                     for fd in fact_dicts:
                         await conn.execute(
@@ -137,7 +151,7 @@ class PgStorage:
         if not self._pg:
             return []
         try:
-            async with self._pg.acquire() as conn:
+            async with _connect(self._pg) as conn:
                 if since:
                     rows = await conn.fetch(
                         "SELECT fact, category FROM user_facts WHERE user_id=$1 "
@@ -160,7 +174,7 @@ class PgStorage:
         if not self._pg:
             return "", None
         try:
-            async with self._pg.acquire() as conn:
+            async with _connect(self._pg) as conn:
                 row = await conn.fetchrow(
                     "SELECT profile_summary, updated_at FROM user_memory WHERE user_id=$1",
                     self._user_id,
@@ -175,7 +189,7 @@ class PgStorage:
         if not self._pg:
             return
         try:
-            async with self._pg.acquire() as conn:
+            async with _connect(self._pg) as conn:
                 await conn.execute(
                     """INSERT INTO user_memory (user_id, profile_summary, updated_at)
                        VALUES ($1, $2, NOW())

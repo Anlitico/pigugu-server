@@ -91,7 +91,7 @@ class MuskPersona(Persona):
     display_name = "Musk"
     domain = "economy"
 
-    tts_voice = "a0e99841-438c-4a64-b679-ae501e7d6091"
+    tts_voice = "9783574a-63f4-46bf-b56b-928eb52d3140"
     tts_speed = 1.05
     fillers = MUSK_FILLERS
     greeting = (

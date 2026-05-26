@@ -61,7 +61,7 @@ class CartesiaTTS(TTSProvider):
         model: str = "sonic-2",
         language: Optional[str] = "en",
         encoding: str = "pcm_s16le",
-        voice: Union[str, list[float]] = "a0e99841-438c-4a64-b679-ae501e7d6091",  # Default Cartesia voice
+        voice: Union[str, list[float]] = "9783574a-63f4-46bf-b56b-928eb52d3140",  # Default Cartesia voice
         speed: Optional[float] = None,
         emotion: Optional[list[str]] = None,
         volume: Optional[float] = None,
@@ -166,7 +166,7 @@ def create_tts(
     model: str = "sonic-2",
     language: Optional[str] = "en",
     encoding: str = "pcm_s16le",
-    voice: Union[str, list[float]] = "a0e99841-438c-4a64-b679-ae501e7d6091",
+    voice: Union[str, list[float]] = "9783574a-63f4-46bf-b56b-928eb52d3140",
     speed: Optional[float] = None,
     emotion: Optional[list[str]] = None,
     volume: Optional[float] = None,
