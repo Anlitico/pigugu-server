@@ -268,3 +268,22 @@ class TestQwenUsage:
 
         u = QwenProvider._extract_usage(MockUsage())
         assert u.cached_prompt_tokens == 30
+
+    def test_extract_from_dict(self):
+        """Streaming chunks return usage as dict, not object."""
+        u = QwenProvider._extract_usage({
+            "prompt_tokens": 200,
+            "completion_tokens": 80,
+            "total_tokens": 280,
+        })
+        assert u.prompt_tokens == 200
+        assert u.completion_tokens == 80
+        assert u.cached_prompt_tokens == 0
+
+    def test_extract_from_dict_with_cache(self):
+        u = QwenProvider._extract_usage({
+            "prompt_tokens": 200,
+            "completion_tokens": 80,
+            "prompt_tokens_details": {"cached_tokens": 64},
+        })
+        assert u.cached_prompt_tokens == 64

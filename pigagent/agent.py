@@ -17,6 +17,7 @@ from collections.abc import AsyncIterator
 from typing import Any
 
 from loguru import logger
+from utils.telemetry import TelemetryCollector
 
 from core.llm.types import Message
 from core.agent.runner import AgentRunner, RunnerConfig
@@ -142,14 +143,22 @@ class PigAgent:
             f"roast={roast_state is not None} msgs={len(messages)}"
         )
 
+        first_yield = True
+
         if roast_state and game_mode:
             async for text in self._stream_roast(
                 messages, roast_state, game_mode,
             ):
+                if first_yield:
+                    TelemetryCollector.mark("llm_internal")
+                    first_yield = False
                 response_chunks.append(text)
                 yield text
         else:
             async for text in self.runner.stream(messages):
+                if first_yield:
+                    TelemetryCollector.mark("llm_internal")
+                    first_yield = False
                 response_chunks.append(text)
                 yield text
 
@@ -161,7 +170,9 @@ class PigAgent:
         # 6. Persist turn
         if self.ctx and user_id:
             full_response = "".join(response_chunks)
-            await self._save_turn(user_id, new_msg.content, full_response)
+            turn_no = await self._save_turn(user_id, new_msg.content, full_response)
+            if turn_no:
+                TelemetryCollector.set_meta("turn_number", turn_no)
 
     # ── Low-level stream (no side effects, used by tests) ──────────────
 
@@ -302,19 +313,21 @@ class PigAgent:
 
     async def _save_turn(
         self, user_id: str, user_content: str, assistant_content: str,
-    ) -> None:
-        """Persist one conversation turn to Redis/PG."""
+    ) -> int:
+        """Persist one conversation turn to Redis/PG. Returns the turn number of the user message."""
         ctx = self._require_ctx()
         try:
-            await ctx.add_turn(
+            turn_no = await ctx.add_turn(
                 user_id=user_id, role="user", content=user_content,
             )
             if assistant_content:
                 await ctx.add_turn(
                     user_id=user_id, role="assistant", content=assistant_content,
                 )
+            return turn_no
         except Exception as e:
             logger.error(f"[PigAgent] save_turn failed: {e}")
+            return 0
 
     def _build_roast_body(self, *, game_mode, prompt: str = "") -> str:
         parts: list[str] = []

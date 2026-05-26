@@ -5,27 +5,24 @@ from __future__ import annotations
 
 import asyncio
 import json
-import time
 from typing import Any
 
 from loguru import logger
 from livekit import rtc
 from livekit.agents import AgentSession, JobContext
 from livekit.agents.types import NOT_GIVEN
-from livekit.agents.metrics import LLMMetrics, TTSMetrics  # type: ignore[reportUnusedImport] # used via isinstance
 from livekit.agents.voice import room_io
 from config import get_config
 from core.agent.interrupt import get_interrupt_manager
 from personas import get_persona
 from bootstrap.factory import create_agent_components, get_vad
 from lk.bridge import PigAgentVoiceBridge
-from lk.telemetry import TurnTimer
+from utils.telemetry import TelemetryCollector
 
 
 async def run(ctx: JobContext) -> None:
     """Wire a LiveKit session: persona, components, bridge, event handlers."""
     config = get_config()
-    timer = TurnTimer()
 
     # ── Metadata + persona ────────────────────────────────────────────
     metadata: dict[str, Any] = {}
@@ -83,6 +80,7 @@ async def run(ctx: JobContext) -> None:
 
     logger.info(f"[DEBUG] STT: {type(stt_plugin).__name__}, TTS: {type(tts_plugin).__name__}")
     logger.info(f"[DEBUG] LLM: PigAgent with {pig_agent.model}")
+    TelemetryCollector.set_meta("llm_model", pig_agent.model)
 
     # Resolve user_id: metadata (app) > device_id > participant identity
     user_id = metadata.get("user_id", "") or metadata.get("device_id", "")
@@ -128,30 +126,33 @@ async def run(ctx: JobContext) -> None:
 
         # Timing
         if event.new_state == "thinking" and event.old_state != "thinking":
-            if timer.data["agent_start_thinking"] is None:
-                timer.mark("agent_start_thinking")
+            TelemetryCollector.mark("llm_start")
         if event.old_state != "speaking" and event.new_state == "speaking":
-            timer.mark("agent_start_speaking")
-            timer.log_summary()
+            TelemetryCollector.mark("agent_spk")
+        elif event.old_state == "speaking" and event.new_state != "speaking":
+            TelemetryCollector.mark("tts_end")
 
     @session.on("user_state_changed")
     def on_user_state_changed(event):
         nonlocal current_interrupt_key
         if event.old_state != "speaking" and event.new_state == "speaking":
             logger.info("[DEBUG] User started speaking")
-            timer.reset()
+            TelemetryCollector.start_turn(user_id=user_id, persona_id=persona_id)
+            TelemetryCollector.mark("vad_start")
             if current_interrupt_key:
                 logger.info(f"[Interrupt] Cancelling: {current_interrupt_key}")
                 asyncio.create_task(interrupt_mgr.trigger(current_interrupt_key))
         elif event.old_state == "speaking" and event.new_state != "speaking":
             logger.info(f"[DEBUG] User stopped speaking ({event.new_state})")
-            timer.mark("user_stop_speaking")
+            TelemetryCollector.mark("vad_end")
 
     @session.on("user_input_transcribed")
     def on_user_input_transcribed(event):
         logger.info(f"[STT] Transcript: is_final={event.is_final} text='{event.transcript}'")
-        if event.is_final and event.transcript and event.transcript.strip():
-            timer.mark("final_transcript")
+        if not event.is_final:
+            TelemetryCollector.mark("stt_first")
+        else:
+            TelemetryCollector.mark("stt_final")
             logger.info(f"[STT] Final transcript: '{event.transcript.strip()}'")
             try:
                 payload = json.dumps({"text": event.transcript.strip()})
@@ -165,8 +166,7 @@ async def run(ctx: JobContext) -> None:
 
     @session.on("speech_created")
     def on_speech_created(event):
-        if timer.data["speech_created"] is None:
-            timer.mark("speech_created")
+        TelemetryCollector.mark("tts_start")
 
     @session.on("session_usage_updated")
     def on_session_usage_updated(event):
@@ -176,14 +176,11 @@ async def run(ctx: JobContext) -> None:
                 utype = getattr(mu, "type", "unknown")
                 model = getattr(mu, "model", "") or getattr(mu, "model_id", "")
                 if utype == "stt_usage":
-                    dur = getattr(mu, "audio_duration", 0)
-                    logger.info(f"[STT] model={model} duration={dur:.1f}s")
+                    TelemetryCollector.set_meta("stt_model", str(model))
                 elif utype == "tts_usage":
-                    logger.info(f"[TTS] model={model}")
+                    TelemetryCollector.set_meta("tts_model", str(model))
                 else:
-                    pt = getattr(mu, "prompt_tokens", 0)
-                    ct = getattr(mu, "completion_tokens", 0)
-                    logger.info(f"[LLM] model={model} tokens={pt}->{ct}")
+                    TelemetryCollector.set_meta("llm_model", str(model))
 
     @session.on("conversation_item_added")
     def on_conversation_item_added(event):
@@ -191,7 +188,7 @@ async def run(ctx: JobContext) -> None:
         text = getattr(item, "text_content", None)
         if text and hasattr(item, "role"):
             if item.role == "assistant":
-                timer.mark("llm_response_logged")
+                TelemetryCollector.mark("llm_end")
                 try:
                     asyncio.create_task(
                         ctx.room.local_participant.publish_data(
@@ -213,6 +210,7 @@ async def run(ctx: JobContext) -> None:
 
     @session.on("close")
     def on_close(event):
+        TelemetryCollector.finish_turn()  # flush the last turn
         logger.info(f"[SESSION] Closed  -  reason: {event.reason}")
 
     # ── Start ─────────────────────────────────────────────────────────

@@ -77,6 +77,13 @@ jobs:
     - name: Update kubeconfig
       run: aws eks update-kubeconfig --name ${{ env.EKS_CLUSTER_NAME }} --region ${{ env.AWS_REGION }}
 
+    - name: Run database migrations
+      env:
+        DATABASE_URL: postgresql+asyncpg://pigugu:${{ secrets.DB_PASSWORD }}@pigugu-db.c1esma68egsk.us-west-1.rds.amazonaws.com:5432/pigugu
+      run: |
+        pip install alembic asyncpg sqlalchemy
+        alembic upgrade head
+
     - name: Deploy to EKS
       env:
         ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}

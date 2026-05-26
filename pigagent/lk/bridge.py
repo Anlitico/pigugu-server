@@ -14,6 +14,7 @@ from loguru import logger
 from livekit.agents import Agent
 from livekit.agents.voice.agent import ModelSettings
 from livekit.agents.llm import ChatContext
+from utils.telemetry import TelemetryCollector
 
 
 class PigAgentVoiceBridge(Agent):
@@ -47,10 +48,14 @@ class PigAgentVoiceBridge(Agent):
         if not user_text.strip():
             logger.warning("[BRIDGE] Empty user text — nothing to send to LLM")
             return
+        first = True
         async for text in self._pig.generate_reply(
             self._user_id, user_text,
             persona_id=self._persona_id,
         ):
+            if first:
+                TelemetryCollector.mark("llm_ttft")
+                first = False
             yield text
 
     @staticmethod

@@ -126,7 +126,9 @@ class TestVolcengineThinkingFormat:
             {"enabled": False}, None, None,
             model="doubao-test", stream=False,
         )
-        assert "extra_body" not in params
+        # extra_body is present (caching is always enabled), but thinking should not be in it
+        assert "extra_body" in params
+        assert "thinking" not in params["extra_body"]
 
 
 # -- Message serialization ----------------------------------------------------
@@ -149,3 +151,26 @@ class TestVolcengineSerialization:
         msg = Message(role="user", content="hello", partial=True)
         d = p._serialize_message(msg)
         assert "prefix" not in d
+
+
+# -- Usage extraction ---------------------------------------------------------
+
+class TestVolcengineUsage:
+    def test_extract_from_dict(self):
+        """Streaming chunks return usage as dict, not object."""
+        u = VolcengineProvider._extract_usage({
+            "prompt_tokens": 200,
+            "completion_tokens": 80,
+            "total_tokens": 280,
+        })
+        assert u.prompt_tokens == 200
+        assert u.completion_tokens == 80
+        assert u.cached_prompt_tokens == 0
+
+    def test_extract_from_dict_with_cache(self):
+        u = VolcengineProvider._extract_usage({
+            "prompt_tokens": 200,
+            "completion_tokens": 80,
+            "prompt_tokens_details": {"cached_tokens": 64},
+        })
+        assert u.cached_prompt_tokens == 64

@@ -32,6 +32,7 @@ class QwenProvider(LLMProvider):
                 timeout=httpx.Timeout(connect=15.0, read=120.0, write=15.0, pool=10.0),
                 limits=httpx.Limits(max_connections=50),
             ),
+            default_headers={"x-dashscope-session-cache": "enable"},
         )
 
     # ── Properties ──
@@ -109,12 +110,18 @@ class QwenProvider(LLMProvider):
             thinking, search, response_format,
             model=model, stream=True, **kwargs,
         )
+
         stream = await self._client.chat.completions.create(**params)
 
         buf: dict[int, dict] = {}
+        usage: TokenUsage | None = None
+        usage_final: TokenUsage | None = None
 
         async for chunk in stream:
             if not chunk.choices:
+                usage = self._extract_usage(chunk.usage) if chunk.usage else None
+                if usage:
+                    usage_final = usage
                 continue
             delta = chunk.choices[0].delta
 
@@ -138,7 +145,6 @@ class QwenProvider(LLMProvider):
                         if tc.function.arguments:
                             buf[idx]["arguments"] += tc.function.arguments
 
-            usage = self._extract_usage(chunk.usage) if chunk.usage else None
             finish = chunk.choices[0].finish_reason
 
             if finish and buf:
@@ -150,6 +156,8 @@ class QwenProvider(LLMProvider):
                 buf.clear()
             elif finish:
                 yield ChatDelta(usage=usage, finish_reason=finish)
+
+        self._report_usage(usage_final)
 
     # ── Validation ──
 
@@ -280,7 +288,15 @@ class QwenProvider(LLMProvider):
         return d
 
     @staticmethod
-    def _extract_usage(u) -> TokenUsage:
+    def _extract_usage(u: object) -> TokenUsage:
+        if isinstance(u, dict):
+            details = u.get("prompt_tokens_details") or {}
+            return TokenUsage(
+                prompt_tokens=u.get("prompt_tokens", 0) or 0,
+                completion_tokens=u.get("completion_tokens", 0) or 0,
+                total_tokens=u.get("total_tokens", 0) or 0,
+                cached_prompt_tokens=details.get("cached_tokens", 0) if details else 0,
+            )
         details = getattr(u, "prompt_tokens_details", None)
         return TokenUsage(
             prompt_tokens=getattr(u, "prompt_tokens", 0),

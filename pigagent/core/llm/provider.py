@@ -203,6 +203,25 @@ class LLMProvider(ABC):
             other = len(text) - cjk
             return int(cjk * 1.5 + other / 3.5)
 
+    # ── Telemetry Reporting ──────────────────────────────────────────
+
+    def _report_usage(self, usage: object) -> None:
+        """Report token usage to the telemetry collector.
+
+        Subclasses MUST call this after receiving usage data from the API.
+        Override if the provider returns usage in a non-standard format
+        (e.g. Gemini has different field names).
+        """
+        from utils.telemetry import TelemetryCollector
+        from .types import TokenUsage
+
+        if usage is None:
+            return
+        if isinstance(usage, TokenUsage):
+            TelemetryCollector.set_meta("prompt_tokens", usage.prompt_tokens)
+            TelemetryCollector.set_meta("completion_tokens", usage.completion_tokens)
+            TelemetryCollector.set_meta("cached_tokens", usage.cached_prompt_tokens)
+
     @property
     @abstractmethod
     def base_url(self) -> str:

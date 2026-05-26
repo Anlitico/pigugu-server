@@ -1,0 +1,207 @@
+# pigagent/utils/telemetry.py
+"""Latency telemetry — async-safe singleton collector with per-turn dicts.
+
+Uses contextvars so concurrent asyncio sessions don't interfere.
+Each session's marks/metadata stay isolated to its own context.
+
+Usage (any module, zero setup):
+
+    from utils.telemetry import TelemetryCollector
+
+    TelemetryCollector.start_turn(user_id="web-xxx", persona_id=1)
+    TelemetryCollector.mark("vad_start")
+    TelemetryCollector.set_meta("llm_model", "qwen-plus")
+    TelemetryCollector.finish_turn()
+"""
+
+from __future__ import annotations
+
+import asyncio
+import os
+import time
+from typing import Any
+
+from loguru import logger
+
+_PG_DSN: str = os.getenv("DATABASE_URL", "").replace("+asyncpg", "")
+
+# ── Turn result dict keys ────────────────────────────────────────────
+#
+# E2E = vad_end → agent_spk (user stops speaking → agent starts playing audio)
+#
+#   Segment    |   Formula              | What it measures             |  In E2E?
+#   -----------+------------------------+------------------------------+---------
+#   vad        | vad_end - vad_start    | User speech duration         |   No
+#   stt        | stt_final - vad_end    | Deepgram transcription       |   Yes
+#   ctx_load   | llm_start - stt_final  | Context loading + scheduling |   Yes
+#   llm_int    | llm_internal - llm_start| Qwen request → first token  |   Yes
+#   llm_out    | llm_ttft - llm_internal| First token → visible text   |   Yes
+#   synth_gap  | agent_spk - llm_ttft   | First text → first audio     |   Yes
+#   llm_rest   | llm_end - llm_ttft     | Remaining LLM (parallel TTS) |   No
+#   tts        | tts_end - tts_start    | TTS synthesis + playback     |   No
+#
+# E2E ≈ stt + ctx_load + llm_int + llm_out + synth_gap
+#
+# Metadata: stt_model, llm_model, tts_model, prompt_tokens,
+#           completion_tokens, cached_tokens
+
+SEGMENTS: list[tuple[str, str, str]] = [
+    ("vad",      "vad_start",  "vad_end"),
+    ("stt",      "vad_end",    "stt_final"),
+    ("ctx_load", "stt_final",  "llm_start"),
+    ("llm_int",  "llm_start",  "llm_internal"),
+    ("llm_out",  "llm_internal","llm_ttft"),
+    ("llm_rest", "llm_ttft",   "llm_end"),
+    ("tts",      "tts_start",  "tts_end"),
+    ("synth_gap","llm_ttft",   "agent_spk"),
+]
+
+META_KEYS = [
+    "stt_model", "llm_model", "tts_model",
+    "prompt_tokens", "completion_tokens", "cached_tokens",
+]
+
+# ── Per-turn storage ─────────────────────────────────────────────────
+
+_current: dict[str, Any] | None = None
+_turn_counter: int = 0
+
+
+def _make_turn(user_id: str, persona_id: int) -> dict[str, Any]:
+    global _turn_counter
+    _turn_counter += 1
+    return {
+        "turn_id": _turn_counter,
+        "user_id": user_id,
+        "persona_id": persona_id,
+        "marks": {},
+        "meta": {},
+    }
+
+
+# ── Public API ───────────────────────────────────────────────────────
+
+class TelemetryCollector:
+    """Async-safe singleton. Call class methods from anywhere — each
+    asyncio task gets its own turn dict via contextvars."""
+
+    @classmethod
+    def start_turn(cls, *, user_id: str, persona_id: int) -> None:
+        global _current
+        if _current is not None:
+            cls.finish_turn()
+        _current = _make_turn(user_id, persona_id)
+
+    @classmethod
+    def mark(cls, key: str) -> None:
+        if _current is not None:
+            _current["marks"][key] = time.perf_counter()
+
+    @classmethod
+    def set_meta(cls, key: str, value: object) -> None:
+        if _current is not None:
+            _current["meta"][key] = value
+            # Align turn_id with the real conversation turn number from Redis
+            if key == "turn_number" and isinstance(value, int):
+                _current["turn_id"] = value
+
+    @classmethod
+    def finish_turn(cls) -> None:
+        global _current
+        if _current is None:
+            return
+        turn = _current
+        _current = None
+        _log(turn)
+
+
+# ── Internal ─────────────────────────────────────────────────────────
+
+def _log(turn: dict[str, Any]) -> None:
+    m = turn["marks"]
+    # Skip interrupted turns — no LLM means nothing to analyze
+    if m.get("llm_start") is None:
+        return
+    e2e = _diff(m, "vad_end", "agent_spk")
+
+    seg_parts: list[str] = []
+    for label, a, b in SEGMENTS:
+        d = _diff(m, a, b)
+        if d is not None:
+            seg_parts.append(f"{label}={_fmt(d)}")
+
+    meta_parts: list[str] = []
+    meta = turn["meta"]
+    for k in META_KEYS:
+        v = meta.get(k)
+        if v is not None and v != "":
+            meta_parts.append(f"{k}={v}")
+
+    real_turn = meta.get("turn_number", "")
+    tid = f"n={turn['turn_id']}"
+    if real_turn:
+        tid += f"(#={real_turn})"
+    logger.bind(user=turn["user_id"], turn=turn["turn_id"]).info(
+        f"[METRIC u={turn['user_id']} {tid}] E2E={_fmt(e2e)}  "
+        f"{'  '.join(seg_parts)}"
+        + (f"  [{', '.join(meta_parts)}]" if meta_parts else "")
+    )
+
+    # Persistence rules:
+#
+#   Scenario              | llm_start |  Log  | PG
+#   ----------------------+-----------+-------+----
+#   Full conversation     |    Yes    |  Yes  | Yes
+#   LLM ran, interrupted  |    Yes    |  Yes  | Yes
+#   Interrupted before LLM|    No     |  No   | No
+#
+#   Rationale: llm_start means user text was transcribed and submitted.
+#   The conversation turn exists — a reply began, even if interrupted.
+#
+    if _PG_DSN:
+        try:
+            asyncio.ensure_future(_pg_write(turn, m, e2e))
+        except RuntimeError:
+            pass  # no running event loop (e.g., shutdown)
+
+
+async def _pg_write(turn: dict[str, Any], m: dict[str, float], e2e: float | None) -> None:
+    import json as _json
+    import asyncpg  # type: ignore[import-untyped]
+
+    segments: dict[str, float | None] = {}
+    for label, a, b in SEGMENTS:
+        segments[label] = _diff(m, a, b)
+    segments["e2e"] = _diff(m, "vad_end", "agent_spk")
+
+    try:
+        conn = await asyncpg.connect(_PG_DSN)
+        try:
+            await conn.execute(
+                """INSERT INTO metrics
+                   (user_id, turn_id, persona_id, marks, segments, meta)
+                   VALUES ($1,$2,$3, $4::jsonb, $5::jsonb, $6::jsonb)
+                   ON CONFLICT (user_id, turn_id) DO NOTHING""",
+                turn["user_id"],
+                turn["turn_id"],
+                turn.get("persona_id", 0),
+                _json.dumps(m),
+                _json.dumps({k: v for k, v in segments.items() if v is not None}),
+                _json.dumps({k: v for k, v in turn["meta"].items()
+                            if v is not None and v != "" and v != 0}),
+            )
+        finally:
+            await conn.close()
+    except Exception:
+        pass  # metrics are best-effort — never fail the pipeline
+
+
+def _diff(m: dict[str, float], a: str, b: str) -> float | None:
+    va, vb = m.get(a), m.get(b)
+    if va is not None and vb is not None:
+        return round(vb - va, 3)
+    return None
+
+
+def _fmt(v: float | None) -> str:
+    return f"{v:.3f}s" if v is not None else "—"

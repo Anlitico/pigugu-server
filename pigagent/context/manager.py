@@ -70,7 +70,7 @@ class ContextManager:
         tool_call_id: str | None = None,
         name: str | None = None,
         partial: bool = False,
-    ) -> None:
+    ) -> int:
         store = self._store(user_id)
         pg = self._pg(user_id)
 
@@ -92,6 +92,7 @@ class ContextManager:
 
         if self._pg_pool:
             asyncio.create_task(pg.flush_one(turn_count, record.to_message(), record.roast_instance_id))
+        return turn_count
 
     async def _assign_roast_instance_id(self, user_id: str, current: ConversationRecord) -> None:
         history = await self._store(user_id).get_hot_turns(20)

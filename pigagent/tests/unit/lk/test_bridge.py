@@ -150,13 +150,10 @@ class TestLlmNode:
 
 
 class TestBridgeProperties:
-    def test_allow_interruptions(self):
-        bridge, _ = _make_bridge(allow_interruptions=False)
-        assert not bridge.allow_interruptions
-
-    def test_default_allow_interruptions(self):
+    def test_allow_interruptions_is_not_given(self):
+        from livekit.agents.types import NOT_GIVEN
         bridge, _ = _make_bridge()
-        assert bridge.allow_interruptions
+        assert bridge.allow_interruptions is NOT_GIVEN
 
     def test_not_given_properties_return_not_given(self):
         from livekit.agents.types import NOT_GIVEN
@@ -166,9 +163,10 @@ class TestBridgeProperties:
         assert bridge.min_consecutive_speech_delay is NOT_GIVEN
         assert bridge.use_tts_aligned_transcript is NOT_GIVEN
 
-    def test_stt_node_is_none(self):
+    def test_stt_node_has_default(self):
         bridge, _ = _make_bridge()
-        assert bridge.stt_node is None
+        # Bridge inherits default stt_node from Agent base class
+        assert bridge.stt_node is not None
 
     def test_instructions_is_empty(self):
         bridge, _ = _make_bridge()

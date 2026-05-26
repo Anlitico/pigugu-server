@@ -61,4 +61,6 @@ if _config.LOG_TO_FILE:
         ),
         enqueue=True,
     )
+    import atexit
+    atexit.register(logger.complete)
     logger.info(f"File logging enabled: {_config.LOG_FILE_PATH}")
