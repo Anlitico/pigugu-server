@@ -227,3 +227,7 @@ htmlcov/
 tests/.pytest_cache/
 temp/
 .claude/
+
+# Project tooling (machine-specific, not for version control)
+pyrightconfig.json
+uv.lock
