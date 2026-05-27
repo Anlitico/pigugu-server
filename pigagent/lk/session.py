@@ -116,6 +116,7 @@ async def run(ctx: JobContext) -> None:
             and event.new_state == "listening"
         ):
             current_interrupt_event = None
+            bridge.current_interrupt_event = None
 
         # Timing
         if event.new_state == "thinking" and event.old_state != "thinking":

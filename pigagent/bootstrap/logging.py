@@ -59,7 +59,7 @@ if _config.LOG_TO_FILE:
             "{time:YYYY-MM-DD HH:mm:ss.SSS} | {level: <8} | "
             "{name}:{function}:{line} - {message}"
         ),
-        enqueue=True,
+        enqueue=False,
     )
     import atexit
     atexit.register(logger.complete)
