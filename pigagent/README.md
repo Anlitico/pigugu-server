@@ -27,7 +27,14 @@ uv sync
 uv run python main.py
 ```
 
-### 3. Verify
+### 3. Browser Test Page
+
+```bash
+uv run python devtools/debug_server.py
+# Open http://localhost:9000 — click CONNECT to test voice pipeline
+```
+
+### 4. Verify
 
 ```bash
 # API health check
@@ -106,5 +113,6 @@ pigagent/
 │   └── compression/      # L2/L3/L4 compression pipeline
 ├── lk/                   # LiveKit integration
 ├── roast/                # Roast game mode
+├── devtools/             # Browser test page + debug scripts
 └── tests/                # Unit tests
 ```
