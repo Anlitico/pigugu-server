@@ -52,6 +52,7 @@ class PigAgentVoiceBridge(Agent):
             return
         # Create a fresh event right before the LLM call — session triggers it on VAD
         self.current_interrupt_event = asyncio.Event()
+        logger.info(f"[Bridge] Created interrupt event id={id(self.current_interrupt_event)}")
         first = True
         async for text in self._pig.generate_reply(
             self._user_id, user_text,

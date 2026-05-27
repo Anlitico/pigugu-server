@@ -114,7 +114,7 @@ async def run(ctx: JobContext) -> None:
         """Fires when VAD detects user speech during agent output — earliest
         possible interrupt signal, before any state transitions."""
         if getattr(event, "is_interruption", False) and bridge.current_interrupt_event:
-            logger.info("[Interrupt] Overlapping speech — cancelling LLM")
+            logger.info(f"[Interrupt] Overlapping speech — set event id={id(bridge.current_interrupt_event)}")
             bridge.current_interrupt_event.set()
 
     @session.on("agent_state_changed")
@@ -137,7 +137,7 @@ async def run(ctx: JobContext) -> None:
             TelemetryCollector.set_meta("llm_model", pig_agent.model)
             TelemetryCollector.mark("vad_start")
             if bridge.current_interrupt_event:
-                logger.info("[Interrupt] Triggering")
+                logger.info(f"[Interrupt] Triggering event id={id(bridge.current_interrupt_event)}")
                 bridge.current_interrupt_event.set()
         elif event.old_state == "speaking" and event.new_state != "speaking":
             logger.info(f"[DEBUG] User stopped speaking ({event.new_state})")
