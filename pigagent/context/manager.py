@@ -19,6 +19,7 @@ from loguru import logger
 
 from config import get_config
 
+from .storage.memory import MemoryStore
 from .storage.redis import RedisStorage, RedisKeys
 from .storage.pg import PgStorage
 from .schema import UserMemory, RoastContext, WorkingContext, ConversationRecord, SummaryRecord
@@ -41,6 +42,9 @@ class ContextManager:
     def _pg(self, user_id: str) -> PgStorage:
         return PgStorage(user_id, self._pg_pool)
 
+    def _mem(self, user_id: str) -> MemoryStore:
+        return MemoryStore(user_id)
+
     # ── Session Lifecycle ─────────────────────────────────────────────
 
     async def end_roast(self, user_id: str) -> None:
@@ -54,15 +58,18 @@ class ContextManager:
         return wc.to_messages()
 
     async def write_game_state(self, *, user_id: str, state: dict) -> None:
-        if not self._redis:
-            return
-        try:
-            await self._redis.hset(
-                RedisKeys.game_state(user_id),
-                mapping={k: str(v) for k, v in state.items()},
-            )
-        except Exception:
-            pass
+        mem = self._mem(user_id)
+        mem.write_game_state(state)
+        if self._redis:
+            try:
+                asyncio.create_task(
+                    self._redis.hset(
+                        RedisKeys.game_state(user_id),
+                        mapping={k: str(v) for k, v in state.items()},
+                    )
+                )
+            except Exception:
+                pass
 
     # ── Turn Recording ────────────────────────────────────────────────
 
@@ -73,10 +80,14 @@ class ContextManager:
         name: str | None = None,
         partial: bool = False,
     ) -> int:
+        mem = self._mem(user_id)
         store = self._store(user_id)
         pg = self._pg(user_id)
 
-        current = await store.get_last_turn_number()
+        # Resolve turn number — memory first, then Redis, then PG
+        current = mem.get_last_turn_number()
+        if current == 0:
+            current = await store.get_last_turn_number()
         if current == 0:
             current = await pg.recover_turn_counter()
 
@@ -87,37 +98,65 @@ class ContextManager:
             tool_calls=tool_calls, tool_call_id=tool_call_id,
             name=name, partial=partial,
         )
-        await self._assign_roast_instance_id(user_id, record)
+        # L1: write to memory immediately (synchronous, sub-ms)
+        mem.push_turn(record)
 
+        # Assign roast_instance_id — only affects next turn's assemble, fire-and-forget
+        asyncio.create_task(self._assign_roast_instance_id(user_id, record))
+
+        # L2 + L3: fire-and-forget to Redis and PG
         data = json.dumps(record.to_dict(), ensure_ascii=False)
-        await store.push_turn(data)
-
+        if self._redis:
+            asyncio.create_task(self._bg_redis_push(store, data))
         if self._pg_pool:
             asyncio.create_task(pg.flush_one(turn_count, record.to_message(), record.roast_instance_id))
+
         return turn_count
 
+    @staticmethod
+    async def _bg_redis_push(store: RedisStorage, data: str) -> None:
+        try:
+            await store.push_turn(data)
+        except Exception:
+            pass
+
     async def _assign_roast_instance_id(self, user_id: str, current: ConversationRecord) -> None:
-        history = await self._store(user_id).get_hot_turns(20)
+        mem = self._mem(user_id)
+        history = mem.get_hot_turns(20)
+        if not history:
+            history = await self._store(user_id).get_hot_turns(20)
         RoastState.assign_roast_instance_id(history, current)
 
     # ── Context Assembly ──────────────────────────────────────────────
 
     async def assemble(self, user_id: str) -> WorkingContext:
+        mem = self._mem(user_id)
         store = self._store(user_id)
         pg = self._pg(user_id)
 
-        # Read all three layer summaries in one GET
-        data = await store.read_summaries()
+        _cfg = get_config()
+
+        # L1: read from memory first
+        data = mem.read_summaries()
+        raw_records = mem.get_hot_turns(_cfg.CONTEXT_HOT_WINDOW_SIZE)
+
+        # L2: fallback to Redis if memory is empty
+        if not data:
+            data = await store.read_summaries()
+            if data:
+                mem.write_summaries(data.get("end_turn", 0), **{k: v for k, v in data.items() if k != "end_turn"})
+        if not raw_records:
+            raw_records = await store.get_hot_turns(_cfg.CONTEXT_HOT_WINDOW_SIZE)
+            # Re-warm memory from Redis
+            if raw_records:
+                mem.load_all(raw_records, data)
+
         sr = SummaryRecord(text=data["l3_session"], end_turn=data["end_turn"]) if data.get("l3_session") else None
         anchor = sr.end_turn if sr else 0
 
-        _cfg = get_config()
-        # Load with buffer — compression triggers at MAX_TURNS, but we need to
-        # load enough to detect the threshold crossing.
-        raw_records = await store.get_hot_turns(_cfg.CONTEXT_HOT_WINDOW_SIZE, after_anchor=anchor)
         um = UserMemory(user_id=user_id, profile_summary=data.get("l2_profile", "")) if data.get("l2_profile") else None
 
-        # PG fallback when Redis is empty for this user
+        # L3: PG fallback when both memory and Redis are empty
         if not raw_records and pg._pg:
             row = await pg.read_latest_summary()
             if row:
@@ -141,14 +180,22 @@ class ContextManager:
             raw_records = await pg.recover_turns(after_turn=anchor, limit=_cfg.CONTEXT_HOT_WINDOW_SIZE)
             if raw_records:
                 um = um or UserMemory(user_id=user_id)
+                # Re-warm memory + Redis from PG
+                mem.load_all(raw_records, data)
                 asyncio.create_task(self._rewarm_redis(user_id, data, raw_records))
 
         um = um or UserMemory(user_id=user_id)
         snap = ContextSnapshot(raw_records)
 
+        game_state = mem.read_game_state()
+        if not game_state:
+            game_state = await store.read_game_state()
+            if game_state:
+                mem.write_game_state(game_state)
+
         wc = WorkingContext(
             user_id=user_id,
-            game_state=await store.read_game_state(),
+            game_state=game_state,
             meta={"turn_count": raw_records[0].turn_number if raw_records else 0},
             user_memory=um,
         )
@@ -171,7 +218,7 @@ class ContextManager:
             )
 
         # Compression trigger — fire-and-forget with unified record list
-        if not await store.is_compressing() and raw_records:
+        if not mem.is_compressing() and raw_records:
             unified = wc.to_records()
             asyncio.create_task(
                 self._compressor.run(
@@ -191,10 +238,13 @@ class ContextManager:
         fallback_prompt: str | None = None,
         prompt_turn: int = 0,
     ) -> RoastContext:
+        mem = self._mem(user_id)
         store = self._store(user_id)
         rc = RoastContext(roast_instance_id=roast_instance_id)
         try:
-            data = await store.read_summaries()
+            data = mem.read_summaries()
+            if not data:
+                data = await store.read_summaries()
             same_roast = data.get("roast_id") == roast_instance_id
             rc.summary = (data.get("l4_roast", "") if same_roast else "") or fallback_l4 or ""
             if same_roast:

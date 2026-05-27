@@ -6,6 +6,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from context.storage.memory import clear_all
 from context.storage.pg import PgStorage
 from context.schema import SummaryRow, ConversationRecord, SummaryRecord, UserMemory
 from context.manager import ContextManager
@@ -172,6 +173,9 @@ class TestPgRecoverTurns:
 
 
 class TestAssembleFallback:
+    def setup_method(self):
+        clear_all()
+
     @pytest.mark.asyncio
     async def test_assemble_falls_back_to_pg_when_redis_empty(self):
         """When Redis returns no turns and no summary, PG is queried."""

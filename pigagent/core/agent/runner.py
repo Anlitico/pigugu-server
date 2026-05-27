@@ -108,8 +108,22 @@ class AgentRunner:
         msgs = list(messages)
         state = AgentState(status=StateStatus.RUNNING.value)
 
+        # Resolve interrupt event if a key was provided
+        event = None
+        if interrupt_key:
+            mgr = get_interrupt_manager()
+            event = mgr.get(interrupt_key)
+            if event is None:
+                event = mgr.create(interrupt_key)
+
+        collected: list[str] = []
+
         try:
             while not self._should_stop(state):
+                # Check interrupt before each LLM step
+                if event and event.is_set():
+                    raise InterruptedException()
+
                 state.current_step += 1
                 step = state.current_step
                 logger.debug(f"[Runner] Stream step {step}")
@@ -119,7 +133,7 @@ class AgentRunner:
                     [t.to_openai_schema() for t in self._tools] if self._tools else None
                 )
 
-                collected: list[str] = []
+                collected = []
                 tool_calls: list | None = None
                 finish = "stop"
 
@@ -131,6 +145,10 @@ class AgentRunner:
                     max_tokens=self._max_tokens,
                     search=search,
                 ):
+                    # Check interrupt during streaming (between chunks)
+                    if event and event.is_set():
+                        raise InterruptedException()
+
                     if delta.content:
                         collected.append(delta.content)
                         yield delta.content
@@ -168,8 +186,14 @@ class AgentRunner:
 
         except InterruptedException:
             state.status = StateStatus.INTERRUPTED.value
+            # Save partial content so generate_reply can persist it
+            partial = "".join(collected)
+            if partial:
+                msgs.append(Message.assistant(content=partial, partial=True))
             self.last_step_count = state.current_step
             self.last_status = state.status
+            self.last_messages = msgs
+            logger.info(f"[Runner] Interrupted at step {state.current_step}")
         except Exception:
             state.status = StateStatus.ERROR.value
             self.last_step_count = state.current_step

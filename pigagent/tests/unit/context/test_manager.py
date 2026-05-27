@@ -81,6 +81,8 @@ class TestContextManagerAddTurn:
     async def test_add_turn_increments_counter(self):
         from unittest.mock import AsyncMock, MagicMock
         from context.manager import ContextManager
+        from context.storage.memory import clear_all
+        clear_all()
 
         redis_mock = AsyncMock()
         redis_mock.lrange.return_value = []
@@ -89,5 +91,5 @@ class TestContextManagerAddTurn:
         redis_mock.pipeline = MagicMock(return_value=AsyncMock())
 
         ctx = ContextManager(redis_client=redis_mock)
-        await ctx.add_turn(user_id="u1", role="user", content="hello")
-        redis_mock.pipeline.assert_called_once()
+        turn_no = await ctx.add_turn(user_id="u1", role="user", content="hello")
+        assert turn_no == 1  # memory store tracked the turn number correctly

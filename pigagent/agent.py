@@ -99,6 +99,7 @@ class PigAgent:
         user_text: str,
         *,
         persona_id: int = 1,
+        interrupt_key: str | None = None,
     ) -> AsyncIterator[str]:
         """Complete reply pipeline: load context  ->  assemble  ->  stream  ->  persist.
 
@@ -138,7 +139,11 @@ class PigAgent:
 
         TelemetryCollector.mark("ctx_done")
 
-        # 5. Stream and collect response
+        # 5. Persist user message before streaming — so it's in context even if interrupted
+        if self.ctx and user_id:
+            await self._persist_turns(user_id, [new_msg])
+
+        # 6. Stream and collect response
         response_chunks: list[str] = []
         logger.info(
             f"[PigAgent] generate_reply user={user_id} persona={persona_id} "
@@ -152,6 +157,7 @@ class PigAgent:
         if roast_state and game_mode:
             async for text in self._stream_roast(
                 messages, roast_state, game_mode,
+                interrupt_key=interrupt_key,
             ):
                 if first_yield:
                     TelemetryCollector.mark("llm_internal")
@@ -159,7 +165,7 @@ class PigAgent:
                 response_chunks.append(text)
                 yield text
         else:
-            async for text in self.runner.stream(messages):
+            async for text in self.runner.stream(messages, interrupt_key=interrupt_key):
                 if first_yield:
                     TelemetryCollector.mark("llm_internal")
                     first_yield = False
@@ -172,13 +178,13 @@ class PigAgent:
             f"status={self.runner.last_status}"
         )
 
-        # 6. Persist the user message + all runner-added messages (assistant, tool calls)
+        # 7. Persist runner-added messages (assistant, tool calls). User message was persisted before stream.
         if self.ctx and user_id:
             runner_msgs = self.runner.last_messages[pre_stream_count:] if self.runner.last_messages else []
-            all_msgs = [new_msg] + runner_msgs  # user message first, then runner output
-            turn_no = await self._persist_turns(user_id, all_msgs)
-            if turn_no:
-                TelemetryCollector.set_meta("turn_number", turn_no)
+            if runner_msgs:
+                turn_no = await self._persist_turns(user_id, runner_msgs)
+                if turn_no:
+                    TelemetryCollector.set_meta("turn_number", turn_no)
 
     # ── Low-level stream (no side effects, used by tests) ──────────────
 
@@ -282,6 +288,8 @@ class PigAgent:
         messages: list[Message],
         roast_state,
         game_mode,
+        *,
+        interrupt_key: str | None = None,
     ) -> AsyncIterator[str]:
         """Roast pipeline: consume pending  ->  stream  ->  tick.
 
@@ -299,7 +307,7 @@ class PigAgent:
             logger.warning(f"[PigAgent] consume_pending failed: {e}")
 
         # 2. Stream LLM
-        async for text in self.runner.stream(messages):
+        async for text in self.runner.stream(messages, interrupt_key=interrupt_key):
             yield text
 
         # 3. Tick  -  fire-and-forget, don't block the reply

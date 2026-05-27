@@ -186,3 +186,142 @@ class TestAgentRunner:
         result = asyncio.run(_run())
         assert runner.last_status == StateStatus.INTERRUPTED.value
         assert result.finish_reason == "interrupted"
+
+
+# ── Stream interrupt tests ──────────────────────────────────────────────────
+
+
+class SlowStreamProvider:
+    """Yields text chunks one at a time with a configurable delay."""
+
+    def __init__(self, chunks: list[str], delay: float = 0.01):
+        self._chunks = chunks
+        self._delay = delay
+
+    async def chat_stream(self, **kw):
+        from core.llm.types import ChatDelta
+        for text in self._chunks:
+            await asyncio.sleep(self._delay)
+            yield ChatDelta(content=text)
+        yield ChatDelta(finish_reason="stop")
+
+
+class TestStreamInterrupt:
+    @staticmethod
+    def _msgs(*contents: str) -> list:
+        from core.llm.types import Message
+        return [Message.user(c) for c in contents]
+
+    def test_no_interrupt_key_works_normally(self, monkeypatch):
+        provider = SlowStreamProvider(["Hello, ", "world!"])
+        monkeypatch.setattr("core.agent.runner.get_llm", lambda model: provider)
+
+        runner = AgentRunner(RunnerConfig(model="test"))
+        msgs = self._msgs("hi")
+
+        async def _collect():
+            chunks = []
+            async for t in runner.stream(msgs):
+                chunks.append(t)
+            return "".join(chunks)
+
+        result = asyncio.run(_collect())
+        assert result == "Hello, world!"
+        assert runner.last_status == StateStatus.SUCCESS.value
+
+    def test_interrupt_mid_stream_saves_partial(self, monkeypatch):
+        from core.agent.interrupt import get_interrupt_manager
+
+        provider = SlowStreamProvider(["Hello, ", "world! ", "How are you?"], delay=0.02)
+        monkeypatch.setattr("core.agent.runner.get_llm", lambda model: provider)
+
+        runner = AgentRunner(RunnerConfig(model="test"))
+        msgs = self._msgs("hi")
+        key = "test:stream:interrupt1"
+
+        async def _run():
+            mgr = get_interrupt_manager()
+            mgr.create(key)
+            chunks = []
+            async for t in runner.stream(msgs, interrupt_key=key):
+                chunks.append(t)
+                if "".join(chunks).startswith("Hello, "):
+                    await mgr.trigger(key)
+            return "".join(chunks)
+
+        result = asyncio.run(_run())
+        # Should have partial content captured
+        assert result.startswith("Hello, ")
+        assert runner.last_status == StateStatus.INTERRUPTED.value
+        # Partial content should be in last_messages
+        assert len(runner.last_messages) > 1  # user + partial assistant
+        last_msg = runner.last_messages[-1]
+        assert last_msg.partial is True
+        assert "Hello, " in last_msg.content
+
+    def test_interrupt_before_any_output(self, monkeypatch):
+        from core.agent.interrupt import get_interrupt_manager
+
+        provider = SlowStreamProvider(["a", "b", "c"], delay=0.05)
+        monkeypatch.setattr("core.agent.runner.get_llm", lambda model: provider)
+
+        runner = AgentRunner(RunnerConfig(model="test"))
+        msgs = self._msgs("hi")
+        key = "test:stream:interrupt2"
+
+        async def _run():
+            mgr = get_interrupt_manager()
+            mgr.create(key)
+            # Trigger immediately — before any chunk is yielded
+            await mgr.trigger(key)
+            chunks = []
+            async for t in runner.stream(msgs, interrupt_key=key):
+                chunks.append(t)
+            return "".join(chunks)
+
+        result = asyncio.run(_run())
+        assert result == ""
+        assert runner.last_status == StateStatus.INTERRUPTED.value
+
+    def test_interrupt_respected_between_steps(self, monkeypatch):
+        from core.agent.interrupt import get_interrupt_manager
+        from core.llm.types import ToolCall, ChatDelta
+
+        step_counter = [0]  # persistent across get_llm calls
+
+        def _make_provider():
+            class StepProvider:
+                async def chat_stream(self, **kw):
+                    nonlocal step_counter
+                    step_counter[0] += 1
+                    if step_counter[0] == 1:
+                        tc = ToolCall(id="c1", name="search", arguments='{"q":"x"}')
+                        yield ChatDelta(tool_calls=[tc], finish_reason="tool_calls")
+                    else:
+                        yield ChatDelta(content="result text")
+                        yield ChatDelta(finish_reason="stop")
+            return StepProvider()
+
+        monkeypatch.setattr("core.agent.runner.get_llm", lambda model: _make_provider())
+        monkeypatch.setattr(
+            "core.agent.runner.ToolExecutor",
+            lambda *a, **kw: _FakeExecutor(),
+        )
+
+        runner = AgentRunner(RunnerConfig(model="test", max_steps=5))
+        msgs = self._msgs("hi")
+        key = "test:stream:between"
+
+        async def _run():
+            mgr = get_interrupt_manager()
+            mgr.create(key)
+            chunks = []
+            async for t in runner.stream(msgs, interrupt_key=key):
+                chunks.append(t)
+                # Trigger after first text chunk — interrupt mid-stream
+                await mgr.trigger(key)
+            return "".join(chunks)
+
+        result = asyncio.run(_run())
+        assert runner.last_status == StateStatus.INTERRUPTED.value
+        assert runner.last_step_count >= 1

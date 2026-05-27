@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import uuid
 from typing import Any
 
 from loguru import logger
@@ -125,6 +126,11 @@ async def run(ctx: JobContext) -> None:
 
         # Timing
         if event.new_state == "thinking" and event.old_state != "thinking":
+            key = f"agent_turn:{uuid.uuid4().hex[:12]}"
+            current_interrupt_key = key
+            bridge.current_interrupt_key = key
+            interrupt_mgr.create(key)
+            logger.info(f"[Interrupt] Key created: {key[:28]}...")
             TelemetryCollector.mark("llm_start")
         if event.old_state != "speaking" and event.new_state == "speaking":
             TelemetryCollector.mark("agent_spk")
