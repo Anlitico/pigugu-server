@@ -118,7 +118,7 @@ class AgentConfig(BaseSettings):
     #   ("qwen", "qwen-us", "deepseek", etc.)
     LLM_PROVIDER: str = Field(default_factory=lambda: get_config_value("LLM_PROVIDER", "qwen"))
 
-    QWEN_MODEL: str = Field(default_factory=lambda: get_config_value("QWEN_MODEL", "qwen-plus"))
+    QWEN_MODEL: str = Field(default_factory=lambda: get_config_value("QWEN_MODEL", "qwen3.6-plus"))
 
     # LLM Settings
     LLM_TEMPERATURE: float = Field(default_factory=lambda: float(get_config_value("LLM_TEMPERATURE", 0.6)))

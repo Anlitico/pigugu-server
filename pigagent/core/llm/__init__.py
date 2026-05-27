@@ -52,7 +52,7 @@ def _build_pool() -> None:
             logger.warning(f"[Pool] Unknown provider '{pid}', using QwenProvider as fallback")
 
 
-def get_llm(model: str = "qwen-plus") -> LLMProvider:
+def get_llm(model: str = "qwen3.6-plus") -> LLMProvider:
     """Return the provider instance for the given model.
 
     Resolves model  ->  provider backend via ModelRegistry, then returns
@@ -69,7 +69,7 @@ def get_llm(model: str = "qwen-plus") -> LLMProvider:
 
 
 def create_llm(
-    model: str = "qwen-plus",
+    model: str = "qwen3.6-plus",
     **kwargs,
 ) -> LLMProvider:
     """Backward-compat alias for get_llm()."""

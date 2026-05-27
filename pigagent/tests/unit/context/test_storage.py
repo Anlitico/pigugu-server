@@ -2,6 +2,7 @@
 """Unit tests for context storage  -  RedisKeys, RedisStorage, PgStorage."""
 
 import json
+from unittest.mock import patch
 
 import pytest
 
@@ -346,23 +347,38 @@ class TestRedisStorageExceptionHandling:
 
 
 # -------------------------------------------------------------------------------
+# PgStorage — mock helpers (mirrors test_pg_fallback.py)
+# -------------------------------------------------------------------------------
+
+class _MockPool:
+    """Async context manager that yields a mock connection."""
+
+    def __init__(self, conn):
+        self._conn = conn
+
+    async def __aenter__(self):
+        return self._conn
+
+    async def __aexit__(self, *args):
+        pass
+
+
+def _mock_pg_conn(fetchrow=None, fetch=None):
+    """Build a mock connection with optional fetchrow / fetch / execute."""
+    from unittest.mock import AsyncMock, MagicMock
+    conn = MagicMock()
+    conn.fetchrow = AsyncMock(return_value=fetchrow)
+    conn.fetch = AsyncMock(return_value=fetch or [])
+    conn.execute = AsyncMock()
+    return conn
+
+
+# -------------------------------------------------------------------------------
 # PgStorage
 # -------------------------------------------------------------------------------
 
 class TestPgStorage:
-    """PgStorage  -  all methods with mocked PG pool."""
-
-    @pytest.fixture
-    def pg_mock(self):
-        from unittest.mock import AsyncMock, MagicMock
-        mock = AsyncMock()
-        mock.acquire = MagicMock(return_value=AsyncMock())
-        return mock
-
-    @pytest.fixture
-    def pg_store(self, pg_mock):
-        from context.storage.pg import PgStorage
-        return PgStorage("u1", pg_mock)
+    """PgStorage  -  all methods with mocked _connect."""
 
     # ── No-pool short-circuits ──
 
@@ -385,63 +401,70 @@ class TestPgStorage:
             await store.upsert_profile("profile")
         asyncio.run(run())
 
+    @pytest.fixture
+    def pg_store(self):
+        from context.storage.pg import PgStorage
+        return PgStorage("u1", "postgresql://test")
+
     # ── recover_turn_counter ──
 
     @pytest.mark.asyncio
-    async def test_recover_turn_counter_returns_max(self, pg_store, pg_mock):
-        conn = pg_mock.acquire.return_value.__aenter__.return_value
-        conn.fetchrow.return_value = [55]
-        result = await pg_store.recover_turn_counter()
-        assert result == 55
+    async def test_recover_turn_counter_returns_max(self, pg_store):
+        pool = _MockPool(_mock_pg_conn(fetchrow=[55]))
+        with patch("context.storage.pg._connect", return_value=pool):
+            assert await pg_store.recover_turn_counter() == 55
 
     @pytest.mark.asyncio
-    async def test_recover_turn_counter_empty_db(self, pg_store, pg_mock):
-        conn = pg_mock.acquire.return_value.__aenter__.return_value
-        conn.fetchrow.return_value = None
-        result = await pg_store.recover_turn_counter()
-        assert result == 0
+    async def test_recover_turn_counter_empty_db(self, pg_store):
+        pool = _MockPool(_mock_pg_conn(fetchrow=None))
+        with patch("context.storage.pg._connect", return_value=pool):
+            assert await pg_store.recover_turn_counter() == 0
 
     # ── read_new_facts ──
 
     @pytest.mark.asyncio
-    async def test_read_new_facts_returns_list(self, pg_store, pg_mock):
-        conn = pg_mock.acquire.return_value.__aenter__.return_value
-        conn.fetch.return_value = [
+    async def test_read_new_facts_returns_list(self, pg_store):
+        pool = _MockPool(_mock_pg_conn(fetch=[
             {"fact": "loves pizza", "category": "food"},
             {"fact": "lives in SH", "category": "location"},
-        ]
-        result = await pg_store.read_new_facts()
-        assert len(result) == 2
-        assert "loves pizza (food)" in result
-        assert "lives in SH (location)" in result
+        ]))
+        with patch("context.storage.pg._connect", return_value=pool):
+            result = await pg_store.read_new_facts()
+            assert len(result) == 2
+            assert "loves pizza (food)" in result
+            assert "lives in SH (location)" in result
 
     # ── read_profile ──
 
     @pytest.mark.asyncio
-    async def test_read_profile_returns_data(self, pg_store, pg_mock):
+    async def test_read_profile_returns_data(self, pg_store):
         from datetime import datetime, timezone
-        conn = pg_mock.acquire.return_value.__aenter__.return_value
         now = datetime.now(timezone.utc)
-        conn.fetchrow.return_value = {"profile_summary": "User profile", "updated_at": now}
-        profile, ts = await pg_store.read_profile()
-        assert profile == "User profile"
-        assert ts == now
+        pool = _MockPool(_mock_pg_conn(
+            fetchrow={"profile_summary": "User profile", "updated_at": now},
+        ))
+        with patch("context.storage.pg._connect", return_value=pool):
+            profile, ts = await pg_store.read_profile()
+            assert profile == "User profile"
+            assert ts == now
 
     @pytest.mark.asyncio
-    async def test_read_profile_empty_row(self, pg_store, pg_mock):
-        conn = pg_mock.acquire.return_value.__aenter__.return_value
-        conn.fetchrow.return_value = None
-        profile, ts = await pg_store.read_profile()
-        assert profile == ""
-        assert ts is None
+    async def test_read_profile_empty_row(self, pg_store):
+        pool = _MockPool(_mock_pg_conn(fetchrow=None))
+        with patch("context.storage.pg._connect", return_value=pool):
+            profile, ts = await pg_store.read_profile()
+            assert profile == ""
+            assert ts is None
 
     # ── flush_one ──
 
     @pytest.mark.asyncio
-    async def test_flush_one_inserts(self, pg_store, pg_mock):
+    async def test_flush_one_inserts(self, pg_store):
         from core.llm.types import Message
-        conn = pg_mock.acquire.return_value.__aenter__.return_value
-        await pg_store.flush_one(1, Message.user("hello"), "rx")
+        conn = _mock_pg_conn()
+        pool = _MockPool(conn)
+        with patch("context.storage.pg._connect", return_value=pool):
+            await pg_store.flush_one(1, Message.user("hello"), "rx")
         conn.execute.assert_called_once()
 
     # ── _serialize_tool_calls ──
