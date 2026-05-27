@@ -104,9 +104,17 @@ async def run(ctx: JobContext) -> None:
 
     # ── Interrupt wiring ──────────────────────────────────────────────
     # Single source of truth: bridge.current_interrupt_event.
-    # No nonlocal variable — avoids divergence between session and bridge refs.
+    # bridge.llm_node() creates the event, session triggers it, runner checks it.
 
     # ── Event handlers ────────────────────────────────────────────────
+
+    @session.on("overlapping_speech")
+    def on_overlapping_speech(event):
+        """Fires when VAD detects user speech during agent output — earliest
+        possible interrupt signal, before any state transitions."""
+        if getattr(event, "is_interruption", False) and bridge.current_interrupt_event:
+            logger.info("[Interrupt] Overlapping speech — cancelling LLM")
+            bridge.current_interrupt_event.set()
 
     @session.on("agent_state_changed")
     def on_agent_state_changed(event):
