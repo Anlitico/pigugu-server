@@ -114,11 +114,8 @@ class AgentConfig(BaseSettings):
     CARTESIA_TTS_BASE_URL: str = Field(default_factory=lambda: get_config_value("CARTESIA_TTS_BASE_URL", "https://api.cartesia.ai"))
     
     # LLM Configuration
-    # LLM_PROVIDER: provider ID used to resolve api_key / base_url
-    #   ("qwen", "qwen-us", "deepseek", etc.)
-    LLM_PROVIDER: str = Field(default_factory=lambda: get_config_value("LLM_PROVIDER", "qwen"))
 
-    QWEN_MODEL: str = Field(default_factory=lambda: get_config_value("QWEN_MODEL", "qwen-plus"))
+    QWEN_MODEL: str = Field(default_factory=lambda: get_config_value("QWEN_MODEL", "qwen-plus-us"))
 
     # LLM Settings
     LLM_TEMPERATURE: float = Field(default_factory=lambda: float(get_config_value("LLM_TEMPERATURE", 0.6)))
@@ -140,21 +137,6 @@ class AgentConfig(BaseSettings):
         config_logger.info(f"Getting LLM provider for model={model}")
         return get_llm(model)
 
-    def get_llm_config(self) -> dict:
-        """Backward-compat wrapper. New code should use create_provider()."""
-        provider = self.LLM_PROVIDER.lower()
-        model = self.resolve_model()
-
-        from core.llm.registry import resolve_provider
-        base_url, api_key, _ = resolve_provider(provider)
-
-        return {
-            "model": model,
-            "api_key": api_key,
-            "base_url": base_url,
-            "provider": provider,
-        }
-    
     # Agent Settings
     AGENT_WORKERS: int = Field(default_factory=lambda: int(get_config_value("AGENT_WORKERS", 2)))
     ENABLE_INTERRUPTIONS: bool = Field(default_factory=lambda: get_bool_config_value("ENABLE_INTERRUPTIONS", True))
@@ -224,7 +206,6 @@ def _log_config_summary(cfg: AgentConfig) -> None:
         ("DEEPGRAM", f"model={cfg.DEEPGRAM_STT_MODEL} lang={cfg.DEEPGRAM_STT_LANGUAGE} rate={cfg.DEEPGRAM_STT_SAMPLE_RATE} diarization={cfg.DEEPGRAM_ENABLE_DIARIZATION}"),
         ("CARTESIA_STT", f"model={cfg.CARTESIA_STT_MODEL} lang={cfg.CARTESIA_STT_LANGUAGE} encoding={cfg.CARTESIA_STT_ENCODING} rate={cfg.CARTESIA_STT_SAMPLE_RATE}"),
         ("CARTESIA_TTS", f"model={cfg.CARTESIA_TTS_MODEL} voice={cfg.CARTESIA_TTS_VOICE} lang={cfg.CARTESIA_TTS_LANGUAGE} speed={cfg.CARTESIA_TTS_SPEED} emotion={cfg.CARTESIA_TTS_EMOTION} volume={cfg.CARTESIA_TTS_VOLUME}"),
-        ("LLM_PROVIDER", cfg.LLM_PROVIDER),
         ("QWEN_MODEL", cfg.QWEN_MODEL),
         ("LLM_TEMPERATURE", cfg.LLM_TEMPERATURE),
         ("LLM_MAX_TOKENS", cfg.LLM_MAX_TOKENS),

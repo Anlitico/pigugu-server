@@ -19,35 +19,29 @@ _cfg = get_config()
 class TestProviderTokenCounting:
     """Token counting: fast (tiktoken) + async (API, falls back to offline)."""
 
-    def test_qwen_count_tokens_uses_tiktoken(self):
-        from core.llm.providers.qwen import QwenProvider
+    def test_qwen_count_tokens_uses_tiktoken(self, qwen_provider):
         import asyncio
-        p = QwenProvider(api_key="sk-test")
 
         async def run():
-            assert await p.count_tokens("") == 0
-            tokens = await p.count_tokens("hello world")
+            assert await qwen_provider.count_tokens("") == 0
+            tokens = await qwen_provider.count_tokens("hello world")
             assert 2 <= tokens <= 3
         asyncio.run(run())
 
-    def test_qwen_count_tokens_chinese(self):
-        from core.llm.providers.qwen import QwenProvider
+    def test_qwen_count_tokens_chinese(self, qwen_provider):
         import asyncio
-        p = QwenProvider(api_key="sk-test")
 
         async def run():
-            tokens = await p.count_tokens("你好世界")
+            tokens = await qwen_provider.count_tokens("你好世界")
             assert tokens > 0
         asyncio.run(run())
 
-    def test_volcengine_count_tokens_uses_tiktoken(self):
-        from core.llm.providers.volcengine import VolcengineProvider
+    def test_volcengine_count_tokens_uses_tiktoken(self, volcengine_provider):
         import asyncio
-        p = VolcengineProvider(api_key="sk-test")
 
         async def run():
-            assert await p.count_tokens("") == 0
-            tokens = await p.count_tokens("hello world")
+            assert await volcengine_provider.count_tokens("") == 0
+            tokens = await volcengine_provider.count_tokens("hello world")
             assert 2 <= tokens <= 3
         asyncio.run(run())
 

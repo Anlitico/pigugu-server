@@ -59,7 +59,7 @@ class TestTrumpPersona:
     def test_get_full_prompt_returns_string(self):
         from personas import TrumpPersona
         p = TrumpPersona()
-        prompt = p.get_full_prompt("qwen")
+        prompt = p.get_full_prompt()
         assert isinstance(prompt, str)
         assert len(prompt) > 100
         assert "Trump" in prompt
@@ -67,7 +67,7 @@ class TestTrumpPersona:
     def test_get_full_prompt_volcengine(self):
         from personas import TrumpPersona
         p = TrumpPersona()
-        prompt = p.get_full_prompt("volcengine")
+        prompt = p.get_full_prompt()
         assert isinstance(prompt, str)
         assert len(prompt) > 100
 
@@ -92,7 +92,7 @@ class TestMuskPersona:
     def test_get_full_prompt(self):
         from personas import MuskPersona
         p = MuskPersona()
-        prompt = p.get_full_prompt("qwen")
+        prompt = p.get_full_prompt()
         assert isinstance(prompt, str)
         assert len(prompt) > 100
 
@@ -112,7 +112,7 @@ class TestJamesPersona:
     def test_get_full_prompt(self):
         from personas import JamesPersona
         p = JamesPersona()
-        prompt = p.get_full_prompt("qwen")
+        prompt = p.get_full_prompt()
         assert isinstance(prompt, str)
         assert len(prompt) > 100
 

@@ -1,16 +1,25 @@
 # Provider configuration — add new providers here
 # [name]    must match the provider field in models.toml
-# base_url  API endpoint (US/international)
+# base_url  API endpoint
 # env       environment variable for API key
+# backend   fully-qualified Python class (loaded via reflection)
 # default   default model when user does not specify one
 
 [qwen-us]
 base_url = "https://dashscope-us.aliyuncs.com/compatible-mode/v1"
 env = "DASHSCOPE_US_API_KEY"
+backend = "core.llm.providers.qwen.QwenProvider"
+default = "qwen-plus-us"
+
+[qwen-cn]
+base_url = "https://dashscope.aliyuncs.com/compatible-mode/v1"
+env = "DASHSCOPE_API_KEY"
+backend = "core.llm.providers.qwen.QwenProvider"
 default = "qwen-plus"
 
 [volcengine]
 base_url = "https://ark.cn-beijing.volces.com/api/v3"
 env = "ARK_API_KEY"
+backend = "core.llm.providers.volcengine.VolcengineProvider"
 default = "doubao-seed-1-6-251015"
 

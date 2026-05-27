@@ -40,7 +40,7 @@ class PigAgent:
         *,
         redis,
         pg_pool,
-        model: str = "qwen-plus",
+        model: str = "qwen-plus-us",
         prompts: dict[int, str] | None = None,
         game_modes: dict[str, Any] | None = None,
         tools: list | None = None,
@@ -136,6 +136,8 @@ class PigAgent:
             mode_id = str(roast_state.mode) if hasattr(roast_state, "mode") else ""
             game_mode = self._game_modes.get(mode_id)
 
+        TelemetryCollector.mark("ctx_done")
+
         # 5. Stream and collect response
         response_chunks: list[str] = []
         logger.info(
@@ -146,6 +148,7 @@ class PigAgent:
         first_yield = True
         pre_stream_count = len(messages)  # messages added after this = runner output
 
+        TelemetryCollector.mark("llm_req")
         if roast_state and game_mode:
             async for text in self._stream_roast(
                 messages, roast_state, game_mode,
@@ -163,6 +166,7 @@ class PigAgent:
                 response_chunks.append(text)
                 yield text
 
+        TelemetryCollector.mark("llm_end")
         logger.info(
             f"[PigAgent] Reply complete: {self.runner.last_step_count} steps, "
             f"status={self.runner.last_status}"

@@ -17,7 +17,7 @@ class TestValidateConfiguration:
         from bootstrap.factory import validate_configuration
         config = MagicMock()
         config.STT_PROVIDER = "cartesia"
-        config.LLM_PROVIDER = "qwen-us"
+        config.resolve_model = MagicMock(return_value="qwen-plus-us")
         config.ENABLE_POLICY_SEARCH = False
 
         with patch("core.llm.registry.get_provider_config") as mock_cfg:
@@ -34,7 +34,7 @@ class TestValidateConfiguration:
         from bootstrap.factory import validate_configuration
         config = MagicMock()
         config.STT_PROVIDER = "cartesia"
-        config.LLM_PROVIDER = "qwen-us"
+        config.resolve_model = MagicMock(return_value="qwen-plus-us")
         config.ENABLE_POLICY_SEARCH = False
 
         with patch("core.llm.registry.get_provider_config") as mock_cfg:
@@ -50,7 +50,7 @@ class TestValidateConfiguration:
         from bootstrap.factory import validate_configuration
         config = MagicMock()
         config.STT_PROVIDER = "cartesia"
-        config.LLM_PROVIDER = "unknown"
+        config.resolve_model = MagicMock(return_value="nonexistent-model")
         config.ENABLE_POLICY_SEARCH = False
 
         with patch("core.llm.registry.get_provider_config", return_value=None):
@@ -67,7 +67,7 @@ class TestValidateConfiguration:
         from bootstrap.factory import validate_configuration
         config = MagicMock()
         config.STT_PROVIDER = "deepgram"
-        config.LLM_PROVIDER = "qwen-us"
+        config.resolve_model = MagicMock(return_value="qwen-plus-us")
         config.ENABLE_POLICY_SEARCH = False
 
         with patch("core.llm.registry.get_provider_config") as mock_cfg:

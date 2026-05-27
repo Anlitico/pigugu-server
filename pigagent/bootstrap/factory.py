@@ -153,11 +153,10 @@ def _build_pig_agent(config=None) -> PigAgent:
         config = get_config()
 
     model = config.resolve_model()
-    llm_provider_id = config.LLM_PROVIDER.lower()
 
     from personas import PersonaRegistry
     PersonaRegistry.register_defaults()
-    prompts = PersonaRegistry.build_prompt_cache(llm_provider_id)
+    prompts = PersonaRegistry.build_prompt_cache()
     logger.info(f"[Factory] Prompt cache built: {list(prompts.keys())}")
 
     from roast import GameModeRegistry
@@ -212,15 +211,20 @@ def validate_configuration(config=None):
     if not os.getenv("CARTESIA_API_KEY"):
         errors.append("CARTESIA_API_KEY required in .env file for Cartesia TTS")
 
-    from core.llm.registry import get_provider_config
+    from core.llm.registry import ModelRegistry, get_provider_config
 
-    llm_provider = config.LLM_PROVIDER.lower()
-    cfg = get_provider_config(llm_provider)
-    if cfg:
-        if not os.getenv(cfg.env):
-            errors.append(f"{cfg.env} required in .env file for {llm_provider} LLM")
+    model = config.resolve_model()
+    info = ModelRegistry.get(model)
+    llm_provider = info.provider
+    if llm_provider == "unknown":
+        errors.append(f"Unknown model: {model}")
     else:
-        errors.append(f"Unknown LLM provider: {llm_provider}")
+        cfg = get_provider_config(llm_provider)
+        if cfg:
+            if not os.getenv(cfg.env):
+                errors.append(f"{cfg.env} required in .env file for {llm_provider} LLM")
+        else:
+            errors.append(f"Unknown LLM provider: {llm_provider}")
 
     if not os.getenv("LIVEKIT_API_KEY"):
         errors.append("LIVEKIT_API_KEY required in .env file")

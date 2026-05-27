@@ -63,7 +63,7 @@ class MockMessage:
 class TestRunnerConfig:
     def test_defaults(self):
         c = RunnerConfig()
-        assert c.model == "qwen-plus"
+        assert c.model == "qwen-plus-us"
         assert c.max_steps == 5
 
 

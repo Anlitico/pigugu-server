@@ -60,12 +60,14 @@ class VolcengineProvider(LLMProvider):
         response_format: dict | None = None,
         **kwargs,
     ) -> ChatResponse:
+        info = ModelRegistry.get(model)
+        api_model = info.api_model or model
         self._validate(tools, thinking, search, model=model)
         params = self._build_params(
             messages, tools, tool_choice, parallel_tool_calls,
             temperature, top_p, max_tokens, stop, seed,
             thinking, search, response_format,
-            model=model, stream=False, **kwargs,
+            model=api_model, stream=False, **kwargs,
         )
         completion = await self._client.chat.completions.create(**params)
 
@@ -104,12 +106,14 @@ class VolcengineProvider(LLMProvider):
         response_format: dict | None = None,
         **kwargs,
     ):
+        info = ModelRegistry.get(model)
+        api_model = info.api_model or model
         self._validate(tools, thinking, search, model=model)
         params = self._build_params(
             messages, tools, tool_choice, parallel_tool_calls,
             temperature, top_p, max_tokens, stop, seed,
             thinking, search, response_format,
-            model=model, stream=True, **kwargs,
+            model=api_model, stream=True, **kwargs,
         )
         stream = await self._client.chat.completions.create(**params)
 

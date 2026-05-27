@@ -58,7 +58,7 @@ class Persona(ABC):
         """Provider-specific suffix appended after personality prompt."""
         return ""
 
-    def get_full_prompt(self, provider: str = "") -> str:
-        """Provider-aware full personality prompt (preamble + personality + suffix)."""
+    def get_full_prompt(self) -> str:
+        """Full personality prompt (preamble + personality + suffix)."""
         parts = [self.get_preamble(), self.personality_prompt, self.get_suffix()]
         return "\n\n".join(filter(None, parts))

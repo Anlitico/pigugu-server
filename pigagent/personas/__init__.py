@@ -62,11 +62,11 @@ class PersonaRegistry:
         cls._initialized = True
 
     @classmethod
-    def build_prompt_cache(cls, provider_id: str) -> dict[int, str]:
+    def build_prompt_cache(cls) -> dict[int, str]:
         """Pre-build {persona_id: system_prompt} for all registered personas."""
         if not cls._initialized:
             cls.register_defaults()
-        return {pid: p.get_full_prompt(provider_id) for pid, p in cls._personas.items()}
+        return {pid: p.get_full_prompt() for pid, p in cls._personas.items()}
 
 
 def get_persona(persona_id: int = 1) -> Persona:

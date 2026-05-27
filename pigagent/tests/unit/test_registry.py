@@ -88,11 +88,38 @@ class TestProviderConfig:
     def test_resolve_provider(self):
         base_url, api_key, default = resolve_provider("qwen-us")
         assert "dashscope-us" in base_url
-        assert default == "qwen-plus"
+        assert default == "qwen-plus-us"
 
     def test_resolve_unknown_raises(self):
         with pytest.raises(ValueError, match="Unknown provider"):
             resolve_provider("nonexistent")
+
+    def test_provider_config_has_backend(self):
+        for pid in ("qwen-us", "qwen-cn", "volcengine"):
+            cfg = get_provider_config(pid)
+            if cfg is None:
+                pytest.fail(f"Provider {pid} not found")
+            assert cfg.backend, f"Missing backend for {pid}"
+
+    def test_qwen_backend_uses_qwen_provider_class(self):
+        cfg = get_provider_config("qwen-cn")
+        assert cfg is not None
+        assert "QwenProvider" in cfg.backend
+
+    def test_volcengine_backend_uses_volcengine_class(self):
+        cfg = get_provider_config("volcengine")
+        assert cfg is not None
+        assert "VolcengineProvider" in cfg.backend
+
+    def test_load_class_reflection(self):
+        from core.llm import _load_class
+        cls = _load_class("core.llm.providers.qwen.QwenProvider")
+        assert cls.__name__ == "QwenProvider"
+
+    def test_load_class_bad_path_raises(self):
+        from core.llm import _load_class
+        with pytest.raises((ImportError, AttributeError, ModuleNotFoundError)):
+            _load_class("nonexistent.module.FakeClass")
 
 
 # -- TOML model loading tests -------------------------------------------------

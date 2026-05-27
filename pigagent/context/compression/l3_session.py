@@ -19,7 +19,7 @@ def _load(name: str) -> str:
     return path.read_text(encoding="utf-8") if path.exists() else ""
 
 
-async def compress_turns(turns: list[Message], model: str = "qwen-plus") -> str:
+async def compress_turns(turns: list[Message], model: str = "qwen-plus-us") -> str:
     """First compression: turns  ->  summary."""
     if not turns:
         return ""
@@ -35,7 +35,7 @@ async def compress_turns(turns: list[Message], model: str = "qwen-plus") -> str:
         return ""
 
 
-async def merge_summary(existing_summary: str, new_turns: list[Message], model: str = "qwen-plus") -> str:
+async def merge_summary(existing_summary: str, new_turns: list[Message], model: str = "qwen-plus-us") -> str:
     """Merge: existing summary + new turns  ->  updated summary."""
     if not existing_summary and not new_turns:
         return ""

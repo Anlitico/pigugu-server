@@ -26,7 +26,7 @@ class TestRoastStartEndpoint:
         PersonaRegistry.register_defaults()
         GameModeRegistry.register_defaults()
 
-        prompts = PersonaRegistry.build_prompt_cache("qwen-us")
+        prompts = PersonaRegistry.build_prompt_cache()
         game_modes = GameModeRegistry.build_cache()
 
         agent = PigAgent(

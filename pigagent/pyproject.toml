@@ -49,6 +49,7 @@ dependencies = [
 ]
 
 [tool.pytest.ini_options]
+addopts = "-m 'not integration'"
 markers = [
     "integration: marks tests that call real LLM APIs (deselect with '-m \"not integration\"')",
 ]

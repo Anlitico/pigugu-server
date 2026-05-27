@@ -45,7 +45,7 @@ async def _chat(model_id: str, env_var: str, **kwargs):
 @pytest.mark.asyncio
 class TestQwenPlus:
     ENV = "DASHSCOPE_US_API_KEY"
-    MODEL = "qwen-plus"
+    MODEL = "qwen-plus-us"
 
     async def test_connectivity(self):
         await _chat(self.MODEL, self.ENV)

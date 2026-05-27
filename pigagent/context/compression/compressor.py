@@ -46,7 +46,7 @@ class ContextCompressor:
         user_id: str,
         records: list,
         existing_summary: str = "",
-        model: str = "qwen-plus",
+        model: str = "qwen-plus-us",
     ) -> None:
         """Auto-detect scenario and dispatch.
 

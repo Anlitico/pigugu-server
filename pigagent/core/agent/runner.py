@@ -17,6 +17,7 @@ from loguru import logger
 from collections.abc import AsyncIterator, Awaitable
 
 from ..llm import get_llm
+from ..llm.registry import ModelRegistry
 from ..llm.types import Message, ChatResponse
 from .stop import StepResult, step_count_is, no_tool_calls
 
@@ -35,7 +36,7 @@ AfterStepHook = Callable[[list, AgentState], Awaitable[None]]
 class RunnerConfig:
     """Configuration for an AgentRunner instance."""
 
-    model: str = "qwen-plus"
+    model: str = "qwen-plus-us"
     tools: list = field(default_factory=list)
     tool_handlers: dict = field(default_factory=dict)
     tool_timeout: float = 60.0
@@ -56,6 +57,9 @@ class AgentRunner:
 
     def __init__(self, config: RunnerConfig):
         self._model = config.model
+        # Resolve to API-level model name (e.g., qwen-plus-us-cn → qwen-plus-us)
+        info = ModelRegistry.get(config.model)
+        self._api_model = info.api_model or config.model
         self._tools = config.tools
         self._tool_handlers = config.tool_handlers
         self._stop_when = config.stop_when or [

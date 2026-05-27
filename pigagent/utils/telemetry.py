@@ -25,35 +25,37 @@ from loguru import logger
 
 _PG_DSN: str = os.getenv("DATABASE_URL", "").replace("+asyncpg", "")
 
-# ── Turn result dict keys ────────────────────────────────────────────
+# ── Segment breakdown ──────────────────────────────────────────────
 #
-# E2E = vad_end → agent_spk (user stops speaking → agent starts playing audio)
+# E2E = vad_end → agent_spk (user stops → agent starts playing audio)
 #
-#   Segment    |   Formula              | What it measures             |  In E2E?
-#   -----------+------------------------+------------------------------+---------
-#   vad        | vad_end - vad_start    | User speech duration         |   No
-#   stt        | stt_final - vad_end    | Deepgram transcription       |   Yes
-#   ctx_load   | llm_start - stt_final  | Context loading + scheduling |   Yes
-#   llm_int    | llm_internal - llm_start| Qwen request → first token  |   Yes
-#   llm_out    | llm_ttft - llm_internal| First token → visible text   |   Yes
-#   synth_gap  | agent_spk - llm_ttft   | First text → first audio     |   Yes
-#   llm_rest   | llm_end - llm_ttft     | Remaining LLM (parallel TTS) |   No
-#   tts        | tts_end - tts_start    | TTS synthesis + playback     |   No
+#   Segment    |   Formula                | What it measures
+#   -----------+--------------------------+--------------------------------
+#   vad        | vad_end - vad_start      | User speech duration (not in E2E)
+#   stt        | stt_final - vad_end      | STT transcription
+#   ctx_load   | ctx_done - stt_final     | Context load + system prompt + roast
+#   llm_prep   | llm_req - ctx_done       | Roast body + misc prep
+#   llm_api    | llm_internal - llm_req   | LLM API request → first token
+#   llm_out    | llm_ttft - llm_internal  | First token → first visible text
+#   synth_gap  | agent_spk - llm_ttft     | First text → agent speaking
+#   llm_rest   | llm_end - llm_ttft       | Remaining LLM (parallel TTS, not in E2E)
+#   tts        | tts_end - tts_start      | TTS duration (not in E2E)
 #
-# E2E ≈ stt + ctx_load + llm_int + llm_out + synth_gap
+# E2E ≈ stt + ctx_load + llm_prep + llm_api + llm_out + synth_gap
 #
 # Metadata: stt_model, llm_model, tts_model, prompt_tokens,
 #           completion_tokens, cached_tokens
 
 SEGMENTS: list[tuple[str, str, str]] = [
-    ("vad",      "vad_start",  "vad_end"),
-    ("stt",      "vad_end",    "stt_final"),
-    ("ctx_load", "stt_final",  "llm_start"),
-    ("llm_int",  "llm_start",  "llm_internal"),
-    ("llm_out",  "llm_internal","llm_ttft"),
-    ("llm_rest", "llm_ttft",   "llm_end"),
-    ("tts",      "tts_start",  "tts_end"),
-    ("synth_gap","llm_ttft",   "agent_spk"),
+    ("vad",       "vad_start",   "vad_end"),
+    ("stt",       "vad_end",     "stt_final"),
+    ("ctx_load",  "stt_final",   "ctx_done"),
+    ("llm_prep",  "ctx_done",    "llm_req"),
+    ("llm_api",   "llm_req",     "llm_internal"),
+    ("llm_out",   "llm_internal", "llm_ttft"),
+    ("synth_gap", "llm_ttft",    "agent_spk"),
+    ("llm_rest",  "llm_ttft",    "llm_end"),
+    ("tts",       "tts_start",   "tts_end"),
 ]
 
 META_KEYS = [
@@ -126,7 +128,8 @@ def _log(turn: dict[str, Any]) -> None:
 
     seg_parts: list[str] = []
     for label, a, b in SEGMENTS:
-        d = _diff(m, a, b)
+        # stt can be negative when LiveKit async events arrive out of order (vad_end > stt_final)
+        d = _diff_nonneg(m, a, b) if label == "stt" else _diff(m, a, b)
         if d is not None:
             seg_parts.append(f"{label}={_fmt(d)}")
 
@@ -201,6 +204,14 @@ def _diff(m: dict[str, float], a: str, b: str) -> float | None:
     if va is not None and vb is not None:
         return round(vb - va, 3)
     return None
+
+
+def _diff_nonneg(m: dict[str, float], a: str, b: str) -> float | None:
+    """Like _diff but clamps negative results to 0 (fixes async event ordering jitter)."""
+    d = _diff(m, a, b)
+    if d is not None and d < 0:
+        return 0.0
+    return d
 
 
 def _fmt(v: float | None) -> str:

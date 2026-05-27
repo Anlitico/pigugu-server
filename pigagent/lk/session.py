@@ -51,7 +51,7 @@ async def run(ctx: JobContext) -> None:
     logger.info(f"Agent starting for room: {ctx.room.name}")
     logger.info(f"Job ID: {ctx.job.id}")
     logger.info(f"STT: {stt_info}")
-    logger.info(f"LLM: {config.QWEN_MODEL} ({config.LLM_PROVIDER})")
+    logger.info(f"LLM: {config.QWEN_MODEL}")
     logger.info(f"TTS: {config.CARTESIA_TTS_MODEL} (voice: {config.CARTESIA_TTS_VOICE})")
     if metadata:
         logger.info(f"Metadata: {metadata}")
@@ -188,7 +188,6 @@ async def run(ctx: JobContext) -> None:
         text = getattr(item, "text_content", None)
         if text and hasattr(item, "role"):
             if item.role == "assistant":
-                TelemetryCollector.mark("llm_end")
                 try:
                     asyncio.create_task(
                         ctx.room.local_participant.publish_data(

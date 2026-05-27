@@ -59,6 +59,9 @@ services:
       REDIS_URL: redis://redis:6379/0
     volumes:
       - ./logs/pigagent:/pigagent/logs
+      - ./pigagent/core/llm/providers.toml:/pigagent/core/llm/providers.toml
+      - ./pigagent/core/llm/models.toml:/pigagent/core/llm/models.toml
+      - ./pigagent/.config:/pigagent/.config
     depends_on:
       postgres:
         condition: service_healthy

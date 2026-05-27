@@ -159,6 +159,7 @@ class ModelInfo:
     max_output_tokens: int = 0
     thinking: bool = False          # whether thinking mode is supported
     search: bool = False            # whether built-in search is supported
+    api_model: str = ""             # actual model name sent to API (defaults to model_id)
 
 
 # -------------------------------------------------------------------------------

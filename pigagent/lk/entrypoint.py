@@ -19,7 +19,7 @@ def main() -> None:
     logger.info("Pigugu Voice Agent")
     logger.info("=" * 70)
     logger.info(f"LiveKit URL: {config.LIVEKIT_URL}")
-    logger.info(f"LLM: {config.QWEN_MODEL} ({config.LLM_PROVIDER})")
+    logger.info(f"LLM: {config.QWEN_MODEL}")
     logger.info(f"TTS: Cartesia {config.CARTESIA_TTS_MODEL}")
     logger.info(f"Workers: {config.AGENT_WORKERS}")
     logger.info("=" * 70)

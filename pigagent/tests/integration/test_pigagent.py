@@ -20,7 +20,7 @@ def _make_test_agent():
     from personas import PersonaRegistry
 
     PersonaRegistry.register_defaults()
-    prompts = PersonaRegistry.build_prompt_cache("qwen-us")
+    prompts = PersonaRegistry.build_prompt_cache()
 
     return PigAgent(
         ctx=None,
@@ -110,7 +110,7 @@ class TestStartRoast:
         from agent import PigAgent
         from personas import PersonaRegistry
         PersonaRegistry.register_defaults()
-        prompts = PersonaRegistry.build_prompt_cache("qwen-us")
+        prompts = PersonaRegistry.build_prompt_cache()
 
         from context.manager import ContextManager
         ctx = ContextManager(redis_client=redis_client, pg_pool=None)

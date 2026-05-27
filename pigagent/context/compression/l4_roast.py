@@ -23,7 +23,7 @@ async def compress_roast(
     turns: list[Message],
     *,
     existing_summary: str = "",
-    model: str = "qwen-plus",
+    model: str = "qwen-plus-us",
 ) -> str:
     """Compress roast turns into a game-aware summary."""
     if not turns:

@@ -6,7 +6,7 @@ from .audio import create_stt, STTProvider, create_tts, TTSProvider
 from .llm import (
     Message, ChatResponse, ChatDelta, ToolCall,
     ModelCapability, ModelInfo, ToolSpec,
-    LLMProvider, QwenProvider, VolcengineProvider,
+    LLMProvider,
     ModelRegistry, load_models, list_providers,
 )
 
@@ -15,6 +15,6 @@ __all__ = [
     "create_tts", "TTSProvider",
     "Message", "ChatResponse", "ChatDelta", "ToolCall",
     "ModelCapability", "ModelInfo", "ToolSpec",
-    "LLMProvider", "QwenProvider", "VolcengineProvider",
+    "LLMProvider",
     "ModelRegistry", "load_models", "list_providers",
 ]
