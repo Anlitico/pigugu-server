@@ -216,12 +216,19 @@ class TestAssembleFallback:
         with patch("context.storage.pg._connect", side_effect=[pool1, pool2]):
             wc = await mgr.assemble("u1")
 
-            assert wc.summary == "Previous conversation about Python"
-            assert wc.summary_end_turn == 10
-            assert wc.user_memory is not None
-            assert wc.user_memory.profile_summary == "User is a developer"
-            assert len(wc.raw_turns) == 1
-            assert wc.raw_turns[0].role == "user"
+            # Summary was consumed once into raw_turns — sr/um are cleared
+            assert wc.summary == ""
+            assert wc.summary_end_turn == 0
+            # L2 + L3 virtual records prepended to the real turn
+            assert len(wc.raw_turns) == 3
+            assert wc.raw_turns[0].role == "system"
+            assert "User is a developer" in wc.raw_turns[0].content
+            assert wc.raw_turns[1].role == "system"
+            assert "Previous conversation about Python" in wc.raw_turns[1].content
+            assert wc.raw_turns[2].role == "user"
+            assert wc.raw_records[0].turn_number == -3  # L2 virtual
+            assert wc.raw_records[1].turn_number == -2  # L3 virtual
+            assert wc.raw_records[2].turn_number == 11  # real turn
 
     @pytest.mark.asyncio
     async def test_assemble_no_redis_no_pg_returns_empty_context(self):

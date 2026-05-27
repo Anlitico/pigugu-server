@@ -61,9 +61,11 @@ class ContextCompressor:
 
         from context.storage.redis import RedisStorage
         from context.storage.pg import PgStorage
+        from context.storage.memory import MemoryStore
 
         self._store = RedisStorage(user_id, self._store_client)
         self._pg_store = PgStorage(user_id, self._pg_pool)
+        self._mem = MemoryStore(user_id)
 
         # Pass unified list inside snap for splitting
         snap.records = records  # temporarily override for splitting
@@ -79,12 +81,13 @@ class ContextCompressor:
                               existing_summary: str, model: str) -> None:
         """L2 + L3. All real turns go to L3, L2 from full context minus L2 itself."""
         await self._store.set_compressing(True)
+        self._mem.set_compressing(True)
 
         # Split: real turns (pos turn_number) vs virtual (summaries)
         real_turns = [r for r in snap.records if r.turn_number > 0]
         virtual = {r.turn_number: r for r in snap.records if r.turn_number <= 0}
         if not real_turns:
-            await self._store.set_compressing(False)
+            await self._store.set_compressing(False); self._mem.set_compressing(False)
             return
 
         l3_msgs = snap.to_messages(real_turns)
@@ -110,13 +113,14 @@ class ContextCompressor:
 
             l2_profile = await self._write_l2(l2_facts)
             await self._persist_summaries(end_turn, l2_profile=l2_profile, l3_session=l3_text, model=model)
-            await self._store.set_compressing(False)
+            self._rebuild_memory(user_id, end_turn, l2_profile=l2_profile, l3_session=l3_text)
+            await self._store.set_compressing(False); self._mem.set_compressing(False)
             logger.info(f"[Compress] free_chat u={user_id}: L2={len(l2_facts)}f L3={len(l3_text)}c")
 
         except Exception as e:
             logger.error(f"[Compress] free_chat failed: {e}")
             try:
-                await self._store.set_compressing(False)
+                await self._store.set_compressing(False); self._mem.set_compressing(False)
             except Exception:
                 pass
 
@@ -126,6 +130,7 @@ class ContextCompressor:
                           existing_summary: str, model: str) -> None:
         """L2 + L3 + L4. Split unified list by roast_prompt_turn anchor."""
         await self._store.set_compressing(True)
+        self._mem.set_compressing(True)
 
         real_turns = [r for r in snap.records if r.turn_number > 0]
         virtual = {r.turn_number: r for r in snap.records if r.turn_number <= 0}
@@ -137,7 +142,7 @@ class ContextCompressor:
                 latest_rid = r.roast_instance_id
                 break
         if not latest_rid:
-            await self._store.set_compressing(False)
+            await self._store.set_compressing(False); self._mem.set_compressing(False)
             return
 
         prompt_turn = 0
@@ -185,21 +190,26 @@ class ContextCompressor:
             l4_text = results[2] if not isinstance(results[2], BaseException) else ""
 
             l2_profile = await self._write_l2(l2_facts)
+            end_turn = max(real_turns[-1].turn_number, prompt_turn)
             await self._persist_summaries(
-                max(real_turns[-1].turn_number, prompt_turn),
+                end_turn,
                 l2_profile=l2_profile, l3_session=l3_text,
                 l4_roast=l4_text, roast_id=prompt_rid,
                 roast_prompt=prompt_text, roast_prompt_turn=prompt_turn,
                 model=model,
             )
+            self._rebuild_memory(user_id, end_turn,
+                                 l2_profile=l2_profile, l3_session=l3_text,
+                                 l4_roast=l4_text, roast_id=prompt_rid,
+                                 roast_prompt=prompt_text, roast_prompt_turn=prompt_turn)
 
-            await self._store.set_compressing(False)
+            await self._store.set_compressing(False); self._mem.set_compressing(False)
             logger.info(f"[Compress] roast u={user_id}: L2={len(l2_facts)}f L3={len(l3_text)}c L4={'Y' if l4_text else 'N'}")
 
         except Exception as e:
             logger.error(f"[Compress] roast failed: {e}")
             try:
-                await self._store.set_compressing(False)
+                await self._store.set_compressing(False); self._mem.set_compressing(False)
             except Exception:
                 pass
 
@@ -211,21 +221,55 @@ class ContextCompressor:
         roast_id: str = "", roast_prompt: str = "", roast_prompt_turn: int = 0,
         model: str = "",
     ) -> None:
-        """Write all three layer summaries to Redis + PG in one call."""
+        """Write summaries to Redis + PG asynchronously.
 
-        await self._store.write_summaries(
-            end_turn,
-            l2_profile=l2_profile, l3_session=l3_session, l4_roast=l4_roast,
-            roast_id=roast_id, roast_prompt=roast_prompt,
-            roast_prompt_turn=roast_prompt_turn,
+        Memory is updated separately via _rebuild_memory() which replaces
+        both records and summaries atomically via load_all().
+        """
+
+        # L2 + L3: fire-and-forget
+        asyncio.create_task(
+            self._store.write_summaries(
+                end_turn,
+                l2_profile=l2_profile, l3_session=l3_session, l4_roast=l4_roast,
+                roast_id=roast_id, roast_prompt=roast_prompt,
+                roast_prompt_turn=roast_prompt_turn,
+            )
         )
 
-        await self._pg_store.write_summary_row(
-            end_turn,
-            l2_profile=l2_profile, l3_session=l3_session, l4_roast=l4_roast,
-            roast_id=roast_id, roast_prompt=roast_prompt,
-            roast_prompt_turn=roast_prompt_turn, model_used=model,
+        asyncio.create_task(
+            self._pg_store.write_summary_row(
+                end_turn,
+                l2_profile=l2_profile, l3_session=l3_session, l4_roast=l4_roast,
+                roast_id=roast_id, roast_prompt=roast_prompt,
+                roast_prompt_turn=roast_prompt_turn, model_used=model,
+            )
         )
+
+    # ── Memory Rebuild ──────────────────────────────────────────────
+
+    def _rebuild_memory(
+        self, user_id: str, end_turn: int, *,
+        l2_profile: str = "", l3_session: str = "", l4_roast: str = "",
+        roast_id: str = "", roast_prompt: str = "", roast_prompt_turn: int = 0,
+    ) -> None:
+        """Replace in-memory records with post-anchor real records only.
+
+        Summaries are stored separately via write_summaries() —
+        WorkingContext.to_messages() injects them once from sr/um.
+        No virtual ConversationRecord objects — avoids double injection.
+        """
+        current = self._mem.get_hot_turns(9999)
+        post_anchor = [r for r in current if r.turn_number > end_turn]
+
+        self._mem.load_all(post_anchor, {
+            "end_turn": end_turn, "l2_profile": l2_profile,
+            "l3_session": l3_session, "l4_roast": l4_roast,
+            "roast_id": roast_id, "roast_prompt": roast_prompt,
+            "roast_prompt_turn": roast_prompt_turn,
+        })
+        logger.info(f"[Compress] Memory rebuilt u={user_id}: "
+                    f"post_anchor={len(post_anchor)}")
 
     # ── Helpers ─────────────────────────────────────────────────────
 

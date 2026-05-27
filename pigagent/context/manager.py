@@ -136,25 +136,20 @@ class ContextManager:
 
         _cfg = get_config()
 
-        # L1: read from memory first
+        # L1: read from memory
         data = mem.read_summaries()
         raw_records = mem.get_hot_turns(_cfg.CONTEXT_HOT_WINDOW_SIZE)
 
-        # L2: fallback to Redis if memory is empty
+        # L2: cold start — load from Redis into memory
         if not data:
             data = await store.read_summaries()
             if data:
                 mem.write_summaries(data.get("end_turn", 0), **{k: v for k, v in data.items() if k != "end_turn"})
         if not raw_records:
-            raw_records = await store.get_hot_turns(_cfg.CONTEXT_HOT_WINDOW_SIZE)
-            # Re-warm memory from Redis
+            anchor = data.get("end_turn", 0)
+            raw_records = await store.get_hot_turns(_cfg.CONTEXT_HOT_WINDOW_SIZE, after_anchor=anchor)
             if raw_records:
                 mem.load_all(raw_records, data)
-
-        sr = SummaryRecord(text=data["l3_session"], end_turn=data["end_turn"]) if data.get("l3_session") else None
-        anchor = sr.end_turn if sr else 0
-
-        um = UserMemory(user_id=user_id, profile_summary=data.get("l2_profile", "")) if data.get("l2_profile") else None
 
         # L3: PG fallback when both memory and Redis are empty
         if not raw_records and pg._pg:
@@ -166,25 +161,33 @@ class ContextManager:
                     "roast_id": row.roast_id, "roast_prompt": row.roast_prompt,
                     "roast_prompt_turn": row.roast_prompt_turn,
                 }
-                sr = SummaryRecord(text=row.l3_session, end_turn=row.end_turn)
-                anchor = row.end_turn
-                um = UserMemory(user_id=user_id, profile_summary=row.l2_profile)
             else:
                 profile_text, _ = await pg.read_profile()
                 if profile_text:
-                    um = UserMemory(user_id=user_id, profile_summary=profile_text)
                     data = {"end_turn": 0, "l2_profile": profile_text,
                             "l3_session": "", "l4_roast": "", "roast_id": "",
                             "roast_prompt": "", "roast_prompt_turn": 0}
 
+            anchor = data.get("end_turn", 0)
             raw_records = await pg.recover_turns(after_turn=anchor, limit=_cfg.CONTEXT_HOT_WINDOW_SIZE)
             if raw_records:
-                um = um or UserMemory(user_id=user_id)
-                # Re-warm memory + Redis from PG
                 mem.load_all(raw_records, data)
                 asyncio.create_task(self._rewarm_redis(user_id, data, raw_records))
 
+        # Save summary text for compression trigger (before consuming)
+        summary_for_compress = data.get("l3_session", "")
+
+        # If summary exists (fresh from compressor): consume once, rebuild list, clear
+        if data.get("l3_session"):
+            raw_records = self._rebuild_records_with_summary(data, raw_records)
+            mem.load_all(raw_records, {})
+            # data is consumed — set empty so sr/um won't inject again
+            data = {}
+
+        sr = SummaryRecord(text=data["l3_session"], end_turn=data["end_turn"]) if data.get("l3_session") else None
+        um = UserMemory(user_id=user_id, profile_summary=data.get("l2_profile", "")) if data.get("l2_profile") else None
         um = um or UserMemory(user_id=user_id)
+
         snap = ContextSnapshot(raw_records)
 
         game_state = mem.read_game_state()
@@ -211,7 +214,7 @@ class ContextManager:
             l4_fallback = data.get("l4_roast", "") if data.get("l4_roast") else None
             roast_prompt_fb = data.get("roast_prompt", "") if data.get("roast_prompt") else None
             prompt_turn = data.get("roast_prompt_turn", 0)
-            wc.roast = await self._load_roast_context(
+            wc.roast = self._load_roast_context(
                 user_id, snap.roast_instance_id,
                 fallback_l4=l4_fallback, fallback_prompt=roast_prompt_fb,
                 prompt_turn=prompt_turn,
@@ -224,37 +227,82 @@ class ContextManager:
                 self._compressor.run(
                     user_id=user_id,
                     records=unified,
-                    existing_summary=sr.text if sr else "",
+                    existing_summary=summary_for_compress,
                 )
             )
 
         return wc
 
+    @staticmethod
+    def _rebuild_records_with_summary(
+        data: dict, records: list[ConversationRecord],
+    ) -> list[ConversationRecord]:
+        """Consume summary once: prepend L2/L3/L4 virtual records to the list.
+
+        After this, the summaries dict is cleared — all layer data lives in the
+        records list. Roast context (L4) is included as a virtual record with
+        roast_instance_id set, so RoastState can reconstruct it from records alone.
+        """
+        new_records: list[ConversationRecord] = []
+        if data.get("l2_profile"):
+            new_records.append(ConversationRecord(
+                turn_number=-3, role="system",
+                content=f"[L2 Profile]\n{data['l2_profile']}",
+                created_at=time.time(),
+            ))
+        if data.get("l3_session"):
+            new_records.append(ConversationRecord(
+                turn_number=-2, role="system",
+                content=f"[L3 Session]\n{data['l3_session']}",
+                created_at=time.time(),
+            ))
+        if data.get("l4_roast"):
+            new_records.append(ConversationRecord(
+                turn_number=-1, role="system",
+                content=f"[L4 Roast]\n{data['l4_roast']}",
+                roast_instance_id=data.get("roast_id", ""),
+                created_at=time.time(),
+            ))
+        new_records.extend(records)
+        return new_records
+
     # ── Layer 4: Roast Context ────────────────────────────────────────
 
-    async def _load_roast_context(
+    def _load_roast_context(
         self, user_id: str, roast_instance_id: str,
         fallback_l4: str | None = None,
         fallback_prompt: str | None = None,
         prompt_turn: int = 0,
     ) -> RoastContext:
+        """Load roast context from records list first, summaries as fallback.
+
+        After consume-once, L4 data lives as a virtual record (turn=-1) in the
+        records list. The roast prompt is the first real record with this
+        roast_instance_id.
+        """
         mem = self._mem(user_id)
-        store = self._store(user_id)
         rc = RoastContext(roast_instance_id=roast_instance_id)
-        try:
-            data = mem.read_summaries()
-            if not data:
-                data = await store.read_summaries()
-            same_roast = data.get("roast_id") == roast_instance_id
-            rc.summary = (data.get("l4_roast", "") if same_roast else "") or fallback_l4 or ""
-            if same_roast:
-                rc.prompt = data.get("roast_prompt", "") or fallback_prompt or ""
-                rc.prompt_turn = data.get("roast_prompt_turn", 0) or prompt_turn
-            else:
-                # New roast — prompt comes from raw turns, not summaries
-                rc.prompt_turn = 0
-        except Exception as e:
-            logger.warning(f"Failed to load roast context for {user_id}: {e}")
+
+        # L4 summary: from virtual record (turn=-1) with matching roast_instance_id
+        records = mem.get_hot_turns(9999)
+        for r in records:
+            if r.turn_number == -1 and r.roast_instance_id == roast_instance_id:
+                rc.summary = r.content.split("\n", 1)[1] if "\n" in r.content else r.content
+                break
+        if not rc.summary:
+            rc.summary = fallback_l4 or ""
+
+        # Roast prompt: from the first real record with this roast_instance_id
+        for r in records:
+            if r.turn_number > 0 and r.roast_instance_id == roast_instance_id:
+                rc.prompt = r.content
+                rc.prompt_turn = r.turn_number
+                break
+        if not rc.prompt:
+            rc.prompt = fallback_prompt or ""
+        if not rc.prompt_turn:
+            rc.prompt_turn = prompt_turn
+
         return rc
 
     # ── Redis Re-warming ───────────────────────────────────────────────

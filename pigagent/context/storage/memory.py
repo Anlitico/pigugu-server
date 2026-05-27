@@ -88,17 +88,23 @@ class MemoryStore:
         um = self._get()
         if not um:
             return []
+        # Virtual records (negative turn: L2/L3/L4 summaries) always kept
+        virtual = [r for r in um.turns if r.turn_number <= 0]
+        real = [r for r in um.turns if r.turn_number > 0]
         if after_anchor > 0:
-            filtered = [r for r in um.turns if r.turn_number > after_anchor]
-        else:
-            filtered = list(um.turns)
-        return filtered[-n:] if len(filtered) > n else filtered
+            real = [r for r in real if r.turn_number > after_anchor]
+        real = real[-n:] if len(real) > n else real
+        return virtual + real
 
     def get_last_turn_number(self) -> int:
         um = self._get()
         if not um or not um.turns:
             return 0
-        return um.turns[-1].turn_number
+        # Only real records (>0 turn) count — virtual summaries have negative turns
+        for r in reversed(um.turns):
+            if r.turn_number > 0:
+                return r.turn_number
+        return 0
 
     def has_turns(self) -> bool:
         um = self._get()
