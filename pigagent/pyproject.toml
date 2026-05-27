@@ -58,6 +58,9 @@ dev = [
     "pyright>=1.1",
 ]
 
+[tool.setuptools.packages.find]
+exclude = ["devtools*"]
+
 [build-system]
 requires = ["setuptools>=61.0", "wheel"]
 build-backend = "setuptools.build_meta"
