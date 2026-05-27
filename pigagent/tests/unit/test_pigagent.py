@@ -61,13 +61,18 @@ def _mock_runner_stream(agent, responses=None):
     """Replace agent.runner.stream with a mock that yields responses."""
     if responses is None:
         responses = ["Hello!"]
-    mock = AsyncMock()
+    mock = MagicMock()
     mock.last_step_count = 1
     mock.last_status = "success"
+    mock.last_messages = []
 
     async def _stream(messages, search=None, interrupt_key=None):
+        # Simulate the runner appending assistant response to messages
+        full = list(messages)
         for r in responses:
+            full.append(Message.assistant(r))
             yield r
+        mock.last_messages = full
 
     mock.stream = _stream
     agent.runner = mock
@@ -136,13 +141,15 @@ class TestGenerateReply:
         import asyncio
         result = asyncio.run(_run_collect(agent.generate_reply("u1", "hello")))
 
-        assert ctx.add_turn.call_count == 2
-        # First call: user message
-        assert ctx.add_turn.call_args_list[0][1]["role"] == "user"
-        assert ctx.add_turn.call_args_list[0][1]["content"] == "hello"
-        # Second call: assistant response
-        assert ctx.add_turn.call_args_list[1][1]["role"] == "assistant"
-        assert ctx.add_turn.call_args_list[1][1]["content"] == "response text"
+        assert ctx.add_turn.call_count >= 2
+        calls = ctx.add_turn.call_args_list
+        # Find user message
+        user_calls = [c for c in calls if c[1].get("role") == "user"]
+        assistant_calls = [c for c in calls if c[1].get("role") == "assistant"]
+        assert len(user_calls) >= 1
+        assert any(c[1].get("content") == "hello" for c in user_calls)
+        assert len(assistant_calls) >= 1
+        assert any(c[1].get("content") == "response text" for c in assistant_calls)
 
     def test_context_load_failure_does_not_block(self):
         agent, ctx, redis, pg = _make_agent()

@@ -15,7 +15,6 @@ import asyncio
 
 from loguru import logger
 
-from context.schema import SummaryRecord
 from context.snapshot import ContextSnapshot
 from context.compression.l2_facts import extract_facts, summarize_profile
 from context.compression.l3_session import compress_turns, merge_summary
@@ -76,8 +75,8 @@ class ContextCompressor:
             if isinstance(l3_text, BaseException):
                 l3_text = existing_summary
 
-            await self._write_l2(l2_facts)
-            await self._write_l3(l3_text, end_turn)
+            l2_profile = await self._write_l2(l2_facts)
+            await self._persist_summaries(end_turn, l2_profile=l2_profile, l3_session=l3_text, model=model)
             await self._store.set_compressing(False)
             logger.info(f"[Compress] free_chat u={user_id}: L2={len(l2_facts)}f L3={len(l3_text)}c")
 
@@ -105,7 +104,8 @@ class ContextCompressor:
                 tasks.extend([asyncio.sleep(0), asyncio.sleep(0)])
 
             if l4_msgs:
-                existing_roast = await self._store.read_roast_summary()
+                data = await self._store.read_summaries()
+                existing_roast = data.get("l4_roast", "")
                 roast_prompt = await self._store.read_roast_prompt()
                 tasks.append(compress_roast(l4_msgs, existing_summary=existing_roast,
                                             roast_prompt=roast_prompt, model=model))
@@ -116,13 +116,13 @@ class ContextCompressor:
 
             l2_facts = results[0] if not isinstance(results[0], BaseException) else []
             l3_text = results[1] if not isinstance(results[1], BaseException) else existing_summary
-            l4_text = results[2] if not isinstance(results[2], BaseException) else None
+            l4_text = results[2] if not isinstance(results[2], BaseException) else ""
 
-            await self._write_l2(l2_facts)
-            if l3_text and l3_msgs:
-                await self._write_l3(l3_text, end_turn)
-            if l4_text:
-                await self._store.write_roast_summary(l4_text)
+            l2_profile = await self._write_l2(l2_facts)
+            await self._persist_summaries(
+                end_turn, l2_profile=l2_profile, l3_session=l3_text,
+                l4_roast=l4_text, roast_id=snap.roast_instance_id, model=model,
+            )
 
             await self._store.set_compressing(False)
             logger.info(f"[Compress] roast u={user_id}: L2={len(l2_facts)}f L3={len(l3_text)}c L4={'Y' if l4_text else 'N'}")
@@ -133,6 +133,29 @@ class ContextCompressor:
                 await self._store.set_compressing(False)
             except Exception:
                 pass
+
+    # ── Unified Persistence ─────────────────────────────────────────
+
+    async def _persist_summaries(
+        self, end_turn: int, *,
+        l2_profile: str = "", l3_session: str = "", l4_roast: str = "",
+        roast_id: str = "", model: str = "",
+    ) -> None:
+        """Write all three layer summaries to Redis + PG in one call."""
+
+        # Redis — single key
+        await self._store.write_summaries(
+            end_turn,
+            l2_profile=l2_profile, l3_session=l3_session, l4_roast=l4_roast,
+            roast_id=roast_id,
+        )
+
+        # PG — single row
+        await self._pg_store.write_summary_row(
+            end_turn,
+            l2_profile=l2_profile, l3_session=l3_session, l4_roast=l4_roast,
+            roast_id=roast_id, model_used=model,
+        )
 
     # ── Helpers ───────────────────────────────────────────────────────
 
@@ -167,31 +190,23 @@ class ContextCompressor:
             return await merge_summary(existing_summary, msgs, model=model)
         return await compress_turns(msgs, model=model)
 
-    async def _write_l2(self, facts: list[dict]) -> None:
+    async def _write_l2(self, facts: list[dict]) -> str:
         if not facts:
-            return
+            return ""
         await self._pg_store.persist_facts(facts)
-        await self._rebuild_profile()
-
-    async def _write_l3(self, text: str, end_turn: int) -> None:
-        if not text:
-            return
-        await self._store.write_summary(SummaryRecord(text=text, end_turn=end_turn))
+        return await self._rebuild_profile()
 
     # ── Profile ───────────────────────────────────────────────────────
 
-    async def _rebuild_profile(self) -> None:
-        from context.schema import UserMemory
-
+    async def _rebuild_profile(self) -> str:
         existing, _ = await self._pg_store.read_profile()
         new_facts = await self._pg_store.read_new_facts()
         if not new_facts:
-            return
+            return existing
 
         profile = await summarize_profile(new_facts, existing=existing)
         if not profile:
-            return
+            return existing
 
-        um = UserMemory(user_id="", profile_summary=profile)
-        await self._store.write_user_memory(um)
         await self._pg_store.upsert_profile(profile)
+        return profile

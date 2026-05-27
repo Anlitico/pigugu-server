@@ -72,9 +72,10 @@ class AgentRunner:
             max_concurrency=config.max_tool_concurrency,
         )
 
-        # Read-only snapshot from the last completed call (for logging).
+        # Snapshot from the last completed call.
         self.last_step_count: int = 0
         self.last_status: str = ""
+        self.last_messages: list[Message] = []
 
     # ── Public ──────────────────────────────────────────────────────────
 
@@ -158,6 +159,7 @@ class AgentRunner:
                 state.status = StateStatus.SUCCESS.value
                 self.last_step_count = state.current_step
                 self.last_status = state.status
+                self.last_messages = msgs
                 return
 
         except InterruptedException:

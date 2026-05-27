@@ -12,7 +12,7 @@ import asyncpg  # type: ignore[import-untyped]
 from loguru import logger
 
 from core.llm.types import Message
-from context.schema import UserMemory
+from context.schema import UserMemory, ConversationRecord, SummaryRow
 
 
 @asynccontextmanager
@@ -200,3 +200,97 @@ class PgStorage:
                 )
         except Exception as e:
             logger.warning(f"Failed to persist profile_summary: {e}")
+
+    # ── Summaries ───────────────────────────────────────────────────
+
+    async def write_summary_row(
+        self, end_turn: int, *,
+        l2_profile: str = "", l3_session: str = "", l4_roast: str = "",
+        roast_id: str | None = None, model_used: str = "",
+    ) -> None:
+        if not self._pg:
+            return
+        try:
+            async with _connect(self._pg) as conn:
+                await conn.execute(
+                    """INSERT INTO context_summaries
+                       (user_id, end_turn, l2_profile, l3_session, l4_roast,
+                        roast_id, model_used)
+                       VALUES ($1, $2, $3, $4, $5, $6, $7)
+                       ON CONFLICT (user_id, end_turn) DO NOTHING""",
+                    self._user_id, end_turn,
+                    l2_profile, l3_session, l4_roast,
+                    roast_id or "", model_used,
+                )
+        except Exception as e:
+            logger.warning(f"Failed to write summary row: {e}")
+
+    async def read_latest_summary(self) -> SummaryRow | None:
+        if not self._pg:
+            return None
+        try:
+            async with _connect(self._pg) as conn:
+                row = await conn.fetchrow(
+                    """SELECT user_id, end_turn, l2_profile, l3_session, l4_roast,
+                              roast_id, model_used
+                       FROM context_summaries
+                       WHERE user_id = $1
+                       ORDER BY end_turn DESC
+                       LIMIT 1""",
+                    self._user_id,
+                )
+                if row:
+                    return SummaryRow(
+                        user_id=row["user_id"],
+                        end_turn=row["end_turn"],
+                        l2_profile=row["l2_profile"],
+                        l3_session=row["l3_session"],
+                        l4_roast=row["l4_roast"],
+                        roast_id=row["roast_id"],
+                        model_used=row["model_used"],
+                    )
+        except Exception as e:
+            logger.warning(f"Failed to read latest summary: {e}")
+        return None
+
+    # ── Turn Recovery ───────────────────────────────────────────────
+
+    async def recover_turns(
+        self, after_turn: int = 0, limit: int = 100,
+    ) -> list[ConversationRecord]:
+        if not self._pg:
+            return []
+        try:
+            async with _connect(self._pg) as conn:
+                rows = await conn.fetch(
+                    """SELECT turn_number, role, content, tool_calls,
+                              tool_call_id, name, partial, roast_id, created_at
+                       FROM agent_conversations
+                       WHERE user_id = $1 AND turn_number > $2
+                       ORDER BY turn_number
+                       LIMIT $3""",
+                    self._user_id, after_turn, limit,
+                )
+                records: list[ConversationRecord] = []
+                for r in rows:
+                    tcs_raw = r["tool_calls"]
+                    tcs = None
+                    if tcs_raw:
+                        tcs = json.loads(tcs_raw) if isinstance(tcs_raw, str) else tcs_raw
+                    created_at = r["created_at"]
+                    ts = created_at.timestamp() if created_at else 0.0
+                    records.append(ConversationRecord(
+                        turn_number=r["turn_number"],
+                        role=r["role"],
+                        content=r["content"],
+                        created_at=ts,
+                        tool_calls=tcs,
+                        tool_call_id=r["tool_call_id"],
+                        name=r["name"],
+                        partial=r["partial"] or False,
+                        roast_instance_id=r["roast_id"],
+                    ))
+                return records
+        except Exception as e:
+            logger.warning(f"Failed to recover turns from PG: {e}")
+            return []

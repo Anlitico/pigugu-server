@@ -17,9 +17,11 @@ import time
 
 from loguru import logger
 
+from config import get_config
+
 from .storage.redis import RedisStorage, RedisKeys
 from .storage.pg import PgStorage
-from .schema import UserMemory, RoastContext, WorkingContext, ConversationRecord
+from .schema import UserMemory, RoastContext, WorkingContext, ConversationRecord, SummaryRecord
 from .snapshot import ContextSnapshot
 from .compression.compressor import ContextCompressor
 from .roast import RoastState
@@ -102,16 +104,45 @@ class ContextManager:
 
     async def assemble(self, user_id: str) -> WorkingContext:
         store = self._store(user_id)
+        pg = self._pg(user_id)
 
-        # Read L3 summary (recursive, single)
-        sr = await store.read_summary()
+        # Read all three layer summaries in one GET
+        data = await store.read_summaries()
+        sr = SummaryRecord(text=data["l3_session"], end_turn=data["end_turn"]) if data.get("l3_session") else None
         anchor = sr.end_turn if sr else 0
 
-        # Read raw turns after anchor (at most 100, not yet compressed)
-        raw_records = await store.get_hot_turns(100, after_anchor=anchor)
-        snap = ContextSnapshot(raw_records)
+        _cfg = get_config()
+        # Load with buffer — compression triggers at MAX_TURNS, but we need to
+        # load enough to detect the threshold crossing.
+        raw_records = await store.get_hot_turns(_cfg.CONTEXT_HOT_WINDOW_SIZE, after_anchor=anchor)
+        um = UserMemory(user_id=user_id, profile_summary=data.get("l2_profile", "")) if data.get("l2_profile") else None
 
-        um = await store.load_user_memory() or UserMemory(user_id=user_id)
+        # PG fallback when Redis is empty for this user
+        if not raw_records and pg._pg:
+            row = await pg.read_latest_summary()
+            if row:
+                data = {
+                    "end_turn": row.end_turn, "l2_profile": row.l2_profile,
+                    "l3_session": row.l3_session, "l4_roast": row.l4_roast,
+                    "roast_id": row.roast_id,
+                }
+                sr = SummaryRecord(text=row.l3_session, end_turn=row.end_turn)
+                anchor = row.end_turn
+                um = UserMemory(user_id=user_id, profile_summary=row.l2_profile)
+            else:
+                profile_text, _ = await pg.read_profile()
+                if profile_text:
+                    um = UserMemory(user_id=user_id, profile_summary=profile_text)
+                    data = {"end_turn": 0, "l2_profile": profile_text,
+                            "l3_session": "", "l4_roast": "", "roast_id": ""}
+
+            raw_records = await pg.recover_turns(after_turn=anchor, limit=_cfg.CONTEXT_HOT_WINDOW_SIZE)
+            if raw_records:
+                um = um or UserMemory(user_id=user_id)
+                asyncio.create_task(self._rewarm_redis(user_id, data, raw_records))
+
+        um = um or UserMemory(user_id=user_id)
+        snap = ContextSnapshot(raw_records)
 
         wc = WorkingContext(
             user_id=user_id,
@@ -127,7 +158,10 @@ class ContextManager:
         wc.raw_turns = [_record_to_msg(r) for r in raw_records]
 
         if snap.roast_instance_id:
-            wc.roast = await self._load_roast_context(user_id, snap.roast_instance_id)
+            l4_fallback = data.get("l4_roast", "") if data.get("l4_roast") else None
+            wc.roast = await self._load_roast_context(
+                user_id, snap.roast_instance_id, fallback_l4=l4_fallback,
+            )
 
         # Compression trigger  -  same records, fire-and-forget
         if not await store.is_compressing() and raw_records:
@@ -143,15 +177,42 @@ class ContextManager:
 
     # ── Layer 4: Roast Context ────────────────────────────────────────
 
-    async def _load_roast_context(self, user_id: str, roast_instance_id: str) -> RoastContext:
+    async def _load_roast_context(
+        self, user_id: str, roast_instance_id: str, fallback_l4: str | None = None,
+    ) -> RoastContext:
         store = self._store(user_id)
         rc = RoastContext(roast_instance_id=roast_instance_id)
         try:
             rc.prompt = await store.read_roast_prompt()
-            rc.summary = await store.read_roast_summary()
+            data = await store.read_summaries()
+            rc.summary = data.get("l4_roast", "") or fallback_l4 or ""
         except Exception as e:
             logger.warning(f"Failed to load roast context for {user_id}: {e}")
         return rc
+
+    # ── Redis Re-warming ───────────────────────────────────────────────
+
+    async def _rewarm_redis(
+        self, user_id: str,
+        data: dict,
+        records: list[ConversationRecord],
+    ) -> None:
+        """Re-populate Redis from PG-recovered data. Fire-and-forget."""
+        store = self._store(user_id)
+        try:
+            await store.write_summaries(
+                data.get("end_turn", 0),
+                l2_profile=data.get("l2_profile", ""),
+                l3_session=data.get("l3_session", ""),
+                l4_roast=data.get("l4_roast", ""),
+                roast_id=data.get("roast_id", ""),
+            )
+            for r in records:
+                await store.push_turn(json.dumps(r.to_dict(), ensure_ascii=False))
+            logger.info(f"[Context] Re-warmed Redis for user={user_id}: "
+                        f"turns={len(records)}")
+        except Exception as e:
+            logger.warning(f"[Context] Re-warm Redis failed for {user_id}: {e}")
 
 
 # ── Helpers ──────────────────────────────────────────────────────────────

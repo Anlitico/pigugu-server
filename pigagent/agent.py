@@ -144,6 +144,7 @@ class PigAgent:
         )
 
         first_yield = True
+        pre_stream_count = len(messages)  # messages added after this = runner output
 
         if roast_state and game_mode:
             async for text in self._stream_roast(
@@ -167,10 +168,11 @@ class PigAgent:
             f"status={self.runner.last_status}"
         )
 
-        # 6. Persist turn
+        # 6. Persist the user message + all runner-added messages (assistant, tool calls)
         if self.ctx and user_id:
-            full_response = "".join(response_chunks)
-            turn_no = await self._save_turn(user_id, new_msg.content, full_response)
+            runner_msgs = self.runner.last_messages[pre_stream_count:] if self.runner.last_messages else []
+            all_msgs = [new_msg] + runner_msgs  # user message first, then runner output
+            turn_no = await self._persist_turns(user_id, all_msgs)
             if turn_no:
                 TelemetryCollector.set_meta("turn_number", turn_no)
 
@@ -311,22 +313,42 @@ class PigAgent:
         except Exception as e:
             logger.error(f"[PigAgent] tick failed: {e}")
 
-    async def _save_turn(
-        self, user_id: str, user_content: str, assistant_content: str,
+    async def _persist_turns(
+        self, user_id: str, messages: list[Message],
     ) -> int:
-        """Persist one conversation turn to Redis/PG. Returns the turn number of the user message."""
+        """Persist all new messages (user, assistant, tool) to Redis/PG.
+
+        Returns the first turn number, or 0 if nothing was persisted.
+        System messages are skipped — they are injected, not conversation turns.
+        """
+        if not messages:
+            return 0
         ctx = self._require_ctx()
+        first_turn = 0
         try:
-            turn_no = await ctx.add_turn(
-                user_id=user_id, role="user", content=user_content,
-            )
-            if assistant_content:
-                await ctx.add_turn(
-                    user_id=user_id, role="assistant", content=assistant_content,
+            for msg in messages:
+                if msg.role == "system":
+                    continue
+                tool_calls_raw = None
+                if msg.tool_calls:
+                    tool_calls_raw = [
+                        {"id": tc.id, "name": tc.name, "arguments": tc.arguments}
+                        for tc in msg.tool_calls
+                    ]
+                turn_no = await ctx.add_turn(
+                    user_id=user_id,
+                    role=msg.role,
+                    content=msg.content or "",
+                    tool_calls=tool_calls_raw,
+                    tool_call_id=msg.tool_call_id,
+                    name=msg.name,
+                    partial=msg.partial,
                 )
-            return turn_no
+                if not first_turn:
+                    first_turn = turn_no
+            return first_turn
         except Exception as e:
-            logger.error(f"[PigAgent] save_turn failed: {e}")
+            logger.error(f"[PigAgent] persist_turns failed: {e}")
             return 0
 
     def _build_roast_body(self, *, game_mode, prompt: str = "") -> str:

@@ -68,10 +68,10 @@ class TestProviderTokenCounting:
 
 class TestConstants:
     def test_hot_window_size(self):
-        assert _cfg.CONTEXT_HOT_WINDOW_SIZE == 500
+        assert _cfg.CONTEXT_HOT_WINDOW_SIZE == 150
 
     def test_max_turns(self):
-        assert _cfg.CONTEXT_MAX_TURNS == 400
+        assert _cfg.CONTEXT_MAX_TURNS == 100
 
     def test_token_budget_cap(self):
         assert _cfg.CONTEXT_TOKEN_BUDGET_CAP == 200_000

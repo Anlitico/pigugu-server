@@ -19,23 +19,17 @@ class TestRedisKeys:
     def test_compressing(self):
         assert RedisKeys.compressing("u1") == "ctx:u1:compressing"
 
-    def test_summary(self):
-        assert RedisKeys.summary("u1") == "ctx:u1:summary"
+    def test_summaries(self):
+        assert RedisKeys.summaries("u1") == "ctx:u1:summaries"
 
     def test_game_state(self):
         assert RedisKeys.game_state("u1") == "ctx:u1:game_state"
-
-    def test_user_memory(self):
-        assert RedisKeys.user_memory("u1") == "pigugu:user:u1:memory"
 
     def test_roast_prompt(self):
         assert RedisKeys.roast_prompt("u1") == "ctx:u1:roast:prompt"
 
     def test_roast_turns(self):
         assert RedisKeys.roast_turns("u1") == "ctx:u1:roast:turns"
-
-    def test_roast_summary(self):
-        assert RedisKeys.roast_summary("u1") == "ctx:u1:roast:summary"
 
     def test_roast_meta(self):
         assert RedisKeys.roast_meta("u1") == "ctx:u1:roast:meta"
@@ -175,34 +169,34 @@ class TestRedisStorage:
         await store.set_compressing(False)
         redis_mock.delete.assert_called_once()
 
-    # ── read_summary / write_summary ──
+    # ── read_summaries / write_summaries ──
 
     @pytest.mark.asyncio
-    async def test_read_summary_none_when_no_redis(self):
+    async def test_read_summaries_no_redis(self):
         from context.storage.redis import RedisStorage
         store = RedisStorage("u1", None)
-        assert await store.read_summary() is None
+        assert await store.read_summaries() == {}
 
     @pytest.mark.asyncio
-    async def test_read_summary_none_when_no_data(self, store, redis_mock):
+    async def test_read_summaries_empty(self, store, redis_mock):
         redis_mock.get.return_value = None
-        assert await store.read_summary() is None
+        assert await store.read_summaries() == {}
 
     @pytest.mark.asyncio
-    async def test_read_summary_returns_record(self, store, redis_mock):
+    async def test_read_summaries_returns_data(self, store, redis_mock):
         import json
-        raw = json.dumps({"text": "summary text", "end_turn": 10})
-        redis_mock.get.return_value = raw.encode()
-        sr = await store.read_summary()
-        assert sr is not None
-        assert sr.text == "summary text"
-        assert sr.end_turn == 10
+        data = {"end_turn": 10, "l2_profile": "p", "l3_session": "s",
+                "l4_roast": "r", "roast_id": "rid"}
+        redis_mock.get.return_value = json.dumps(data).encode()
+        result = await store.read_summaries()
+        assert result["end_turn"] == 10
+        assert result["l2_profile"] == "p"
+        assert result["l3_session"] == "s"
+        assert result["l4_roast"] == "r"
 
     @pytest.mark.asyncio
-    async def test_write_summary(self, store, redis_mock):
-        from context.schema import SummaryRecord
-        sr = SummaryRecord(text="summary", end_turn=5)
-        await store.write_summary(sr)
+    async def test_write_summaries(self, store, redis_mock):
+        await store.write_summaries(5, l2_profile="p", l3_session="s", l4_roast="r")
         redis_mock.set.assert_called_once()
 
     # ── read_game_state ──
@@ -218,32 +212,6 @@ class TestRedisStorage:
         redis_mock.hgetall.return_value = {b"score": b"100"}
         result = await store.read_game_state()
         assert result == {"score": "100"}
-
-    # ── load_user_memory / write_user_memory ──
-
-    @pytest.mark.asyncio
-    async def test_load_user_memory_no_redis(self):
-        from context.storage.redis import RedisStorage
-        store = RedisStorage("u1", None)
-        assert await store.load_user_memory() is None
-
-    @pytest.mark.asyncio
-    async def test_load_user_memory_returns_um(self, store, redis_mock):
-        import json
-        redis_mock.hgetall.return_value = {
-            b"profile_summary": b"user profile",
-            b"stats_json": json.dumps({"turns": 5}),
-        }
-        um = await store.load_user_memory()
-        assert um is not None
-        assert um.profile_summary == "user profile"
-
-    @pytest.mark.asyncio
-    async def test_write_user_memory(self, store, redis_mock):
-        from context.schema import UserMemory
-        um = UserMemory(user_id="u1", profile_summary="test")
-        await store.write_user_memory(um)
-        redis_mock.hset.assert_called_once()
 
     # ── push_turn ──
 
@@ -269,16 +237,6 @@ class TestRedisStorage:
     async def test_read_roast_prompt_returns_str(self, store, redis_mock):
         redis_mock.get.return_value = b"game rules here"
         assert await store.read_roast_prompt() == "game rules here"
-
-    @pytest.mark.asyncio
-    async def test_read_roast_summary_empty(self, store, redis_mock):
-        redis_mock.get.return_value = None
-        assert await store.read_roast_summary() == ""
-
-    @pytest.mark.asyncio
-    async def test_write_roast_summary(self, store, redis_mock):
-        await store.write_roast_summary("roast summary")
-        redis_mock.set.assert_called_once()
 
     @pytest.mark.asyncio
     async def test_read_roast_meta_returns_dict(self, store, redis_mock):
@@ -347,30 +305,20 @@ class TestRedisStorageExceptionHandling:
         assert await safe_store.is_compressing() is False
 
     @pytest.mark.asyncio
-    async def test_read_summary_returns_none(self, safe_store):
-        assert await safe_store.read_summary() is None
+    async def test_read_summaries_returns_empty(self, safe_store):
+        assert await safe_store.read_summaries() == {}
 
     @pytest.mark.asyncio
     async def test_read_game_state_returns_empty(self, safe_store):
         assert await safe_store.read_game_state() == {}
 
     @pytest.mark.asyncio
-    async def test_load_user_memory_returns_none(self, safe_store):
-        assert await safe_store.load_user_memory() is None
-
-    @pytest.mark.asyncio
     async def test_set_compressing_no_raise(self, safe_store):
         await safe_store.set_compressing(True)
 
     @pytest.mark.asyncio
-    async def test_write_summary_no_raise(self, safe_store):
-        from context.schema import SummaryRecord
-        await safe_store.write_summary(SummaryRecord(text="x"))
-
-    @pytest.mark.asyncio
-    async def test_write_user_memory_no_raise(self, safe_store):
-        from context.schema import UserMemory
-        await safe_store.write_user_memory(UserMemory(user_id="u1"))
+    async def test_write_summaries_no_raise(self, safe_store):
+        await safe_store.write_summaries(0)
 
     @pytest.mark.asyncio
     async def test_push_turn_no_raise(self, safe_store):
@@ -379,14 +327,6 @@ class TestRedisStorageExceptionHandling:
     @pytest.mark.asyncio
     async def test_read_roast_prompt_returns_empty(self, safe_store):
         assert await safe_store.read_roast_prompt() == ""
-
-    @pytest.mark.asyncio
-    async def test_read_roast_summary_returns_empty(self, safe_store):
-        assert await safe_store.read_roast_summary() == ""
-
-    @pytest.mark.asyncio
-    async def test_write_roast_summary_no_raise(self, safe_store):
-        await safe_store.write_roast_summary("summary")
 
     @pytest.mark.asyncio
     async def test_read_roast_meta_returns_empty(self, safe_store):

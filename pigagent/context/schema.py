@@ -111,6 +111,22 @@ class SummaryRecord:
 
 
 @dataclass
+class SummaryRow:
+    """One PG row per compression run — all three context layers in a single row.
+
+    PK is (user_id, end_turn). Latest query: ORDER BY end_turn DESC LIMIT 1.
+    """
+
+    user_id: str
+    end_turn: int
+    l2_profile: str = ""
+    l3_session: str = ""
+    l4_roast: str = ""
+    roast_id: str = ""
+    model_used: str = ""
+
+
+@dataclass
 class TokenBudget:
     """Token allocation across the 4 context layers."""
 

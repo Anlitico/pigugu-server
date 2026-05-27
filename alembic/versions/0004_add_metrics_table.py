@@ -1,11 +1,12 @@
-"""add metrics table
+"""add metrics and context_summaries tables
 
 Revision ID: 0004
 Revises: 0003
 Create Date: 2026-05-26
 
-Per-turn latency metrics for the voice pipeline.
-Written asynchronously — best-effort, no transactional coupling.
+metrics: per-turn latency metrics for the voice pipeline (best-effort, fire-and-forget).
+context_summaries: one row per compression run with l2_profile/l3_session/l4_roast layers.
+  PK (user_id, end_turn) — latest query uses B-tree index, O(log n).
 """
 
 from typing import Sequence, Union
@@ -37,6 +38,20 @@ def upgrade() -> None:
     op.create_index("idx_metrics_ts", "metrics", [sa.text("ts DESC")])
     op.create_unique_constraint("uq_metrics_user_turn", "metrics", ["user_id", "turn_id"])
 
+    # ── context_summaries (redesigned: one row per compression run) ──
+    op.create_table(
+        "context_summaries",
+        sa.Column("user_id", sa.Text, primary_key=True),
+        sa.Column("end_turn", sa.Integer, primary_key=True),
+        sa.Column("l2_profile", sa.Text, nullable=False, server_default=""),
+        sa.Column("l3_session", sa.Text, nullable=False, server_default=""),
+        sa.Column("l4_roast", sa.Text, nullable=False, server_default=""),
+        sa.Column("roast_id", sa.Text, nullable=True),
+        sa.Column("model_used", sa.Text, nullable=False, server_default=""),
+        sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.func.now()),
+    )
+
 
 def downgrade() -> None:
+    op.drop_table("context_summaries")
     op.drop_table("metrics")

@@ -4,9 +4,8 @@ Revision ID: 0002
 Revises: 0001
 Create Date: 2026-05-17
 
-Five tables for the 4-layer agent context architecture:
+Four tables for the agent context architecture:
   - agent_conversations: raw turns with full Message support
-  - context_summaries: compressed summaries with turn-range anchors
   - user_facts: extracted discrete facts with categories
   - user_memory: user profile summary
   - roast_scenarios: game scenarios from crawler pipeline
@@ -48,25 +47,6 @@ def upgrade() -> None:
     op.create_index(
         "idx_ac_tool_call", "agent_conversations", ["user_id", "tool_call_id"],
         postgresql_where=sa.text("tool_call_id IS NOT NULL"),
-    )
-
-    # ── context_summaries ──
-    op.create_table(
-        "context_summaries",
-        sa.Column("id", sa.BigInteger, primary_key=True, autoincrement=True),
-        sa.Column("user_id", sa.Text, nullable=False),
-        sa.Column("summary_type", sa.Text, nullable=False),
-        sa.Column("roast_id", sa.Text, nullable=False, server_default=""),
-        sa.Column("tier", sa.Integer, nullable=False, server_default="1"),
-        sa.Column("summary", sa.Text, nullable=False),
-        sa.Column("start_turn", sa.Integer, nullable=False, server_default="0"),
-        sa.Column("end_turn", sa.Integer, nullable=False, server_default="0"),
-        sa.Column("model_used", sa.Text, nullable=False, server_default=""),
-        sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.func.now()),
-    )
-    op.create_index(
-        "idx_summaries_user", "context_summaries",
-        ["user_id", "summary_type", "tier", sa.text("end_turn DESC")],
     )
 
     # ── user_facts ──
@@ -113,5 +93,4 @@ def downgrade() -> None:
     op.drop_table("roast_scenarios")
     op.drop_table("user_memory")
     op.drop_table("user_facts")
-    op.drop_table("context_summaries")
     op.drop_table("agent_conversations")
