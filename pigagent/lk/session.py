@@ -98,7 +98,8 @@ async def run(ctx: JobContext) -> None:
         tts=tts_plugin,
         vad=vad if vad is not None else NOT_GIVEN,
         turn_handling=TurnHandlingOptions(
-            preemptive_generation={"enabled": config.ENABLE_PREEMPTIVE_SYNTHESIS}
+            preemptive_generation={"enabled": config.ENABLE_PREEMPTIVE_SYNTHESIS},
+            interruption={"mode": "adaptive"},
         ),
     )
 

@@ -181,7 +181,6 @@ class AgentRunner:
 
         except InterruptedException:
             state.status = StateStatus.INTERRUPTED.value
-            # Save partial content so generate_reply can persist it
             partial = "".join(collected)
             if partial:
                 msgs.append(Message.assistant(content=partial, partial=True))
