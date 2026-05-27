@@ -35,14 +35,14 @@ def upgrade() -> None:
         sa.Column("tool_call_id", sa.Text, nullable=True),
         sa.Column("name", sa.Text, nullable=True),
         sa.Column("partial", sa.Boolean, nullable=False, server_default=sa.text("false")),
-        sa.Column("roast_id", sa.Text, nullable=True),
+        sa.Column("roast_instance_id", sa.Text, nullable=True),
         sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.func.now()),
         sa.UniqueConstraint("user_id", "turn_number"),
     )
     op.create_index("idx_ac_user", "agent_conversations", ["user_id", "turn_number"])
     op.create_index(
-        "idx_ac_roast", "agent_conversations", ["user_id", "roast_id"],
-        postgresql_where=sa.text("roast_id IS NOT NULL"),
+        "idx_ac_roast", "agent_conversations", ["user_id", "roast_instance_id"],
+        postgresql_where=sa.text("roast_instance_id IS NOT NULL"),
     )
     op.create_index(
         "idx_ac_tool_call", "agent_conversations", ["user_id", "tool_call_id"],
@@ -75,7 +75,7 @@ def upgrade() -> None:
     # ── roast_scenarios ──
     op.create_table(
         "roast_scenarios",
-        sa.Column("roast_id", sa.Text, primary_key=True),
+        sa.Column("roast_instance_id", sa.Text, primary_key=True),
         sa.Column("game_mode", sa.Text, nullable=False),
         sa.Column("prompt", sa.Text, nullable=False),
         sa.Column("news_id", sa.Text, nullable=False, server_default=""),

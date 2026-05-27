@@ -19,7 +19,7 @@ async def main():
     room.on('participant_connected', on_p)
 
     print(f'[{time.strftime("%H:%M:%S")}] Connecting to debug-room...')
-    await room.connect(os.getenv('LIVEKIT_URL'), token)
+    await room.connect(os.environ['LIVEKIT_URL'], token)
     print(f'[{time.strftime("%H:%M:%S")}] Connected.')
     for _ in range(10):
         await asyncio.sleep(1)

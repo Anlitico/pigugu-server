@@ -140,12 +140,12 @@ class TestPgRecoverTurns:
             {
                 "turn_number": 1, "role": "user", "content": "hello",
                 "tool_calls": None, "tool_call_id": None, "name": None,
-                "partial": False, "roast_id": None, "created_at": now,
+                "partial": False, "roast_instance_id": None, "created_at": now,
             },
             {
                 "turn_number": 2, "role": "assistant", "content": "hi there",
                 "tool_calls": None, "tool_call_id": None, "name": None,
-                "partial": False, "roast_id": None, "created_at": now,
+                "partial": False, "roast_instance_id": None, "created_at": now,
             },
         ]
         pool = _mock_conn_fetch(return_rows=rows)
@@ -201,7 +201,7 @@ class TestAssembleFallback:
             {
                 "turn_number": 11, "role": "user", "content": "latest message",
                 "tool_calls": None, "tool_call_id": None, "name": None,
-                "partial": False, "roast_id": None, "created_at": now,
+                "partial": False, "roast_instance_id": None, "created_at": now,
             },
         ]
 

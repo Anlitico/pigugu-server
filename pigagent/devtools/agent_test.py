@@ -37,7 +37,7 @@ async def main():
         print("Room disconnected")
 
     print("Connecting to test-room...")
-    await room.connect(os.getenv("LIVEKIT_URL"), token)
+    await room.connect(os.environ["LIVEKIT_URL"], token)
     print(f"Connected. Waiting for agent dispatch...")
 
     # Wait for agent to join

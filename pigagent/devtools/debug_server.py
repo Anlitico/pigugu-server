@@ -10,6 +10,7 @@ from livekit import api
 
 HTML_PATH = os.path.join(os.path.dirname(__file__), 'test_room.html')
 LOG_PATH = os.path.join(os.path.dirname(__file__), '..', '..', 'logs', 'pigagent', 'browser.log')
+os.makedirs(os.path.dirname(LOG_PATH), exist_ok=True)
 
 def _read_html():
     with open(HTML_PATH, encoding='utf-8') as f:

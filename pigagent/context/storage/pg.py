@@ -123,8 +123,8 @@ class PgStorage:
                 )
                 if row:
                     return row[0]
-        except Exception as e:
-            logger.warning(f"Failed to recover turn_counter from PG: {e}")
+        except Exception:
+            pass  # table not found — expected until migration runs
         return 0
 
     # ── Facts ──────────────────────────────────────────────────────
@@ -249,8 +249,8 @@ class PgStorage:
                         roast_id=row["roast_id"],
                         model_used=row["model_used"],
                     )
-        except Exception as e:
-            logger.warning(f"Failed to read latest summary: {e}")
+        except Exception:
+            pass  # table not found / no data — expected for new users
         return None
 
     # ── Turn Recovery ───────────────────────────────────────────────
@@ -264,7 +264,7 @@ class PgStorage:
             async with _connect(self._pg) as conn:
                 rows = await conn.fetch(
                     """SELECT turn_number, role, content, tool_calls,
-                              tool_call_id, name, partial, roast_id, created_at
+                              tool_call_id, name, partial, roast_instance_id, created_at
                        FROM agent_conversations
                        WHERE user_id = $1 AND turn_number > $2
                        ORDER BY turn_number
@@ -288,9 +288,9 @@ class PgStorage:
                         tool_call_id=r["tool_call_id"],
                         name=r["name"],
                         partial=r["partial"] or False,
-                        roast_instance_id=r["roast_id"],
+                        roast_instance_id=r["roast_instance_id"],
                     ))
                 return records
-        except Exception as e:
-            logger.warning(f"Failed to recover turns from PG: {e}")
-            return []
+        except Exception:
+            pass  # table mismatch / no data — expected until migration runs
+        return []

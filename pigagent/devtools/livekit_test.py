@@ -26,7 +26,7 @@ async def main():
     def on_data(data: bytes):
         print(f"[Agent] {data.decode()}")
 
-    await room.connect(os.getenv("LIVEKIT_URL"), token)
+    await room.connect(os.environ["LIVEKIT_URL"], token)
     print(f"Connected as {room.local_participant.identity}")
     print(f"Participants: {[p.identity for p in room.remote_participants.values()]}")
 
