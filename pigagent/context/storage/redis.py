@@ -134,7 +134,7 @@ class RedisStorage:
     async def write_summaries(
         self, end_turn: int, *,
         l2_profile: str = "", l3_session: str = "", l4_roast: str = "",
-        roast_id: str = "", roast_prompt: str = "",
+        roast_id: str = "", roast_prompt: str = "", roast_prompt_turn: int = 0,
     ) -> None:
         """Write all three layer summaries in one SET."""
         if not self._redis:
@@ -147,6 +147,7 @@ class RedisStorage:
                 "l4_roast": l4_roast,
                 "roast_id": roast_id,
                 "roast_prompt": roast_prompt,
+                "roast_prompt_turn": roast_prompt_turn,
             }, ensure_ascii=False)
             await self._redis.set(RedisKeys.summaries(self._user_id), data)
         except Exception:

@@ -55,9 +55,17 @@ def upgrade() -> None:
             sa.Column("l4_roast", sa.Text, nullable=False, server_default=""),
             sa.Column("roast_id", sa.Text, nullable=True),
             sa.Column("roast_prompt", sa.Text, nullable=False, server_default=""),
+            sa.Column("roast_prompt_turn", sa.Integer, nullable=False, server_default="0"),
             sa.Column("model_used", sa.Text, nullable=False, server_default=""),
             sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.func.now()),
         )
+    else:
+        # Table exists from earlier migration — add missing columns
+        cols = {c["name"] for c in insp.get_columns("context_summaries")}
+        if "roast_prompt" not in cols:
+            op.add_column("context_summaries", sa.Column("roast_prompt", sa.Text, nullable=False, server_default=""))
+        if "roast_prompt_turn" not in cols:
+            op.add_column("context_summaries", sa.Column("roast_prompt_turn", sa.Integer, nullable=False, server_default="0"))
 
 
 def downgrade() -> None:

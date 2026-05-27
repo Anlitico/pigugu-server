@@ -124,6 +124,7 @@ class SummaryRow:
     l4_roast: str = ""
     roast_id: str = ""
     roast_prompt: str = ""
+    roast_prompt_turn: int = 0
     model_used: str = ""
 
 
@@ -206,6 +207,7 @@ class RoastContext:
 
     roast_instance_id: str
     prompt: str = ""
+    prompt_turn: int = 0
     turns: list = field(default_factory=list)
     summary: str = ""
     prompt_tokens: int = 0
@@ -242,7 +244,8 @@ class WorkingContext:
     user_id: str
 
     # L3  -  Session
-    raw_turns: list = field(default_factory=list)
+    raw_turns: list = field(default_factory=list)    # list[Message] — for LLM
+    raw_records: list = field(default_factory=list)  # list[ConversationRecord] — for compression
     summary: str = ""                # recursive conversation summary
     summary_end_turn: int = 0        # anchor: all turns ≤ this are covered
     game_state: dict = field(default_factory=dict)
@@ -277,10 +280,10 @@ class WorkingContext:
             budget.layer_3_session = tc(self.summary)
 
         if self.roast and self.roast.prompt:
-            result.append(Message.system(f"[Game rules]\n{self.roast.prompt}"))
+            result.append(Message.user(f"[Game rules]\n{self.roast.prompt}"))
             budget.layer_4_roast_prompt = tc(self.roast.prompt)
         if self.roast and self.roast.summary:
-            result.append(Message.system(f"[Game history]\n{self.roast.summary}"))
+            result.append(Message.user(f"[Game history]\n{self.roast.summary}"))
 
         # raw_turns are oldest -> newest (RPUSH order)
         for turn in self.raw_turns:
@@ -290,6 +293,52 @@ class WorkingContext:
                 result.append(turn)
 
         return validate_tool_calls(result)
+
+    def to_records(self) -> list:
+        """Flatten all context layers into a unified ConversationRecord list.
+
+        Virtual turn numbers: L2=-3, L3=-2, L4=-1.
+        Real turn numbers from raw_records and roast prompt_turn.
+        This list is the single input for compression — no heterogeneous queries.
+        """
+        records = []
+
+        # L2 (virtual)
+        if self.user_memory and self.user_memory.profile_summary:
+            records.append(ConversationRecord(
+                turn_number=-3, role="system",
+                content=f"[User profile]\n{self.user_memory.profile_summary}",
+                created_at=0,
+            ))
+
+        # L3 (virtual)
+        if self.summary:
+            records.append(ConversationRecord(
+                turn_number=-2, role="system",
+                content=f"[Conversation history]\n{self.summary}",
+                created_at=0,
+            ))
+
+        # Roast prompt (real turn_number)
+        if self.roast and self.roast.prompt and self.roast.prompt_turn > 0:
+            records.append(ConversationRecord(
+                turn_number=self.roast.prompt_turn, role="user",
+                content=self.roast.prompt, created_at=0,
+                roast_instance_id=self.roast.roast_instance_id,
+            ))
+
+        # L4 (virtual)
+        if self.roast and self.roast.summary:
+            records.append(ConversationRecord(
+                turn_number=-1, role="user",
+                content=f"[Game history]\n{self.roast.summary}",
+                created_at=0,
+            ))
+
+        # Raw turns (real)
+        records.extend(self.raw_records)
+
+        return records
 
     def budget_summary(self) -> dict:
         return {

@@ -125,6 +125,7 @@ class ContextManager:
                     "end_turn": row.end_turn, "l2_profile": row.l2_profile,
                     "l3_session": row.l3_session, "l4_roast": row.l4_roast,
                     "roast_id": row.roast_id, "roast_prompt": row.roast_prompt,
+                    "roast_prompt_turn": row.roast_prompt_turn,
                 }
                 sr = SummaryRecord(text=row.l3_session, end_turn=row.end_turn)
                 anchor = row.end_turn
@@ -134,7 +135,8 @@ class ContextManager:
                 if profile_text:
                     um = UserMemory(user_id=user_id, profile_summary=profile_text)
                     data = {"end_turn": 0, "l2_profile": profile_text,
-                            "l3_session": "", "l4_roast": "", "roast_id": "", "roast_prompt": ""}
+                            "l3_session": "", "l4_roast": "", "roast_id": "",
+                            "roast_prompt": "", "roast_prompt_turn": 0}
 
             raw_records = await pg.recover_turns(after_turn=anchor, limit=_cfg.CONTEXT_HOT_WINDOW_SIZE)
             if raw_records:
@@ -156,21 +158,25 @@ class ContextManager:
             wc.summary_end_turn = sr.end_turn
 
         wc.raw_turns = [_record_to_msg(r) for r in raw_records]
+        wc.raw_records = raw_records
 
         if snap.roast_instance_id:
             l4_fallback = data.get("l4_roast", "") if data.get("l4_roast") else None
             roast_prompt_fb = data.get("roast_prompt", "") if data.get("roast_prompt") else None
+            prompt_turn = data.get("roast_prompt_turn", 0)
             wc.roast = await self._load_roast_context(
                 user_id, snap.roast_instance_id,
                 fallback_l4=l4_fallback, fallback_prompt=roast_prompt_fb,
+                prompt_turn=prompt_turn,
             )
 
-        # Compression trigger  -  same records, fire-and-forget
+        # Compression trigger — fire-and-forget with unified record list
         if not await store.is_compressing() and raw_records:
+            unified = wc.to_records()
             asyncio.create_task(
                 self._compressor.run(
                     user_id=user_id,
-                    records=raw_records,
+                    records=unified,
                     existing_summary=sr.text if sr else "",
                 )
             )
@@ -183,13 +189,20 @@ class ContextManager:
         self, user_id: str, roast_instance_id: str,
         fallback_l4: str | None = None,
         fallback_prompt: str | None = None,
+        prompt_turn: int = 0,
     ) -> RoastContext:
         store = self._store(user_id)
         rc = RoastContext(roast_instance_id=roast_instance_id)
         try:
             data = await store.read_summaries()
-            rc.prompt = data.get("roast_prompt", "") or fallback_prompt or ""
-            rc.summary = data.get("l4_roast", "") or fallback_l4 or ""
+            same_roast = data.get("roast_id") == roast_instance_id
+            rc.summary = (data.get("l4_roast", "") if same_roast else "") or fallback_l4 or ""
+            if same_roast:
+                rc.prompt = data.get("roast_prompt", "") or fallback_prompt or ""
+                rc.prompt_turn = data.get("roast_prompt_turn", 0) or prompt_turn
+            else:
+                # New roast — prompt comes from raw turns, not summaries
+                rc.prompt_turn = 0
         except Exception as e:
             logger.warning(f"Failed to load roast context for {user_id}: {e}")
         return rc
@@ -211,6 +224,7 @@ class ContextManager:
                 l4_roast=data.get("l4_roast", ""),
                 roast_id=data.get("roast_id", ""),
                 roast_prompt=data.get("roast_prompt", ""),
+                roast_prompt_turn=data.get("roast_prompt_turn", 0),
             )
             for r in records:
                 await store.push_turn(json.dumps(r.to_dict(), ensure_ascii=False))

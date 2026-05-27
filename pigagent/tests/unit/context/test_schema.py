@@ -139,7 +139,7 @@ class TestWorkingContext:
         msgs = wc.to_messages()
         assert len(msgs) == 3
         assert "trivia challenge" in msgs[0].content
-        assert msgs[0].role == "system"
+        assert msgs[0].role == "user"
 
     def test_budget_summary(self):
         wc = WorkingContext(user_id="u1")
