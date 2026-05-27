@@ -108,13 +108,16 @@ class AgentRunner:
         msgs = list(messages)
         state = AgentState(status=StateStatus.RUNNING.value)
 
-        # Resolve interrupt event if a key was provided
+        # Resolve interrupt event — hold the reference, not the key.
+        # mgr.cleanup() removes the event from the manager's dict, but
+        # the event object itself is still valid (is_set() works).
         event = None
         if interrupt_key:
             mgr = get_interrupt_manager()
-            existed = mgr.get(interrupt_key)
-            event = existed if existed is not None else mgr.create(interrupt_key)
-            logger.info(f"[Runner] Interrupt armed: key={interrupt_key[:28]}... already_existed={existed is not None}")
+            event = mgr.get(interrupt_key)
+            if event is None:
+                event = mgr.create(interrupt_key)
+            logger.info(f"[Runner] Interrupt armed: key={interrupt_key[:28]}...")
 
         collected: list[str] = []
 
