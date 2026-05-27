@@ -155,7 +155,7 @@ class LLMProvider(ABC):
     _PER_MESSAGE_OVERHEAD = 4  # role marker: <|start|>role\n
 
     async def count_tokens(
-        self, message: Message | list[Message] | str, model: str = "qwen3.6-plus",
+        self, message: Message | list[Message] | str, model: str = "qwen-plus",
     ) -> int:
         """Token count. Accepts Message | list[Message] | str.
 

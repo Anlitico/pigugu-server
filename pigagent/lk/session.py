@@ -80,7 +80,6 @@ async def run(ctx: JobContext) -> None:
 
     logger.info(f"[DEBUG] STT: {type(stt_plugin).__name__}, TTS: {type(tts_plugin).__name__}")
     logger.info(f"[DEBUG] LLM: PigAgent with {pig_agent.model}")
-    TelemetryCollector.set_meta("llm_model", pig_agent.model)
 
     # Resolve user_id: metadata (app) > device_id > participant identity
     user_id = metadata.get("user_id", "") or metadata.get("device_id", "")
@@ -138,6 +137,7 @@ async def run(ctx: JobContext) -> None:
         if event.old_state != "speaking" and event.new_state == "speaking":
             logger.info("[DEBUG] User started speaking")
             TelemetryCollector.start_turn(user_id=user_id, persona_id=persona_id)
+            TelemetryCollector.set_meta("llm_model", pig_agent.model)
             TelemetryCollector.mark("vad_start")
             if current_interrupt_key:
                 logger.info(f"[Interrupt] Cancelling: {current_interrupt_key}")

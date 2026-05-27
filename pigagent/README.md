@@ -60,7 +60,7 @@ Key variables for local dev:
 |----------|---------|
 | `REDIS_URL` | `redis://localhost:6379/0` |
 | `DATABASE_URL` | `postgresql://pigugu:pigugu@localhost:5432/pigugu` |
-| `QWEN_MODEL` | `qwen3.6-plus` |
+| `QWEN_MODEL` | `qwen-plus` |
 | `API_PORT` | `8080` |
 
 ## Architecture
