@@ -107,7 +107,7 @@ class TestPgReadLatestSummary:
         row_data = {
             "user_id": "u1", "end_turn": 10,
             "l2_profile": "profile", "l3_session": "session",
-            "l4_roast": "", "roast_id": "", "model_used": "",
+            "l4_roast": "", "roast_id": "", "roast_prompt": "", "model_used": "",
         }
         pool = _mock_conn_fetchrow(return_row=row_data)
         with patch("context.storage.pg._connect", return_value=pool):
@@ -193,7 +193,7 @@ class TestAssembleFallback:
             "user_id": "u1", "end_turn": 10,
             "l2_profile": "User is a developer",
             "l3_session": "Previous conversation about Python",
-            "l4_roast": "", "roast_id": "", "model_used": "qwen",
+            "l4_roast": "", "roast_id": "", "roast_prompt": "", "model_used": "qwen",
         }
         from datetime import datetime, timezone
         now = datetime.now(timezone.utc)

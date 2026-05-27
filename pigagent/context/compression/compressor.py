@@ -59,7 +59,7 @@ class ContextCompressor:
                               existing_summary: str, model: str) -> None:
         """L2 + L3. All records go to L3."""
         await self._store.set_compressing(True)
-        l3_msgs, _, end_turn = await self._prepare_from(snap, model=model)
+        l3_msgs, _, end_turn, _ = await self._prepare_from(snap, model=model)
         if not l3_msgs:
             await self._store.set_compressing(False)
             return
@@ -91,9 +91,9 @@ class ContextCompressor:
 
     async def _run_roast(self, user_id: str, snap: ContextSnapshot,
                           existing_summary: str, model: str) -> None:
-        """L2 + L3 (pre-roast only) + L4 (roast turns)."""
+        """L2 + L3 (pre-roast only) + L4 (roast conversation, prompt preserved verbatim)."""
         await self._store.set_compressing(True)
-        l3_msgs, l4_msgs, end_turn = await self._prepare_from(snap, model=model)
+        l3_msgs, l4_msgs, end_turn, roast_prompt = await self._prepare_from(snap, model=model)
 
         try:
             tasks = []
@@ -106,9 +106,8 @@ class ContextCompressor:
             if l4_msgs:
                 data = await self._store.read_summaries()
                 existing_roast = data.get("l4_roast", "")
-                roast_prompt = await self._store.read_roast_prompt()
                 tasks.append(compress_roast(l4_msgs, existing_summary=existing_roast,
-                                            roast_prompt=roast_prompt, model=model))
+                                            model=model))
             else:
                 tasks.append(asyncio.sleep(0))
 
@@ -121,7 +120,8 @@ class ContextCompressor:
             l2_profile = await self._write_l2(l2_facts)
             await self._persist_summaries(
                 end_turn, l2_profile=l2_profile, l3_session=l3_text,
-                l4_roast=l4_text, roast_id=snap.roast_instance_id, model=model,
+                l4_roast=l4_text, roast_id=snap.roast_instance_id,
+                roast_prompt=roast_prompt, model=model,
             )
 
             await self._store.set_compressing(False)
@@ -139,7 +139,7 @@ class ContextCompressor:
     async def _persist_summaries(
         self, end_turn: int, *,
         l2_profile: str = "", l3_session: str = "", l4_roast: str = "",
-        roast_id: str = "", model: str = "",
+        roast_id: str = "", roast_prompt: str = "", model: str = "",
     ) -> None:
         """Write all three layer summaries to Redis + PG in one call."""
 
@@ -147,43 +147,87 @@ class ContextCompressor:
         await self._store.write_summaries(
             end_turn,
             l2_profile=l2_profile, l3_session=l3_session, l4_roast=l4_roast,
-            roast_id=roast_id,
+            roast_id=roast_id, roast_prompt=roast_prompt,
         )
 
         # PG — single row
         await self._pg_store.write_summary_row(
             end_turn,
             l2_profile=l2_profile, l3_session=l3_session, l4_roast=l4_roast,
-            roast_id=roast_id, model_used=model,
+            roast_id=roast_id, roast_prompt=roast_prompt, model_used=model,
         )
+
+    # ── Roast Prompt Discovery ──────────────────────────────────────
+
+    @staticmethod
+    def _find_roast_prompt(records: list) -> tuple[str, str]:
+        """Find the active roast prompt from raw conversation records.
+
+        Uses the latest roast_instance_id (current roast) and returns
+        the content of its first occurrence — the prompt turn, which
+        should never be compressed.
+
+        Returns (prompt_text, roast_instance_id). Both empty if no roast found.
+        """
+        if not records:
+            return "", ""
+
+        # Latest roast_instance_id = current active roast
+        latest_rid = ""
+        for r in reversed(records):
+            if r.roast_instance_id:
+                latest_rid = r.roast_instance_id
+                break
+        if not latest_rid:
+            return "", ""
+
+        # First occurrence of this id = the prompt turn
+        for r in records:
+            if r.roast_instance_id == latest_rid:
+                return r.content, latest_rid
+
+        return "", ""
 
     # ── Helpers ───────────────────────────────────────────────────────
 
     async def _prepare_from(
         self, snap: ContextSnapshot, *, model: str = "qwen-plus",
-    ) -> tuple[list, list | None, int]:
+    ) -> tuple[list, list | None, int, str]:
         """Extract L3/L4 message groups from snapshot.
 
-        free_chat: all records  ->  L3.
-        roast:     pre_roast  ->  L3, roast  ->  L4 if token threshold met.
+        free_chat: all records  ->  L3, no L4, no roast_prompt.
+        roast: pre_roast  ->  L3; prompt turn preserved verbatim;
+               remaining roast turns  ->  L4 if token threshold met.
 
-        Returns (l3_msgs, l4_msgs | None, end_turn).
+        Returns (l3_msgs, l4_msgs | None, end_turn, roast_prompt).
         """
         if snap.scenario == "free_chat":
             l3 = snap.records
-            end = l3[-1].turn_number
-            return snap.to_messages(l3), None, end
+            return snap.to_messages(l3), None, l3[-1].turn_number, ""
 
         pre_roast, roast = snap.split()
         l3 = snap.to_messages(pre_roast) if pre_roast else []
 
+        # Roast prompt: try raw records first, fall back to existing summaries
+        roast_prompt_text, rid = self._find_roast_prompt(snap.records)
+        if not roast_prompt_text:
+            data = await self._store.read_summaries()
+            if data.get("roast_id") == snap.roast_instance_id:
+                roast_prompt_text = data.get("roast_prompt", "")
+
+        # L4: compress roast turns after the prompt (exclude prompt itself)
         l4 = None
-        if roast and await snap.should_compress_l4(model=model):
-            l4 = snap.to_messages(roast)
+        l4_end = 0
+        prompt_turn = roast[0].turn_number if roast else 0
+        conversation_turns = [r for r in roast if r.turn_number > prompt_turn]
+        if conversation_turns and await snap.should_compress_l4(model=model):
+            l4 = snap.to_messages(conversation_turns)
+            l4_end = conversation_turns[-1].turn_number
 
-        end = pre_roast[-1].turn_number if pre_roast else roast[0].turn_number - 1
+        l3_end = pre_roast[-1].turn_number if pre_roast else 0
+        end = max(l3_end, l4_end, prompt_turn)
 
-        return l3, l4, end
+        return l3, l4, end, roast_prompt_text
 
     async def _compress_l3(self, existing_summary: str, msgs: list, model: str) -> str:
         if existing_summary:

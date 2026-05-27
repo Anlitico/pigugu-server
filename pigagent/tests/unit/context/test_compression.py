@@ -71,20 +71,12 @@ class TestL4RoastEdgeCases:
 
     def test_compress_roast_empty_turns_no_summary(self):
         from context.compression.l4_roast import compress_roast
-        result = asyncio.run(compress_roast([], existing_summary="", roast_prompt=""))
+        result = asyncio.run(compress_roast([], existing_summary=""))
         assert result == ""
 
-    def test_compress_roast_empty_turns_with_prompt(self):
+    def test_compress_roast_empty_turns_with_summary(self):
         from context.compression.l4_roast import compress_roast
         result = asyncio.run(compress_roast(
-            [], existing_summary="", roast_prompt="Game rules: ...",
+            [], existing_summary="previous summary",
         ))
-        assert result == "Game rules: ..."
-
-    def test_compress_roast_empty_turns_with_prompt_and_summary(self):
-        from context.compression.l4_roast import compress_roast
-        result = asyncio.run(compress_roast(
-            [], existing_summary="previous summary", roast_prompt="Game rules: ...",
-        ))
-        assert "Game rules:" in result
-        assert "previous summary" in result
+        assert result == "previous summary"

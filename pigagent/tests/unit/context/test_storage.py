@@ -26,14 +26,6 @@ class TestRedisKeys:
     def test_game_state(self):
         assert RedisKeys.game_state("u1") == "ctx:u1:game_state"
 
-    def test_roast_prompt(self):
-        assert RedisKeys.roast_prompt("u1") == "ctx:u1:roast:prompt"
-
-    def test_roast_turns(self):
-        assert RedisKeys.roast_turns("u1") == "ctx:u1:roast:turns"
-
-    def test_roast_meta(self):
-        assert RedisKeys.roast_meta("u1") == "ctx:u1:roast:meta"
 
 
 # -------------------------------------------------------------------------------
@@ -229,37 +221,6 @@ class TestRedisStorage:
 
     # ── Roast methods ──
 
-    @pytest.mark.asyncio
-    async def test_read_roast_prompt_empty(self, store, redis_mock):
-        redis_mock.get.return_value = None
-        assert await store.read_roast_prompt() == ""
-
-    @pytest.mark.asyncio
-    async def test_read_roast_prompt_returns_str(self, store, redis_mock):
-        redis_mock.get.return_value = b"game rules here"
-        assert await store.read_roast_prompt() == "game rules here"
-
-    @pytest.mark.asyncio
-    async def test_read_roast_meta_returns_dict(self, store, redis_mock):
-        redis_mock.hgetall.return_value = {b"roast_instance_id": b"rx", b"turn_count": b"3"}
-        result = await store.read_roast_meta()
-        assert result == {"roast_instance_id": "rx", "turn_count": "3"}
-
-    @pytest.mark.asyncio
-    async def test_write_roast_meta(self, store, redis_mock):
-        await store.write_roast_meta({"roast_instance_id": "rx"})
-        redis_mock.hset.assert_called_once()
-
-    @pytest.mark.asyncio
-    async def test_read_roast_turns_raw(self, store, redis_mock):
-        redis_mock.lrange.return_value = [b"t1", b"t2"]
-        result = await store.read_roast_turns_raw()
-        assert result == [b"t1", b"t2"]
-
-    @pytest.mark.asyncio
-    async def test_delete_roast_keys(self, store, redis_mock):
-        await store.delete_roast_keys()
-        redis_mock.delete.assert_called_once()
 
 
 # -------------------------------------------------------------------------------
@@ -325,25 +286,6 @@ class TestRedisStorageExceptionHandling:
     async def test_push_turn_no_raise(self, safe_store):
         await safe_store.push_turn("{}")
 
-    @pytest.mark.asyncio
-    async def test_read_roast_prompt_returns_empty(self, safe_store):
-        assert await safe_store.read_roast_prompt() == ""
-
-    @pytest.mark.asyncio
-    async def test_read_roast_meta_returns_empty(self, safe_store):
-        assert await safe_store.read_roast_meta() == {}
-
-    @pytest.mark.asyncio
-    async def test_write_roast_meta_no_raise(self, safe_store):
-        await safe_store.write_roast_meta({})
-
-    @pytest.mark.asyncio
-    async def test_read_roast_turns_raw_returns_empty(self, safe_store):
-        assert await safe_store.read_roast_turns_raw() == []
-
-    @pytest.mark.asyncio
-    async def test_delete_roast_keys_no_raise(self, safe_store):
-        await safe_store.delete_roast_keys()
 
 
 # -------------------------------------------------------------------------------

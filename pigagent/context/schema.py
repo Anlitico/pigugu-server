@@ -123,6 +123,7 @@ class SummaryRow:
     l3_session: str = ""
     l4_roast: str = ""
     roast_id: str = ""
+    roast_prompt: str = ""
     model_used: str = ""
 
 
@@ -275,9 +276,11 @@ class WorkingContext:
             result.append(Message.system(f"[Conversation history]\n{self.summary}"))
             budget.layer_3_session = tc(self.summary)
 
+        if self.roast and self.roast.prompt:
+            result.append(Message.system(f"[Game rules]\n{self.roast.prompt}"))
+            budget.layer_4_roast_prompt = tc(self.roast.prompt)
         if self.roast and self.roast.summary:
-            result.append(Message.user(f"[Game scenario + history]\n{self.roast.summary}"))
-            budget.layer_4_roast_prompt = tc(self.roast.summary)
+            result.append(Message.system(f"[Game history]\n{self.roast.summary}"))
 
         # raw_turns are oldest -> newest (RPUSH order)
         for turn in self.raw_turns:

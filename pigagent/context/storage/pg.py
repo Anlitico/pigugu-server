@@ -206,7 +206,7 @@ class PgStorage:
     async def write_summary_row(
         self, end_turn: int, *,
         l2_profile: str = "", l3_session: str = "", l4_roast: str = "",
-        roast_id: str | None = None, model_used: str = "",
+        roast_id: str | None = None, roast_prompt: str = "", model_used: str = "",
     ) -> None:
         if not self._pg:
             return
@@ -215,12 +215,12 @@ class PgStorage:
                 await conn.execute(
                     """INSERT INTO context_summaries
                        (user_id, end_turn, l2_profile, l3_session, l4_roast,
-                        roast_id, model_used)
-                       VALUES ($1, $2, $3, $4, $5, $6, $7)
+                        roast_id, roast_prompt, model_used)
+                       VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
                        ON CONFLICT (user_id, end_turn) DO NOTHING""",
                     self._user_id, end_turn,
                     l2_profile, l3_session, l4_roast,
-                    roast_id or "", model_used,
+                    roast_id or "", roast_prompt, model_used,
                 )
         except Exception as e:
             logger.warning(f"Failed to write summary row: {e}")
@@ -232,7 +232,7 @@ class PgStorage:
             async with _connect(self._pg) as conn:
                 row = await conn.fetchrow(
                     """SELECT user_id, end_turn, l2_profile, l3_session, l4_roast,
-                              roast_id, model_used
+                              roast_id, roast_prompt, model_used
                        FROM context_summaries
                        WHERE user_id = $1
                        ORDER BY end_turn DESC
@@ -247,10 +247,11 @@ class PgStorage:
                         l3_session=row["l3_session"],
                         l4_roast=row["l4_roast"],
                         roast_id=row["roast_id"],
+                        roast_prompt=row["roast_prompt"],
                         model_used=row["model_used"],
                     )
         except Exception:
-            pass  # table not found / no data — expected for new users
+            pass
         return None
 
     # ── Turn Recovery ───────────────────────────────────────────────

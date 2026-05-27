@@ -54,6 +54,7 @@ def upgrade() -> None:
             sa.Column("l3_session", sa.Text, nullable=False, server_default=""),
             sa.Column("l4_roast", sa.Text, nullable=False, server_default=""),
             sa.Column("roast_id", sa.Text, nullable=True),
+            sa.Column("roast_prompt", sa.Text, nullable=False, server_default=""),
             sa.Column("model_used", sa.Text, nullable=False, server_default=""),
             sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.func.now()),
         )
