@@ -7,6 +7,7 @@ STT and TTS are handled by the default pipeline nodes via AgentSession.
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import AsyncIterator
 from typing import Any
 
@@ -34,7 +35,7 @@ class PigAgentVoiceBridge(Agent):
         self._pig = pig_agent
         self._persona_id = persona_id
         self._user_id = user_id
-        self.current_interrupt_key: str | None = None
+        self.current_interrupt_event: asyncio.Event | None = None
 
     # ── LLM node ──────────────────────────────────────────────────────
 
@@ -53,7 +54,7 @@ class PigAgentVoiceBridge(Agent):
         async for text in self._pig.generate_reply(
             self._user_id, user_text,
             persona_id=self._persona_id,
-            interrupt_key=self.current_interrupt_key,
+            interrupt_event=self.current_interrupt_event,
         ):
             if first:
                 TelemetryCollector.mark("llm_ttft")

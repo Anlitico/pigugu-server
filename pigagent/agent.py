@@ -49,7 +49,6 @@ class PigAgent:
         max_tokens: int | None = None,
         max_iterations: int = 5,
         tool_timeout: float = 60.0,
-        interrupt_key: str | None = None,
     ):
         self.ctx = ctx
         self._redis = redis
@@ -71,7 +70,6 @@ class PigAgent:
             stop_when=[no_tool_calls],
             temperature=temperature,
             max_tokens=max_tokens,
-            interrupt_key=interrupt_key,
         )
         self._model = model
         self.runner = AgentRunner(runner_config)
@@ -99,7 +97,7 @@ class PigAgent:
         user_text: str,
         *,
         persona_id: int = 1,
-        interrupt_key: str | None = None,
+        interrupt_event: asyncio.Event | None = None,
     ) -> AsyncIterator[str]:
         """Complete reply pipeline: load context  ->  assemble  ->  stream  ->  persist.
 
@@ -157,7 +155,7 @@ class PigAgent:
         if roast_state and game_mode:
             async for text in self._stream_roast(
                 messages, roast_state, game_mode,
-                interrupt_key=interrupt_key,
+                interrupt_event=interrupt_event,
             ):
                 if first_yield:
                     TelemetryCollector.mark("llm_internal")
@@ -165,7 +163,7 @@ class PigAgent:
                 response_chunks.append(text)
                 yield text
         else:
-            async for text in self.runner.stream(messages, interrupt_key=interrupt_key):
+            async for text in self.runner.stream(messages, interrupt_event=interrupt_event):
                 if first_yield:
                     TelemetryCollector.mark("llm_internal")
                     first_yield = False
@@ -194,7 +192,7 @@ class PigAgent:
         *,
         persona_id: int = 1,
         search: dict | None = None,
-        interrupt_key: str | None = None,
+        interrupt_event: asyncio.Event | None = None,
     ) -> AsyncIterator[str]:
         """Low-level ReAct loop. No context loading, no persistence."""
         prompt = self._prompts.get(persona_id, "")
@@ -202,7 +200,7 @@ class PigAgent:
             messages = [Message.system(prompt)] + messages
 
         async for text in self.runner.stream(
-            messages, search=search, interrupt_key=interrupt_key,
+            messages, search=search, interrupt_event=interrupt_event,
         ):
             yield text
 
@@ -289,7 +287,7 @@ class PigAgent:
         roast_state,
         game_mode,
         *,
-        interrupt_key: str | None = None,
+        interrupt_event: asyncio.Event | None = None,
     ) -> AsyncIterator[str]:
         """Roast pipeline: consume pending  ->  stream  ->  tick.
 
@@ -307,7 +305,7 @@ class PigAgent:
             logger.warning(f"[PigAgent] consume_pending failed: {e}")
 
         # 2. Stream LLM
-        async for text in self.runner.stream(messages, interrupt_key=interrupt_key):
+        async for text in self.runner.stream(messages, interrupt_event=interrupt_event):
             yield text
 
         # 3. Tick  -  fire-and-forget, don't block the reply

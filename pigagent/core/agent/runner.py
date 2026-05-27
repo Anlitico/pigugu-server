@@ -99,7 +99,7 @@ class AgentRunner:
         messages: list[Message],
         *,
         search: dict | None = None,
-        interrupt_key: str | None = None,
+        interrupt_event: asyncio.Event | None = None,
     ) -> AsyncIterator[str]:
         """Stream the ReAct loop, yielding text chunks for TTS.
 
@@ -108,16 +108,8 @@ class AgentRunner:
         msgs = list(messages)
         state = AgentState(status=StateStatus.RUNNING.value)
 
-        # Resolve interrupt event — hold the reference, not the key.
-        # mgr.cleanup() removes the event from the manager's dict, but
-        # the event object itself is still valid (is_set() works).
-        event = None
-        if interrupt_key:
-            mgr = get_interrupt_manager()
-            event = mgr.get(interrupt_key)
-            if event is None:
-                event = mgr.create(interrupt_key)
-            logger.info(f"[Runner] Interrupt armed: key={interrupt_key[:28]}...")
+        # Interrupt event passed directly from bridge — no manager lookup needed
+        event = interrupt_event
 
         collected: list[str] = []
 

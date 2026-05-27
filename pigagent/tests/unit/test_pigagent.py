@@ -66,7 +66,7 @@ def _mock_runner_stream(agent, responses=None):
     mock.last_status = "success"
     mock.last_messages = []
 
-    async def _stream(messages, search=None, interrupt_key=None):
+    async def _stream(messages, search=None, interrupt_event=None):
         # Simulate the runner appending assistant response to messages
         full = list(messages)
         for r in responses:
@@ -118,7 +118,7 @@ class TestGenerateReply:
         )
         captured_messages = []
 
-        async def _stream(messages, search=None, interrupt_key=None):
+        async def _stream(messages, search=None, interrupt_event=None):
             captured_messages.extend(messages)
             yield "ok"
 
@@ -191,7 +191,7 @@ class TestGenerateReply:
             return None
 
         with patch("roast.pending.consume", _consume):
-            async def _stream(messages, search=None, interrupt_key=None):
+            async def _stream(messages, search=None, interrupt_event=None):
                 yield "roast reply"
 
             mock = MagicMock()
@@ -235,7 +235,7 @@ class TestStream:
         )
         captured = []
 
-        async def _stream(messages, search=None, interrupt_key=None):
+        async def _stream(messages, search=None, interrupt_event=None):
             captured.extend(messages)
             yield "x"
 

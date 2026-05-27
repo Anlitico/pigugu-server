@@ -5,7 +5,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-import uuid
 from typing import Any
 
 from loguru import logger
@@ -14,7 +13,6 @@ from livekit.agents import AgentSession, JobContext
 from livekit.agents.types import NOT_GIVEN
 from livekit.agents.voice import room_io
 from config import get_config
-from core.agent.interrupt import get_interrupt_manager
 from personas import get_persona
 from bootstrap.factory import create_agent_components, get_vad
 from lk.bridge import PigAgentVoiceBridge
@@ -105,30 +103,25 @@ async def run(ctx: JobContext) -> None:
     )
 
     # ── Interrupt wiring ──────────────────────────────────────────────
-    current_interrupt_key: str | None = None
-    interrupt_mgr = get_interrupt_manager()
+    current_interrupt_event: asyncio.Event | None = None
 
     # ── Event handlers ────────────────────────────────────────────────
 
     @session.on("agent_state_changed")
     def on_agent_state_changed(event):
         logger.info(f"[STATE] {event.old_state} -> {event.new_state}")
-        nonlocal current_interrupt_key
+        nonlocal current_interrupt_event
         if (
             event.old_state in ("thinking", "speaking")
             and event.new_state == "listening"
         ):
-            if current_interrupt_key:
-                interrupt_mgr.cleanup(current_interrupt_key)
-                current_interrupt_key = None
+            current_interrupt_event = None
 
         # Timing
         if event.new_state == "thinking" and event.old_state != "thinking":
-            key = f"agent_turn:{uuid.uuid4().hex[:12]}"
-            current_interrupt_key = key
-            bridge.current_interrupt_key = key
-            interrupt_mgr.create(key)
-            logger.info(f"[Interrupt] Key created: {key[:28]}...")
+            current_interrupt_event = asyncio.Event()
+            bridge.current_interrupt_event = current_interrupt_event
+            logger.info("[Interrupt] Event armed")
             TelemetryCollector.mark("llm_start")
         if event.old_state != "speaking" and event.new_state == "speaking":
             TelemetryCollector.mark("agent_spk")
@@ -137,15 +130,15 @@ async def run(ctx: JobContext) -> None:
 
     @session.on("user_state_changed")
     def on_user_state_changed(event):
-        nonlocal current_interrupt_key
+        nonlocal current_interrupt_event
         if event.old_state != "speaking" and event.new_state == "speaking":
             logger.info("[DEBUG] User started speaking")
             TelemetryCollector.start_turn(user_id=user_id, persona_id=persona_id)
             TelemetryCollector.set_meta("llm_model", pig_agent.model)
             TelemetryCollector.mark("vad_start")
-            if current_interrupt_key:
-                logger.info(f"[Interrupt] Cancelling: {current_interrupt_key}")
-                asyncio.create_task(interrupt_mgr.trigger(current_interrupt_key))
+            if current_interrupt_event:
+                logger.info("[Interrupt] Triggering")
+                current_interrupt_event.set()
         elif event.old_state == "speaking" and event.new_state != "speaking":
             logger.info(f"[DEBUG] User stopped speaking ({event.new_state})")
             TelemetryCollector.mark("vad_end")
