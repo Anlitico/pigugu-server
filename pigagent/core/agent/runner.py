@@ -112,9 +112,9 @@ class AgentRunner:
         event = None
         if interrupt_key:
             mgr = get_interrupt_manager()
-            event = mgr.get(interrupt_key)
-            if event is None:
-                event = mgr.create(interrupt_key)
+            existed = mgr.get(interrupt_key)
+            event = existed if existed is not None else mgr.create(interrupt_key)
+            logger.info(f"[Runner] Interrupt armed: key={interrupt_key[:28]}... already_existed={existed is not None}")
 
         collected: list[str] = []
 
