@@ -50,6 +50,8 @@ class PigAgentVoiceBridge(Agent):
         if not user_text.strip():
             logger.warning("[BRIDGE] Empty user text — nothing to send to LLM")
             return
+        # Create a fresh event right before the LLM call — session triggers it on VAD
+        self.current_interrupt_event = asyncio.Event()
         first = True
         async for text in self._pig.generate_reply(
             self._user_id, user_text,

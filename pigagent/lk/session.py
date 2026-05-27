@@ -114,8 +114,6 @@ async def run(ctx: JobContext) -> None:
 
         # Timing
         if event.new_state == "thinking" and event.old_state != "thinking":
-            bridge.current_interrupt_event = asyncio.Event()
-            logger.info("[Interrupt] Event armed")
             TelemetryCollector.mark("llm_start")
         if event.old_state != "speaking" and event.new_state == "speaking":
             TelemetryCollector.mark("agent_spk")
