@@ -111,11 +111,6 @@ async def run(ctx: JobContext) -> None:
     @session.on("agent_state_changed")
     def on_agent_state_changed(event):
         logger.info(f"[STATE] {event.old_state} -> {event.new_state}")
-        if (
-            event.old_state in ("thinking", "speaking")
-            and event.new_state == "listening"
-        ):
-            bridge.current_interrupt_event = None
 
         # Timing
         if event.new_state == "thinking" and event.old_state != "thinking":
