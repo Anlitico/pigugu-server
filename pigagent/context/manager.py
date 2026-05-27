@@ -140,8 +140,8 @@ class ContextManager:
         data = mem.read_summaries()
         raw_records = mem.get_hot_turns(_cfg.CONTEXT_HOT_WINDOW_SIZE)
 
-        # L2: cold start — load from Redis into memory
-        if not data:
+        # L2: cold start — load from Redis into memory (only if both are empty)
+        if not data and not raw_records:
             data = await store.read_summaries()
             if data:
                 mem.write_summaries(data.get("end_turn", 0), **{k: v for k, v in data.items() if k != "end_turn"})

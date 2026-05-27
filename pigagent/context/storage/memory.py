@@ -14,10 +14,6 @@ import time
 
 from loguru import logger
 
-from config import get_config
-
-_cfg = get_config()
-
 from context.schema import ConversationRecord
 
 
@@ -80,9 +76,6 @@ class MemoryStore:
     def push_turn(self, record: ConversationRecord) -> None:
         um = self._get_or_create()
         um.turns.append(record)
-        window = _cfg.CONTEXT_HOT_WINDOW_SIZE
-        if len(um.turns) > window:
-            um.turns = um.turns[-window:]
 
     def get_hot_turns(self, n: int, *, after_anchor: int = 0) -> list[ConversationRecord]:
         um = self._get()

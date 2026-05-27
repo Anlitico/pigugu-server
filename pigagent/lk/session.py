@@ -114,9 +114,7 @@ async def run(ctx: JobContext) -> None:
     def on_agent_state_changed(event):
         logger.info(f"[STATE] {event.old_state} -> {event.new_state}")
         nonlocal current_interrupt_key
-        if event.new_state == "speaking":
-            current_interrupt_key = None
-        elif (
+        if (
             event.old_state in ("thinking", "speaking")
             and event.new_state == "listening"
         ):

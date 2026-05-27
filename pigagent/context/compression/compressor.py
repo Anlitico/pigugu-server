@@ -23,6 +23,7 @@ from context.snapshot import ContextSnapshot
 from context.compression.l2_facts import extract_facts, summarize_profile
 from context.compression.l3_session import compress_turns, merge_summary
 from context.compression.l4_roast import compress_roast
+from utils.compression_metrics import CompressionMetrics
 
 
 def _strip_label(content: str) -> str:
@@ -59,6 +60,11 @@ class ContextCompressor:
         if not await snap.should_compress(existing_summary=existing_summary, model=model):
             return
 
+        metrics = CompressionMetrics(user_id, scenario=snap.scenario)
+        metrics.set_meta("turns_in", len(real_turns))
+        metrics.set_meta("model", model)
+        metrics.mark("check_done")
+
         from context.storage.redis import RedisStorage
         from context.storage.pg import PgStorage
         from context.storage.memory import MemoryStore
@@ -71,14 +77,17 @@ class ContextCompressor:
         snap.records = records  # temporarily override for splitting
 
         if snap.scenario == "roast":
-            await self._run_roast(user_id, snap, existing_summary, model)
+            await self._run_roast(user_id, snap, existing_summary, model, metrics)
         else:
-            await self._run_free_chat(user_id, snap, existing_summary, model)
+            await self._run_free_chat(user_id, snap, existing_summary, model, metrics)
+
+        metrics.finish()
 
     # ── Scenario: free_chat (L2 + L3) ──────────────────────────────
 
     async def _run_free_chat(self, user_id: str, snap: ContextSnapshot,
-                              existing_summary: str, model: str) -> None:
+                              existing_summary: str, model: str,
+                              metrics: CompressionMetrics) -> None:
         """L2 + L3. All real turns go to L3, L2 from full context minus L2 itself."""
         await self._store.set_compressing(True)
         self._mem.set_compressing(True)
@@ -101,19 +110,27 @@ class ContextCompressor:
         end_turn = real_turns[-1].turn_number
 
         try:
-            l2_facts, l3_text = await asyncio.gather(
-                extract_facts(l2_msgs, model=model),
-                self._compress_l3(existing_l3_text, l3_msgs, model),
-                return_exceptions=True,
-            )
-            if isinstance(l2_facts, BaseException):
-                l2_facts = []
-            if isinstance(l3_text, BaseException):
-                l3_text = existing_l3_text
+            # L2 facts + L3 compress + L2 profile all concurrent where possible
+            l2_task = asyncio.create_task(extract_facts(l2_msgs, model=model))
+            l3_task = asyncio.create_task(self._compress_l3(existing_l3_text, l3_msgs, model))
 
-            l2_profile = await self._write_l2(l2_facts)
+            l2_facts_raw = await l2_task
+            l2_facts = l2_facts_raw if not isinstance(l2_facts_raw, BaseException) else []
+            # Start profile rebuild (LLM call) concurrently with L3 compression
+            prof_task = asyncio.create_task(self._write_l2(l2_facts))
+
+            l3_text_raw = await l3_task
+            l3_text = l3_text_raw if not isinstance(l3_text_raw, BaseException) else existing_l3_text
+            metrics.mark("llm_done")
+
+            l2_profile = await prof_task
+            metrics.mark("profile_done")
+
+            metrics.set_meta("facts", len(l2_facts))
+
             await self._persist_summaries(end_turn, l2_profile=l2_profile, l3_session=l3_text, model=model)
-            self._rebuild_memory(user_id, end_turn, l2_profile=l2_profile, l3_session=l3_text)
+            turns_out = self._rebuild_memory(user_id, end_turn, l2_profile=l2_profile, l3_session=l3_text)
+            metrics.set_meta("turns_out", turns_out)
             await self._store.set_compressing(False); self._mem.set_compressing(False)
             logger.info(f"[Compress] free_chat u={user_id}: L2={len(l2_facts)}f L3={len(l3_text)}c")
 
@@ -127,7 +144,8 @@ class ContextCompressor:
     # ── Scenario: roast (L2 + L3 + L4) ──────────────────────────────
 
     async def _run_roast(self, user_id: str, snap: ContextSnapshot,
-                          existing_summary: str, model: str) -> None:
+                          existing_summary: str, model: str,
+                          metrics: CompressionMetrics) -> None:
         """L2 + L3 + L4. Split unified list by roast_prompt_turn anchor."""
         await self._store.set_compressing(True)
         self._mem.set_compressing(True)
@@ -183,14 +201,31 @@ class ContextCompressor:
             else:
                 tasks.append(asyncio.sleep(0))
 
-            results = await asyncio.gather(*tasks, return_exceptions=True)
+            # L2 facts task runs first; profile rebuild starts concurrently with L3+L4
+            l2_fact_task = asyncio.create_task(tasks[0])
+            l3_task = asyncio.create_task(tasks[1]) if len(tasks) > 1 else None
+            l4_task = asyncio.create_task(tasks[2]) if len(tasks) > 2 else None
 
-            l2_facts = results[0] if not isinstance(results[0], BaseException) else []
-            l3_text = results[1] if not isinstance(results[1], BaseException) else existing_l3_text
-            l4_text = results[2] if not isinstance(results[2], BaseException) else ""
+            l2_facts_raw = await l2_fact_task
+            l2_facts = l2_facts_raw if not isinstance(l2_facts_raw, BaseException) else []
+            prof_task = asyncio.create_task(self._write_l2(l2_facts))
 
-            l2_profile = await self._write_l2(l2_facts)
+            l3_result = await l3_task if l3_task else existing_l3_text
+            l3_text = l3_result if not isinstance(l3_result, BaseException) else existing_l3_text
+            l4_result = await l4_task if l4_task else ""
+            l4_text = l4_result if not isinstance(l4_result, BaseException) else ""
+            metrics.mark("llm_done")
+
+            l2_profile = await prof_task
+            metrics.mark("profile_done")
+
+            metrics.set_meta("facts", len(l2_facts))
+            metrics.set_meta("has_l4", bool(l4_text))
+            if prompt_rid:
+                metrics.set_meta("roast_id", prompt_rid)
+
             end_turn = max(real_turns[-1].turn_number, prompt_turn)
+
             await self._persist_summaries(
                 end_turn,
                 l2_profile=l2_profile, l3_session=l3_text,
@@ -198,10 +233,11 @@ class ContextCompressor:
                 roast_prompt=prompt_text, roast_prompt_turn=prompt_turn,
                 model=model,
             )
-            self._rebuild_memory(user_id, end_turn,
-                                 l2_profile=l2_profile, l3_session=l3_text,
-                                 l4_roast=l4_text, roast_id=prompt_rid,
-                                 roast_prompt=prompt_text, roast_prompt_turn=prompt_turn)
+            turns_out = self._rebuild_memory(user_id, end_turn,
+                                             l2_profile=l2_profile, l3_session=l3_text,
+                                             l4_roast=l4_text, roast_id=prompt_rid,
+                                             roast_prompt=prompt_text, roast_prompt_turn=prompt_turn)
+            metrics.set_meta("turns_out", turns_out)
 
             await self._store.set_compressing(False); self._mem.set_compressing(False)
             logger.info(f"[Compress] roast u={user_id}: L2={len(l2_facts)}f L3={len(l3_text)}c L4={'Y' if l4_text else 'N'}")
@@ -252,7 +288,7 @@ class ContextCompressor:
         self, user_id: str, end_turn: int, *,
         l2_profile: str = "", l3_session: str = "", l4_roast: str = "",
         roast_id: str = "", roast_prompt: str = "", roast_prompt_turn: int = 0,
-    ) -> None:
+    ) -> int:
         """Replace in-memory records with post-anchor real records only.
 
         Summaries are stored separately via write_summaries() —
@@ -270,6 +306,7 @@ class ContextCompressor:
         })
         logger.info(f"[Compress] Memory rebuilt u={user_id}: "
                     f"post_anchor={len(post_anchor)}")
+        return len(post_anchor)
 
     # ── Helpers ─────────────────────────────────────────────────────
 
