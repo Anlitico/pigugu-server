@@ -35,7 +35,7 @@ class ContextCompressor:
         user_id: str,
         records: list,
         existing_summary: str = "",
-        model: str = "qwen3.6-plus",
+        model: str = "qwen-plus",
     ) -> None:
         """Auto-detect scenario and dispatch."""
         snap = ContextSnapshot(records)
@@ -160,7 +160,7 @@ class ContextCompressor:
     # ── Helpers ───────────────────────────────────────────────────────
 
     async def _prepare_from(
-        self, snap: ContextSnapshot, *, model: str = "qwen3.6-plus",
+        self, snap: ContextSnapshot, *, model: str = "qwen-plus",
     ) -> tuple[list, list | None, int]:
         """Extract L3/L4 message groups from snapshot.
 

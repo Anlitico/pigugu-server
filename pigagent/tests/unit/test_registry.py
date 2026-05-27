@@ -88,7 +88,7 @@ class TestProviderConfig:
     def test_resolve_provider(self):
         base_url, api_key, default = resolve_provider("qwen-us")
         assert "dashscope-us" in base_url
-        assert default == "qwen3.6-plus"
+        assert default == "qwen-plus"
 
     def test_resolve_unknown_raises(self):
         with pytest.raises(ValueError, match="Unknown provider"):

@@ -7,7 +7,7 @@
 [qwen-us]
 base_url = "https://dashscope-us.aliyuncs.com/compatible-mode/v1"
 env = "DASHSCOPE_US_API_KEY"
-default = "qwen3.6-plus"
+default = "qwen-plus"
 
 [volcengine]
 base_url = "https://ark.cn-beijing.volces.com/api/v3"

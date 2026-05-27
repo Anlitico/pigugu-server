@@ -17,39 +17,46 @@ from sqlalchemy.dialects import postgresql
 
 
 revision: str = "0004"
-down_revision: Union[str, None] = "0003"
+down_revision: Union[str, None] = "0004_context"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
 
 def upgrade() -> None:
-    op.create_table(
-        "metrics",
-        sa.Column("id", sa.BigInteger, primary_key=True, autoincrement=True),
-        sa.Column("user_id", sa.Text, nullable=False),
-        sa.Column("turn_id", sa.Integer, nullable=False),
-        sa.Column("persona_id", sa.Integer, nullable=False, server_default="0"),
-        sa.Column("ts", sa.DateTime(timezone=True), server_default=sa.func.now()),
-        sa.Column("marks", postgresql.JSONB, nullable=False, server_default="{}"),
-        sa.Column("segments", postgresql.JSONB, nullable=False, server_default="{}"),
-        sa.Column("meta", postgresql.JSONB, nullable=False, server_default="{}"),
-    )
-    op.create_index("idx_metrics_user_ts", "metrics", ["user_id", sa.text("ts DESC")])
-    op.create_index("idx_metrics_ts", "metrics", [sa.text("ts DESC")])
-    op.create_unique_constraint("uq_metrics_user_turn", "metrics", ["user_id", "turn_id"])
+    conn = op.get_bind()
+    insp = sa.inspect(conn)
+    existing = insp.get_table_names()
+
+    # ── metrics ──
+    if "metrics" not in existing:
+        op.create_table(
+            "metrics",
+            sa.Column("id", sa.BigInteger, primary_key=True, autoincrement=True),
+            sa.Column("user_id", sa.Text, nullable=False),
+            sa.Column("turn_id", sa.Integer, nullable=False),
+            sa.Column("persona_id", sa.Integer, nullable=False, server_default="0"),
+            sa.Column("ts", sa.DateTime(timezone=True), server_default=sa.func.now()),
+            sa.Column("marks", postgresql.JSONB, nullable=False, server_default="{}"),
+            sa.Column("segments", postgresql.JSONB, nullable=False, server_default="{}"),
+            sa.Column("meta", postgresql.JSONB, nullable=False, server_default="{}"),
+        )
+        op.create_index("idx_metrics_user_ts", "metrics", ["user_id", sa.text("ts DESC")])
+        op.create_index("idx_metrics_ts", "metrics", [sa.text("ts DESC")])
+        op.create_unique_constraint("uq_metrics_user_turn", "metrics", ["user_id", "turn_id"])
 
     # ── context_summaries (redesigned: one row per compression run) ──
-    op.create_table(
-        "context_summaries",
-        sa.Column("user_id", sa.Text, primary_key=True),
-        sa.Column("end_turn", sa.Integer, primary_key=True),
-        sa.Column("l2_profile", sa.Text, nullable=False, server_default=""),
-        sa.Column("l3_session", sa.Text, nullable=False, server_default=""),
-        sa.Column("l4_roast", sa.Text, nullable=False, server_default=""),
-        sa.Column("roast_id", sa.Text, nullable=True),
-        sa.Column("model_used", sa.Text, nullable=False, server_default=""),
-        sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.func.now()),
-    )
+    if "context_summaries" not in existing:
+        op.create_table(
+            "context_summaries",
+            sa.Column("user_id", sa.Text, primary_key=True),
+            sa.Column("end_turn", sa.Integer, primary_key=True),
+            sa.Column("l2_profile", sa.Text, nullable=False, server_default=""),
+            sa.Column("l3_session", sa.Text, nullable=False, server_default=""),
+            sa.Column("l4_roast", sa.Text, nullable=False, server_default=""),
+            sa.Column("roast_id", sa.Text, nullable=True),
+            sa.Column("model_used", sa.Text, nullable=False, server_default=""),
+            sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.func.now()),
+        )
 
 
 def downgrade() -> None:

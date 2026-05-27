@@ -456,7 +456,7 @@ class TestRoastLifecycle:
 class TestModelProperty:
     def test_returns_model(self):
         agent, ctx, redis, pg = _make_agent()
-        assert agent.model == "qwen3.6-plus"
+        assert agent.model == "qwen-plus"
 
 
 # ── Helpers ─────────────────────────────────────────────────────────────────

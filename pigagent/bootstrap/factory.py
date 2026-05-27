@@ -93,7 +93,7 @@ def _init_pg_pool():
     if _pg_pool is not None:
         return _pg_pool
 
-    database_url = os.getenv("DATABASE_URL")
+    database_url = os.getenv("DATABASE_URL", "").replace("+asyncpg", "")
     if not database_url:
         raise RuntimeError(
             "DATABASE_URL is required. Set it in .env, "

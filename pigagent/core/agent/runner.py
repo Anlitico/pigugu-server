@@ -35,7 +35,7 @@ AfterStepHook = Callable[[list, AgentState], Awaitable[None]]
 class RunnerConfig:
     """Configuration for an AgentRunner instance."""
 
-    model: str = "qwen3.6-plus"
+    model: str = "qwen-plus"
     tools: list = field(default_factory=list)
     tool_handlers: dict = field(default_factory=dict)
     tool_timeout: float = 60.0

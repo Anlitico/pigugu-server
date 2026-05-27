@@ -29,7 +29,7 @@ class ContextSnapshot:
 
     # ── Token Counting ──────────────────────────────────────────────
 
-    async def token_count(self, *, model: str = "qwen3.6-plus") -> int:
+    async def token_count(self, *, model: str = "qwen-plus") -> int:
         """Total tokens across all records in this snapshot."""
         if not self.records:
             return 0
@@ -37,7 +37,7 @@ class ContextSnapshot:
         return await provider.count_tokens([r.to_message() for r in self.records])
 
     async def token_count_with_summary(
-        self, *, l3_summary: str = "", l4_summary: str = "", model: str = "qwen3.6-plus",
+        self, *, l3_summary: str = "", l4_summary: str = "", model: str = "qwen-plus",
     ) -> int:
         """Total tokens that would enter the LLM: L3 + L4 + raw records."""
         total = await self.token_count(model=model)
@@ -48,7 +48,7 @@ class ContextSnapshot:
             total += await provider.count_tokens(l4_summary)
         return total
 
-    async def token_count_roast(self, *, model: str = "qwen3.6-plus") -> int:
+    async def token_count_roast(self, *, model: str = "qwen-plus") -> int:
         """Tokens in the roast segment only."""
         roast = self.roast
         if not roast:
@@ -99,7 +99,7 @@ class ContextSnapshot:
     # ── Compression Triggers ────────────────────────────────────────
 
     async def should_compress(
-        self, *, existing_summary: str = "", model: str = "qwen3.6-plus",
+        self, *, existing_summary: str = "", model: str = "qwen-plus",
     ) -> bool:
         """True if compression should run.
 
@@ -113,7 +113,7 @@ class ContextSnapshot:
             return True
         return False
 
-    async def should_compress_l4(self, *, model: str = "qwen3.6-plus") -> bool:
+    async def should_compress_l4(self, *, model: str = "qwen-plus") -> bool:
         """True if roast segment has enough tokens to justify L4 compression."""
         roast_tokens = await self.token_count_roast(model=model)
         threshold = max(

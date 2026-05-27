@@ -24,7 +24,7 @@ async def compress_roast(
     *,
     existing_summary: str = "",
     roast_prompt: str = "",
-    model: str = "qwen3.6-plus",
+    model: str = "qwen-plus",
 ) -> str:
     """Compress roast turns. Output includes roast_prompt verbatim at top."""
     result_parts = [roast_prompt] if roast_prompt else []

@@ -40,7 +40,7 @@ class PigAgent:
         *,
         redis,
         pg_pool,
-        model: str = "qwen3.6-plus",
+        model: str = "qwen-plus",
         prompts: dict[int, str] | None = None,
         game_modes: dict[str, Any] | None = None,
         tools: list | None = None,

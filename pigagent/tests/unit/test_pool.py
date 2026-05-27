@@ -17,20 +17,20 @@ class TestPool:
     """
 
     def test_get_llm_returns_provider(self):
-        provider = get_llm("qwen3.6-plus")
+        provider = get_llm("qwen-plus")
         assert isinstance(provider, LLMProvider)
         assert "qwen-us" in _pool
 
     def test_get_llm_different_models_same_backend_same_instance(self):
-        # Both qwen3.6-plus and qwen3.6-flash use the same qwen-us backend
-        a = get_llm("qwen3.6-plus")
+        # Both qwen-plus and qwen3.6-flash use the same qwen-us backend
+        a = get_llm("qwen-plus")
         b = get_llm("doubao-seed-1-6-251015")
         assert a is not b  # different backends
         assert a.base_url != b.base_url
 
     def test_same_model_same_instance(self):
-        a = get_llm("qwen3.6-plus")
-        b = get_llm("qwen3.6-plus")
+        a = get_llm("qwen-plus")
+        b = get_llm("qwen-plus")
         assert a is b
 
     def test_all_registered_models_resolvable(self):
@@ -45,8 +45,8 @@ class TestPool:
             get_llm("nonexistent-model")
 
     def test_create_llm_alias(self):
-        a = create_llm("qwen3.6-plus")
-        b = get_llm("qwen3.6-plus")
+        a = create_llm("qwen-plus")
+        b = get_llm("qwen-plus")
         assert a is b
 
     def test_pool_providers_have_base_url(self):
