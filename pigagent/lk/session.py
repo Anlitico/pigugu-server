@@ -184,9 +184,10 @@ async def run(ctx: JobContext) -> None:
         if text and hasattr(item, "role"):
             if item.role == "assistant":
                 try:
+                    payload = json.dumps({"text": text.strip()})
                     asyncio.create_task(
                         ctx.room.local_participant.publish_data(
-                            text.strip().encode("utf-8"),
+                            payload.encode("utf-8"),
                             reliable=True, topic="agent_response",
                         )
                     )

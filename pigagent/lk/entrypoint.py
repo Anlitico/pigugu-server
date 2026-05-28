@@ -37,6 +37,7 @@ def main() -> None:
     cli.run_app(
         WorkerOptions(
             entrypoint_fnc=session_run,
+            agent_name="pigugu-agent",
             api_key=os.getenv("LIVEKIT_API_KEY"),
             api_secret=os.getenv("LIVEKIT_API_SECRET"),
             ws_url=config.LIVEKIT_URL,
