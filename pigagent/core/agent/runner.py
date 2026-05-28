@@ -110,8 +110,6 @@ class AgentRunner:
 
         # Interrupt event passed directly from bridge — no manager lookup needed
         event = interrupt_event
-        if event is not None:
-            logger.info(f"[Runner] Stream start with interrupt event id={id(event)}")
 
         collected: list[str] = []
 
@@ -134,7 +132,6 @@ class AgentRunner:
                 tool_calls: list | None = None
                 finish = "stop"
 
-                logger.info(f"[Runner] LLM stream starting, event={event is not None}")
                 async for delta in provider.chat_stream(  # type: ignore[reportGeneralTypeIssues]
                     messages=msgs,
                     model=self._model,
@@ -145,7 +142,6 @@ class AgentRunner:
                 ):
                     # Check interrupt during streaming (between chunks)
                     if event and event.is_set():
-                        logger.info(f"[Runner] Interrupt detected mid-stream")
                         raise InterruptedException()
 
                     if delta.content:
