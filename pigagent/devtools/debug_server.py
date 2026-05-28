@@ -9,11 +9,12 @@ load_dotenv(find_dotenv())
 from livekit import api
 
 HTML_PATH = os.path.join(os.path.dirname(__file__), 'test_room.html')
+CHAT_PATH = os.path.join(os.path.dirname(__file__), 'test_chat.html')
 LOG_PATH = os.path.join(os.path.dirname(__file__), '..', '..', 'logs', 'pigagent', 'browser.log')
 os.makedirs(os.path.dirname(LOG_PATH), exist_ok=True)
 
-def _read_html():
-    with open(HTML_PATH, encoding='utf-8') as f:
+def _read_html(path=HTML_PATH):
+    with open(path, encoding='utf-8') as f:
         return f.read()
 
 def _write_log(msg):
@@ -29,6 +30,8 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         path = urllib.parse.urlparse(self.path).path
         if path in ('/', '/index.html'):
             self._serve_html()
+        elif path == '/chat':
+            self._serve_chat()
         elif path == '/token':
             self._serve_token(None)
         else:
@@ -40,19 +43,27 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         body = json.loads(self.rfile.read(content_len)) if content_len > 0 else {}
         if path == '/token':
             self._serve_token(body)
+        elif path == '/token-direct':
+            self._serve_token_direct(body)
         elif path == '/log':
             self._serve_log(body)
         else:
             self.send_error(404)
 
     def _serve_html(self):
+        self._serve_file(HTML_PATH)
+
+    def _serve_chat(self):
+        self._serve_file(CHAT_PATH)
+
+    def _serve_file(self, path):
         self.send_response(200)
         self.send_header('Content-Type', 'text/html; charset=utf-8')
         self.send_header('Cache-Control', 'no-cache, no-store, must-revalidate')
         self.send_header('Pragma', 'no-cache')
         self.send_header('Expires', '0')
         self.end_headers()
-        self.wfile.write(_read_html().encode())
+        self.wfile.write(_read_html(path).encode())
 
     def _serve_token(self, body):
         body = body or {}
@@ -66,6 +77,23 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         ).to_jwt()
         resp = {'token': token, 'url': os.getenv('LIVEKIT_URL')}
         self._json(200, resp)
+
+    def _serve_token_direct(self, body):
+        """Generate token using credentials submitted from the browser."""
+        key = body.get('key', os.getenv('LIVEKIT_API_KEY', ''))
+        secret = body.get('secret', os.getenv('LIVEKIT_API_SECRET', ''))
+        room = body.get('room', 'test-room')
+        identity = body.get('identity', 'web-user')
+        url = body.get('url', os.getenv('LIVEKIT_URL', ''))
+        if not key or not secret or not url:
+            self._json(400, {'error': 'Missing url, key, or secret'})
+            return
+        token = api.AccessToken(
+            api_key=key, api_secret=secret,
+        ).with_identity(identity).with_name(identity).with_grants(
+            api.VideoGrants(room_join=True, room=room)
+        ).to_jwt()
+        self._json(200, {'token': token, 'url': url})
 
     def _serve_log(self, body):
         level = body.get('level', 'INFO')
