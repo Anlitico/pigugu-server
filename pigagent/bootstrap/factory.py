@@ -39,6 +39,7 @@ def get_stt():
             language=config.DEEPGRAM_STT_LANGUAGE,
             sample_rate=config.DEEPGRAM_STT_SAMPLE_RATE,
             enable_diarization=config.DEEPGRAM_ENABLE_DIARIZATION,
+            endpointing_ms=int(config.ENDPOINTING_DELAY * 1000),
             api_key=os.getenv("DEEPGRAM_API_KEY"),
         )
     else:

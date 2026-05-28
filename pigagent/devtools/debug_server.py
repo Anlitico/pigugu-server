@@ -71,12 +71,16 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         body = body or {}
         room = body.get('room', 'test-room')
         identity = body.get('identity', 'web-user')
+        agent_name = body.get('agent_name', 'pigugu-agent')
+        room_config = api.RoomConfiguration(
+            agents=[api.RoomAgentDispatch(agent_name=agent_name)],
+        )
         token = api.AccessToken(
             api_key=os.getenv('LIVEKIT_API_KEY'),
             api_secret=os.getenv('LIVEKIT_API_SECRET'),
         ).with_identity(identity).with_name(identity).with_grants(
             api.VideoGrants(room_join=True, room=room)
-        ).to_jwt()
+        ).with_room_config(room_config).to_jwt()
         resp = {'token': token, 'url': os.getenv('LIVEKIT_URL'), 'room': room}
         self._json(200, resp)
 

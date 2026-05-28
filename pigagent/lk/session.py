@@ -97,6 +97,8 @@ async def run(ctx: JobContext) -> None:
         llm=pigllm,
         tts=tts_plugin,
         vad=vad if vad is not None else NOT_GIVEN,
+        turn_detection="vad",
+        min_endpointing_delay=config.ENDPOINTING_DELAY,
         turn_handling=TurnHandlingOptions(
             preemptive_generation={"enabled": config.ENABLE_PREEMPTIVE_SYNTHESIS},
             interruption={"mode": "adaptive", "min_duration": 0.1},
