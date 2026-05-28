@@ -15,7 +15,7 @@ from loguru import logger
 from livekit.agents import Agent
 from livekit.agents.voice.agent import ModelSettings
 from livekit.agents.llm import ChatContext
-from utils.telemetry import TelemetryCollector
+from metrics.turn import TelemetryCollector
 
 
 class PigAgentVoiceBridge(Agent):

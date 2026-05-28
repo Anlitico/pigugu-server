@@ -2,13 +2,13 @@
 """Unit tests for TelemetryCollector singleton."""
 
 import pytest
-from utils.telemetry import TelemetryCollector, _diff, _fmt
+from metrics.turn import TelemetryCollector, _diff, _fmt
 
 
 @pytest.fixture(autouse=True)
 def _reset_collector():
     """Ensure clean state before every test."""
-    import utils.telemetry as mod
+    import metrics.turn as mod
     mod._current = None
     yield
     mod._current = None
@@ -22,18 +22,18 @@ class TestTelemetryCollector:
         # (won't log because missing llm_start, but shouldn't crash)
 
     def test_mark_does_nothing_when_no_turn(self):
-        import utils.telemetry as mod
+        import metrics.turn as mod
         mod._current = None
         TelemetryCollector.mark("vad_start")  # no-op, no error
 
     def test_finish_turn_does_nothing_when_no_turn(self):
-        import utils.telemetry as mod
+        import metrics.turn as mod
         mod._current = None
         TelemetryCollector.finish_turn()  # no-op, no error
 
     def test_start_turn_flushes_previous(self):
         """When a turn has llm_start, starting a new turn flushes it."""
-        import utils.telemetry as mod
+        import metrics.turn as mod
 
         TelemetryCollector.start_turn(user_id="u1", persona_id=1)
         TelemetryCollector.mark("vad_start")
@@ -53,7 +53,7 @@ class TestTelemetryCollector:
 
     def test_set_meta_turn_number(self):
         """set_meta with turn_number aligns the turn_id."""
-        import utils.telemetry as mod
+        import metrics.turn as mod
 
         TelemetryCollector.start_turn(user_id="u1", persona_id=1)
         TelemetryCollector.mark("llm_start")  # ensure turn is "complete"
@@ -67,7 +67,7 @@ class TestTelemetryCollector:
 
     def test_incomplete_turn_not_logged(self):
         """Turns without llm_start are skipped in _log()."""
-        import utils.telemetry as mod
+        import metrics.turn as mod
 
         TelemetryCollector.start_turn(user_id="u1", persona_id=1)
         TelemetryCollector.mark("vad_start")

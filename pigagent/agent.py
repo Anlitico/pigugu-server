@@ -17,7 +17,7 @@ from collections.abc import AsyncIterator
 from typing import Any
 
 from loguru import logger
-from utils.telemetry import TelemetryCollector
+from metrics.turn import TelemetryCollector
 
 from core.llm.types import Message
 from core.agent.runner import AgentRunner, RunnerConfig

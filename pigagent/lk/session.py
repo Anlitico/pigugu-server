@@ -16,7 +16,7 @@ from config import get_config
 from personas import get_persona
 from bootstrap.factory import create_agent_components, get_vad
 from lk.bridge import PigAgentVoiceBridge
-from utils.telemetry import TelemetryCollector
+from metrics.turn import TelemetryCollector
 
 
 async def run(ctx: JobContext) -> None:

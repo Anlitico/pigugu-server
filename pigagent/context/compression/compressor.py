@@ -23,7 +23,7 @@ from context.snapshot import ContextSnapshot
 from context.compression.l2_facts import extract_facts, summarize_profile
 from context.compression.l3_session import compress_turns, merge_summary
 from context.compression.l4_roast import compress_roast
-from utils.compression_metrics import CompressionMetrics
+from metrics.compression import CompressionMetrics
 
 
 def _strip_label(content: str) -> str:

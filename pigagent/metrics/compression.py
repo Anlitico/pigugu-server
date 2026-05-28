@@ -1,9 +1,9 @@
-# pigagent/utils/compression_metrics.py
+# pigagent/metrics/compression.py
 """Per-compression-run timing collector. Standalone — no global state.
 
 Compression runs as a fire-and-forget background task, so it can't share
-TelemetryCollector's global _current. This creates a local dict and writes
-directly to PG on finish.
+TurnMetrics' global state. This creates a local dict and writes directly
+to PG on finish.
 """
 
 from __future__ import annotations

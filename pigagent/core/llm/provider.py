@@ -212,7 +212,7 @@ class LLMProvider(ABC):
         Override if the provider returns usage in a non-standard format
         (e.g. Gemini has different field names).
         """
-        from utils.telemetry import TelemetryCollector
+        from metrics.turn import TelemetryCollector
         from .types import TokenUsage
 
         if usage is None:

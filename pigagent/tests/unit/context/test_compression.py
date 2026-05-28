@@ -89,7 +89,7 @@ import time as _time_module
 
 class TestCompressionMetrics:
     def test_basic_mark_and_segments(self):
-        from utils.compression_metrics import CompressionMetrics
+        from metrics.compression import CompressionMetrics
         m = CompressionMetrics("u1", "free_chat")
         _time_module.sleep(0.01)
         m.mark("check_done")
@@ -107,7 +107,7 @@ class TestCompressionMetrics:
         assert segs["total"] >= segs["check"] + segs["llm"] + segs["profile"]
 
     def test_set_and_get_meta(self):
-        from utils.compression_metrics import CompressionMetrics
+        from metrics.compression import CompressionMetrics
         m = CompressionMetrics("u1", "roast")
         m.set_meta("turns_in", 100)
         m.set_meta("model", "test")
@@ -117,7 +117,7 @@ class TestCompressionMetrics:
         assert m._meta["has_l4"] is True
 
     def test_skip_missing_marks(self):
-        from utils.compression_metrics import CompressionMetrics
+        from metrics.compression import CompressionMetrics
         m = CompressionMetrics("u1", "free_chat")
         # Don't mark check_done — segment should be omitted
         m.mark("llm_done")
@@ -128,7 +128,7 @@ class TestCompressionMetrics:
         assert "total" in segs
 
     def test_scenario_stored(self):
-        from utils.compression_metrics import CompressionMetrics
+        from metrics.compression import CompressionMetrics
         m = CompressionMetrics("u2", "roast")
         assert m._scenario == "roast"
 

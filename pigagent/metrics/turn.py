@@ -1,17 +1,14 @@
-# pigagent/utils/telemetry.py
-"""Latency telemetry — async-safe singleton collector with per-turn dicts.
-
-Uses contextvars so concurrent asyncio sessions don't interfere.
-Each session's marks/metadata stay isolated to its own context.
+# pigagent/metrics/turn.py
+"""Per-turn latency collector — async-safe singleton for conversation turns.
 
 Usage (any module, zero setup):
 
-    from utils.telemetry import TelemetryCollector
+    from metrics.turn import TurnMetrics
 
-    TelemetryCollector.start_turn(user_id="web-xxx", persona_id=1)
-    TelemetryCollector.mark("vad_start")
-    TelemetryCollector.set_meta("llm_model", "qwen-plus")
-    TelemetryCollector.finish_turn()
+    TurnMetrics.start_turn(user_id="web-xxx", persona_id=1)
+    TurnMetrics.mark("vad_start")
+    TurnMetrics.set_meta("llm_model", "qwen-plus")
+    TurnMetrics.finish_turn()
 """
 
 from __future__ import annotations
@@ -83,7 +80,7 @@ def _make_turn(user_id: str, persona_id: int) -> dict[str, Any]:
 
 # ── Public API ───────────────────────────────────────────────────────
 
-class TelemetryCollector:
+class TurnMetrics:
     """Async-safe singleton. Call class methods from anywhere — each
     asyncio task gets its own turn dict via contextvars."""
 
@@ -103,7 +100,6 @@ class TelemetryCollector:
     def set_meta(cls, key: str, value: object) -> None:
         if _current is not None:
             _current["meta"][key] = value
-            # Align turn_id with the real conversation turn number from Redis
             if key == "turn_number" and isinstance(value, int):
                 _current["turn_id"] = value
 
@@ -121,14 +117,12 @@ class TelemetryCollector:
 
 def _log(turn: dict[str, Any]) -> None:
     m = turn["marks"]
-    # Skip interrupted turns — no LLM means nothing to analyze
     if m.get("llm_start") is None:
         return
     e2e = _diff(m, "vad_end", "agent_spk")
 
     seg_parts: list[str] = []
     for label, a, b in SEGMENTS:
-        # stt can be negative when LiveKit async events arrive out of order (vad_end > stt_final)
         d = _diff_nonneg(m, a, b) if label == "stt" else _diff(m, a, b)
         if d is not None:
             seg_parts.append(f"{label}={_fmt(d)}")
@@ -150,22 +144,11 @@ def _log(turn: dict[str, Any]) -> None:
         + (f"  [{', '.join(meta_parts)}]" if meta_parts else "")
     )
 
-    # Persistence rules:
-#
-#   Scenario              | llm_start |  Log  | PG
-#   ----------------------+-----------+-------+----
-#   Full conversation     |    Yes    |  Yes  | Yes
-#   LLM ran, interrupted  |    Yes    |  Yes  | Yes
-#   Interrupted before LLM|    No     |  No   | No
-#
-#   Rationale: llm_start means user text was transcribed and submitted.
-#   The conversation turn exists — a reply began, even if interrupted.
-#
     if _PG_DSN:
         try:
             asyncio.ensure_future(_pg_write(turn, m, e2e))
         except RuntimeError:
-            pass  # no running event loop (e.g., shutdown)
+            pass
 
 
 async def _pg_write(turn: dict[str, Any], m: dict[str, float], e2e: float | None) -> None:
@@ -196,7 +179,7 @@ async def _pg_write(turn: dict[str, Any], m: dict[str, float], e2e: float | None
         finally:
             await conn.close()
     except Exception:
-        pass  # metrics are best-effort — never fail the pipeline
+        pass
 
 
 def _diff(m: dict[str, float], a: str, b: str) -> float | None:
@@ -207,7 +190,6 @@ def _diff(m: dict[str, float], a: str, b: str) -> float | None:
 
 
 def _diff_nonneg(m: dict[str, float], a: str, b: str) -> float | None:
-    """Like _diff but clamps negative results to 0 (fixes async event ordering jitter)."""
     d = _diff(m, a, b)
     if d is not None and d < 0:
         return 0.0
@@ -216,3 +198,7 @@ def _diff_nonneg(m: dict[str, float], a: str, b: str) -> float | None:
 
 def _fmt(v: float | None) -> str:
     return f"{v:.3f}s" if v is not None else "—"
+
+
+# Backward compat alias
+TelemetryCollector = TurnMetrics
