@@ -228,16 +228,8 @@ async function connect() {
       }
     });
 
+    // Token already includes agent dispatch config — agent joins when user connects
     await room.connect(d.url, d.token, { autoSubscribe: true, adaptiveStream: false });
-
-    // Dispatch agent to this room
-    try {
-      await fetch('/dispatch', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ room: roomName })
-      });
-    } catch (e) { addMsg('system', 'Dispatch error: ' + e.message, 'error'); }
 
     // Start mic
     await startMic();

@@ -141,6 +141,7 @@ class AgentConfig(BaseSettings):
     AGENT_WORKERS: int = Field(default_factory=lambda: int(get_config_value("AGENT_WORKERS", 2)))
     ENABLE_INTERRUPTIONS: bool = Field(default_factory=lambda: get_bool_config_value("ENABLE_INTERRUPTIONS", True))
     AGENT_MAX_STEPS: int = Field(default_factory=lambda: int(get_config_value("AGENT_MAX_STEPS", 5)))
+    ENDPOINTING_DELAY: float = Field(default_factory=lambda: float(get_config_value("ENDPOINTING_DELAY", 0.5)))
 
     # Context Module  -  compression / extraction tuning
     CONTEXT_TOKEN_BUDGET_CAP: int = Field(default_factory=lambda: int(get_config_value("CONTEXT_TOKEN_BUDGET_CAP", 200_000)))
