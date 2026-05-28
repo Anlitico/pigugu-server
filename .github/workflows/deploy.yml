@@ -79,10 +79,19 @@ jobs:
 
     - name: Run database migrations
       env:
-        DATABASE_URL: postgresql+asyncpg://pigugu:${{ secrets.DB_PASSWORD }}@pigugu-db.c1esma68egsk.us-west-1.rds.amazonaws.com:5432/pigugu
+        ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+        IMAGE_TAG: ${{ github.event.inputs.image_tag }}
       run: |
-        pip install alembic asyncpg sqlalchemy pydantic-settings
-        alembic upgrade head
+        kubectl delete job pigugu-db-migration --ignore-not-found
+        sed "s|__IMAGE__|$ECR_REGISTRY/$ECR_REPOSITORY_API:$IMAGE_TAG|g" k8s/migration-job.yaml | kubectl apply -f -
+        if ! kubectl wait --for=condition=complete --timeout=120s job/pigugu-db-migration; then
+          echo "=== Migration job logs ==="
+          kubectl logs job/pigugu-db-migration
+          kubectl delete job pigugu-db-migration --ignore-not-found
+          exit 1
+        fi
+        kubectl logs job/pigugu-db-migration
+        kubectl delete job pigugu-db-migration --ignore-not-found
 
     - name: Deploy to EKS
       env:
