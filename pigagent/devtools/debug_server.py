@@ -45,6 +45,8 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             self._serve_token(body)
         elif path == '/token-direct':
             self._serve_token_direct(body)
+        elif path == '/dispatch':
+            self._serve_dispatch(body)
         elif path == '/log':
             self._serve_log(body)
         else:
@@ -75,7 +77,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         ).with_identity(identity).with_name(identity).with_grants(
             api.VideoGrants(room_join=True, room=room)
         ).to_jwt()
-        resp = {'token': token, 'url': os.getenv('LIVEKIT_URL')}
+        resp = {'token': token, 'url': os.getenv('LIVEKIT_URL'), 'room': room}
         self._json(200, resp)
 
     def _serve_token_direct(self, body):
@@ -94,6 +96,28 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             api.VideoGrants(room_join=True, room=room)
         ).to_jwt()
         self._json(200, {'token': token, 'url': url})
+
+    def _serve_dispatch(self, body):
+        """Explicitly dispatch pigugu-agent to the room."""
+        room = body.get('room', 'test-room')
+        import asyncio
+        async def _dispatch():
+            lkapi = api.LiveKitAPI(
+                os.getenv('LIVEKIT_URL', ''),
+                api_key=os.getenv('LIVEKIT_API_KEY', ''),
+                api_secret=os.getenv('LIVEKIT_API_SECRET', ''),
+            )
+            try:
+                await lkapi.agent_dispatch.create_dispatch(
+                    api.CreateAgentDispatchRequest(room=room, agent_name='pigugu-agent')
+                )
+            finally:
+                await lkapi.aclose()
+        try:
+            asyncio.run(_dispatch())
+            self._json(200, {'ok': True, 'room': room})
+        except Exception as e:
+            self._json(500, {'ok': False, 'error': str(e)})
 
     def _serve_log(self, body):
         level = body.get('level', 'INFO')

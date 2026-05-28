@@ -225,9 +225,23 @@ async def run(ctx: JobContext) -> None:
             user_id = identity
             break
     if not user_id:
-        logger.error("No user_id available — refusing to run session without identity")
-        await session.aclose()
-        return
+        # Explicit dispatch — agent arrives before user. Wait for first participant.
+        logger.info("No user_id yet, waiting for participant to join...")
+        _user_joined = asyncio.Event()
+
+        @ctx.room.on("participant_connected")
+        def _resolve_user(participant: rtc.RemoteParticipant):
+            nonlocal user_id
+            user_id = participant.identity
+            _user_joined.set()
+
+        try:
+            await asyncio.wait_for(_user_joined.wait(), timeout=30)
+        except asyncio.TimeoutError:
+            logger.error("No participant joined within 30s — refusing to run session")
+            await session.aclose()
+            return
+        logger.info(f"User ID resolved from joined participant: {user_id}")
     bridge._user_id = user_id
     logger.info(f"User ID resolved: {user_id}")
 
