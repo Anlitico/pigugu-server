@@ -1,5 +1,5 @@
 # tests/unit/core/agent/test_runner.py
-"""Tests for core.agent.runner — AgentRunner, RunnerConfig."""
+"""Tests for core.agent.runner  -  AgentRunner, RunnerConfig."""
 
 import asyncio
 
@@ -63,7 +63,7 @@ class MockMessage:
 class TestRunnerConfig:
     def test_defaults(self):
         c = RunnerConfig()
-        assert c.model == "qwen3.6-plus"
+        assert c.model == "qwen-plus-us"
         assert c.max_steps == 5
 
 
@@ -77,10 +77,10 @@ class TestAgentRunner:
             on_before_step=_make_load([MockMessage("user", "hi")]),
             on_after_step=_noop,
         ))
-        assert runner.current_step == 1
+        assert runner.last_step_count == 1
         assert result.content == "Hello!"
         assert result.tool_calls is None
-        assert runner.state.status == StateStatus.SUCCESS.value
+        assert runner.last_status == StateStatus.SUCCESS.value
 
     def test_multi_step_with_tools(self, monkeypatch):
         from core.llm.types import ToolCall
@@ -104,7 +104,7 @@ class TestAgentRunner:
             on_before_step=_make_load([MockMessage("user", "find x")]),
             on_after_step=_flush,
         ))
-        assert runner.current_step == 2
+        assert runner.last_step_count == 2
         assert result.content == "found it"
         assert any(getattr(m, "role", "") == "tool" for m in messages)
 
@@ -124,7 +124,7 @@ class TestAgentRunner:
             on_before_step=_make_load([MockMessage("user", "loop")]),
             on_after_step=_noop,
         ))
-        assert runner.current_step == 2
+        assert runner.last_step_count == 2
 
     def test_status_on_error(self, monkeypatch):
         class FailingProvider:
@@ -138,7 +138,7 @@ class TestAgentRunner:
             on_before_step=_make_load([MockMessage("user", "hi")]),
             on_after_step=_noop,
         ))
-        assert runner.state.status == StateStatus.ERROR.value
+        assert runner.last_status == StateStatus.ERROR.value
 
     def test_on_after_step_called_on_error(self, monkeypatch):
         called = False
@@ -184,5 +184,129 @@ class TestAgentRunner:
             return await task
 
         result = asyncio.run(_run())
-        assert runner.state.status == StateStatus.INTERRUPTED.value
+        assert runner.last_status == StateStatus.INTERRUPTED.value
         assert result.finish_reason == "interrupted"
+
+
+# ── Stream interrupt tests ──────────────────────────────────────────────────
+
+
+class SlowStreamProvider:
+    """Yields text chunks one at a time with a configurable delay."""
+
+    def __init__(self, chunks: list[str], delay: float = 0.01):
+        self._chunks = chunks
+        self._delay = delay
+
+    async def chat_stream(self, **kw):
+        from core.llm.types import ChatDelta
+        for text in self._chunks:
+            await asyncio.sleep(self._delay)
+            yield ChatDelta(content=text)
+        yield ChatDelta(finish_reason="stop")
+
+
+class TestStreamInterrupt:
+    @staticmethod
+    def _msgs(*contents: str) -> list:
+        from core.llm.types import Message
+        return [Message.user(c) for c in contents]
+
+    def test_no_interrupt_key_works_normally(self, monkeypatch):
+        provider = SlowStreamProvider(["Hello, ", "world!"])
+        monkeypatch.setattr("core.agent.runner.get_llm", lambda model: provider)
+
+        runner = AgentRunner(RunnerConfig(model="test"))
+        msgs = self._msgs("hi")
+
+        async def _collect():
+            chunks = []
+            async for t in runner.stream(msgs):
+                chunks.append(t)
+            return "".join(chunks)
+
+        result = asyncio.run(_collect())
+        assert result == "Hello, world!"
+        assert runner.last_status == StateStatus.SUCCESS.value
+
+    def test_interrupt_mid_stream_saves_partial(self, monkeypatch):
+        provider = SlowStreamProvider(["Hello, ", "world! ", "How are you?"], delay=0.02)
+        monkeypatch.setattr("core.agent.runner.get_llm", lambda model: provider)
+
+        runner = AgentRunner(RunnerConfig(model="test"))
+        msgs = self._msgs("hi")
+        event = asyncio.Event()
+
+        async def _run():
+            chunks = []
+            async for t in runner.stream(msgs, interrupt_event=event):
+                chunks.append(t)
+                if "".join(chunks).startswith("Hello, "):
+                    event.set()
+            return "".join(chunks)
+
+        result = asyncio.run(_run())
+        assert result.startswith("Hello, ")
+        assert runner.last_status == StateStatus.INTERRUPTED.value
+        assert len(runner.last_messages) > 1
+        last_msg = runner.last_messages[-1]
+        assert last_msg.partial is True
+        assert "Hello, " in last_msg.content
+
+    def test_interrupt_before_any_output(self, monkeypatch):
+        provider = SlowStreamProvider(["a", "b", "c"], delay=0.05)
+        monkeypatch.setattr("core.agent.runner.get_llm", lambda model: provider)
+
+        runner = AgentRunner(RunnerConfig(model="test"))
+        msgs = self._msgs("hi")
+        event = asyncio.Event()
+
+        async def _run():
+            event.set()
+            chunks = []
+            async for t in runner.stream(msgs, interrupt_event=event):
+                chunks.append(t)
+            return "".join(chunks)
+
+        result = asyncio.run(_run())
+        assert result == ""
+        assert runner.last_status == StateStatus.INTERRUPTED.value
+
+    def test_interrupt_respected_between_steps(self, monkeypatch):
+        from core.llm.types import ToolCall, ChatDelta
+
+        step_counter = [0]
+
+        def _make_provider():
+            class StepProvider:
+                async def chat_stream(self, **kw):
+                    nonlocal step_counter
+                    step_counter[0] += 1
+                    if step_counter[0] == 1:
+                        tc = ToolCall(id="c1", name="search", arguments='{"q":"x"}')
+                        yield ChatDelta(tool_calls=[tc], finish_reason="tool_calls")
+                    else:
+                        yield ChatDelta(content="result text")
+                        yield ChatDelta(finish_reason="stop")
+            return StepProvider()
+
+        monkeypatch.setattr("core.agent.runner.get_llm", lambda model: _make_provider())
+        monkeypatch.setattr(
+            "core.agent.runner.ToolExecutor",
+            lambda *a, **kw: _FakeExecutor(),
+        )
+
+        runner = AgentRunner(RunnerConfig(model="test", max_steps=5))
+        msgs = self._msgs("hi")
+        event = asyncio.Event()
+
+        async def _run():
+            chunks = []
+            async for t in runner.stream(msgs, interrupt_event=event):
+                chunks.append(t)
+                event.set()
+            return "".join(chunks)
+
+        result = asyncio.run(_run())
+        assert runner.last_status == StateStatus.INTERRUPTED.value
+        assert runner.last_step_count >= 1

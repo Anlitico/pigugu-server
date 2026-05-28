@@ -1,5 +1,5 @@
 # tests/unit/core/llm/test_message.py
-"""Tests for Message serialization — to_dict/from_dict roundtrip and edge cases."""
+"""Tests for Message serialization  -  to_dict/from_dict roundtrip and edge cases."""
 
 from core.llm.types import Message, ToolCall
 
@@ -52,6 +52,7 @@ class TestMessageRoundtrip:
         tc2 = ToolCall(id="2", name="b", arguments='{"k":"v"}')
         m = Message(role="assistant", content="", tool_calls=[tc1, tc2])
         restored = Message.from_dict(m.to_dict())
+        assert restored.tool_calls is not None
         assert len(restored.tool_calls) == 2
         assert restored.tool_calls[0].id == "1"
         assert restored.tool_calls[1].arguments == '{"k":"v"}'

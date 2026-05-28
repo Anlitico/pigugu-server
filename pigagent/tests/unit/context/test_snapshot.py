@@ -1,16 +1,16 @@
 # tests/unit/context/test_snapshot.py
-"""Unit tests for ContextSnapshot — segment splitting, scenario detection, conversion."""
+"""Unit tests for ContextSnapshot  -  segment splitting, scenario detection, conversion."""
 
 
 class TestContextSnapshot:
-    """ContextSnapshot — segment splitting, scenario detection, conversion."""
+    """ContextSnapshot  -  segment splitting, scenario detection, conversion."""
 
     @staticmethod
-    def _rec(turn_number, role="user", content="", roast_id=None):
+    def _rec(turn_number, role="user", content="", roast_instance_id=None):
         from context.schema import ConversationRecord
         return ConversationRecord(
             turn_number=turn_number, role=role, content=content,
-            roast_id=roast_id, created_at=float(turn_number),
+            roast_instance_id=roast_instance_id, created_at=float(turn_number),
         )
 
     def test_init_empty(self):
@@ -27,10 +27,10 @@ class TestContextSnapshot:
     def test_roast_start_idx_returns_first_roast_index(self):
         from context.snapshot import ContextSnapshot
         records = [
-            self._rec(1, roast_id=None),
-            self._rec(2, roast_id=None),
-            self._rec(3, roast_id="rx"),
-            self._rec(4, roast_id="rx"),
+            self._rec(1, roast_instance_id=None),
+            self._rec(2, roast_instance_id=None),
+            self._rec(3, roast_instance_id="rx"),
+            self._rec(4, roast_instance_id="rx"),
         ]
         snap = ContextSnapshot(records)
         assert snap.roast_start_idx == 2
@@ -43,19 +43,19 @@ class TestContextSnapshot:
 
     def test_scenario_roast(self):
         from context.snapshot import ContextSnapshot
-        records = [self._rec(1, roast_id="rx")]
+        records = [self._rec(1, roast_instance_id="rx")]
         snap = ContextSnapshot(records)
         assert snap.scenario == "roast"
 
-    def test_roast_id_empty(self):
+    def test_roast_instance_id_empty(self):
         from context.snapshot import ContextSnapshot
         snap = ContextSnapshot([self._rec(1)])
-        assert snap.roast_id == ""
+        assert snap.roast_instance_id == ""
 
-    def test_roast_id_value(self):
+    def test_roast_instance_id_value(self):
         from context.snapshot import ContextSnapshot
-        snap = ContextSnapshot([self._rec(1, roast_id="active_roast")])
-        assert snap.roast_id == "active_roast"
+        snap = ContextSnapshot([self._rec(1, roast_instance_id="active_roast")])
+        assert snap.roast_instance_id == "active_roast"
 
     def test_pre_roast_all_when_no_roast(self):
         from context.snapshot import ContextSnapshot
@@ -66,9 +66,9 @@ class TestContextSnapshot:
     def test_pre_roast_before_boundary(self):
         from context.snapshot import ContextSnapshot
         records = [
-            self._rec(1, roast_id=None),
-            self._rec(2, roast_id=None),
-            self._rec(3, roast_id="rx"),
+            self._rec(1, roast_instance_id=None),
+            self._rec(2, roast_instance_id=None),
+            self._rec(3, roast_instance_id="rx"),
         ]
         snap = ContextSnapshot(records)
         pre = snap.pre_roast
@@ -84,9 +84,9 @@ class TestContextSnapshot:
     def test_roast_property_from_boundary(self):
         from context.snapshot import ContextSnapshot
         records = [
-            self._rec(1, roast_id=None),
-            self._rec(2, roast_id="rx"),
-            self._rec(3, roast_id="rx"),
+            self._rec(1, roast_instance_id=None),
+            self._rec(2, roast_instance_id="rx"),
+            self._rec(3, roast_instance_id="rx"),
         ]
         snap = ContextSnapshot(records)
         roast = snap.roast
@@ -97,8 +97,8 @@ class TestContextSnapshot:
     def test_split(self):
         from context.snapshot import ContextSnapshot
         records = [
-            self._rec(1, roast_id=None),
-            self._rec(2, roast_id="rx"),
+            self._rec(1, roast_instance_id=None),
+            self._rec(2, roast_instance_id="rx"),
         ]
         snap = ContextSnapshot(records)
         pre, roast = snap.split()
@@ -114,11 +114,11 @@ class TestContextSnapshot:
         assert msgs[0].role == "user"
         assert msgs[0].content == "hi"
 
-    def test_scenario_roast_when_last_has_roast_id(self):
+    def test_scenario_roast_when_last_has_roast_instance_id(self):
         from context.snapshot import ContextSnapshot
         records = [
-            self._rec(1, roast_id=None),
-            self._rec(2, roast_id="rx"),
+            self._rec(1, roast_instance_id=None),
+            self._rec(2, roast_instance_id="rx"),
         ]
         snap = ContextSnapshot(records)
         assert snap.scenario == "roast"

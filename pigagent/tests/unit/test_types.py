@@ -1,5 +1,5 @@
 # tests/unit/test_types.py
-"""Unit tests for types — Message, ToolCall, ToolSpec, ChatResponse, TokenUsage, ModelInfo."""
+"""Unit tests for types  -  Message, ToolCall, ToolSpec, ChatResponse, TokenUsage, ModelInfo."""
 
 from core.llm.types import (
     Message, ToolCall, ToolSpec, ChatResponse, ChatDelta,
@@ -101,6 +101,7 @@ class TestChatResponse:
         r = ChatResponse(content="", tool_calls=[tc],
                          usage=TokenUsage(10, 5, 15), finish_reason="tool_calls")
         assert r.tool_calls == [tc]
+        assert r.usage is not None
         assert r.usage.total_tokens == 15
 
 

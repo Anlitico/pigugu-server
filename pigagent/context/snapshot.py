@@ -1,5 +1,5 @@
 ﻿# pigagent/context/snapshot.py
-"""ContextSnapshot — wraps list[ConversationRecord] with token counting,
+"""ContextSnapshot  -  wraps list[ConversationRecord] with token counting,
 segment splitting, and compression eligibility checks.
 
 Used by manager.assemble() and ContextCompressor.
@@ -20,7 +20,7 @@ from context.roast import RoastState
 class ContextSnapshot:
     """Point-in-time snapshot of one user's hot conversation records.
 
-    All token counting and segment queries live here — a single source of
+    All token counting and segment queries live here  -  a single source of
     truth for "what does this user's conversation look like right now?"
     """
 
@@ -29,7 +29,7 @@ class ContextSnapshot:
 
     # ── Token Counting ──────────────────────────────────────────────
 
-    async def token_count(self, *, model: str = "qwen3.6-plus") -> int:
+    async def token_count(self, *, model: str = "qwen-plus-us") -> int:
         """Total tokens across all records in this snapshot."""
         if not self.records:
             return 0
@@ -37,7 +37,7 @@ class ContextSnapshot:
         return await provider.count_tokens([r.to_message() for r in self.records])
 
     async def token_count_with_summary(
-        self, *, l3_summary: str = "", l4_summary: str = "", model: str = "qwen3.6-plus",
+        self, *, l3_summary: str = "", l4_summary: str = "", model: str = "qwen-plus-us",
     ) -> int:
         """Total tokens that would enter the LLM: L3 + L4 + raw records."""
         total = await self.token_count(model=model)
@@ -48,7 +48,7 @@ class ContextSnapshot:
             total += await provider.count_tokens(l4_summary)
         return total
 
-    async def token_count_roast(self, *, model: str = "qwen3.6-plus") -> int:
+    async def token_count_roast(self, *, model: str = "qwen-plus-us") -> int:
         """Tokens in the roast segment only."""
         roast = self.roast
         if not roast:
@@ -60,21 +60,21 @@ class ContextSnapshot:
 
     @property
     def roast_start_idx(self) -> int | None:
-        """Index of the first record with a roast_id, or None."""
+        """Index of the first record with a roast_instance_id, or None."""
         for i, r in enumerate(self.records):
-            if r.roast_id:
+            if r.roast_instance_id:
                 return i
         return None
 
     @property
     def scenario(self) -> str:
-        """'roast' if the most recent record has an active roast_id."""
+        """'roast' if the most recent record has an active roast_instance_id."""
         return "roast" if RoastState.is_active(self.records) else "free_chat"
 
     @property
-    def roast_id(self) -> str:
-        """Current roast_id, or empty string."""
-        return RoastState.current_roast_id(self.records) or ""
+    def roast_instance_id(self) -> str:
+        """Current roast_instance_id, or empty string."""
+        return RoastState.current_roast_instance_id(self.records) or ""
 
     @property
     def pre_roast(self) -> list[ConversationRecord]:
@@ -99,7 +99,7 @@ class ContextSnapshot:
     # ── Compression Triggers ────────────────────────────────────────
 
     async def should_compress(
-        self, *, existing_summary: str = "", model: str = "qwen3.6-plus",
+        self, *, existing_summary: str = "", model: str = "qwen-plus-us",
     ) -> bool:
         """True if compression should run.
 
@@ -113,7 +113,7 @@ class ContextSnapshot:
             return True
         return False
 
-    async def should_compress_l4(self, *, model: str = "qwen3.6-plus") -> bool:
+    async def should_compress_l4(self, *, model: str = "qwen-plus-us") -> bool:
         """True if roast segment has enough tokens to justify L4 compression."""
         roast_tokens = await self.token_count_roast(model=model)
         threshold = max(

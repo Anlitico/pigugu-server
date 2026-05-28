@@ -1,5 +1,5 @@
 # tests/unit/context/test_manager.py
-"""Unit tests for ContextManager — orchestrator, turn recording, assembly."""
+"""Unit tests for ContextManager  -  orchestrator, turn recording, assembly."""
 
 import pytest
 
@@ -17,7 +17,7 @@ class TestContextManager:
 
 
 class TestContextManagerExtended:
-    """Additional ContextManager tests — pure helpers, Redis writes."""
+    """Additional ContextManager tests  -  pure helpers, Redis writes."""
 
     def test_record_to_msg(self):
         from context.schema import ConversationRecord
@@ -75,12 +75,14 @@ class TestContextManagerExtended:
 
 
 class TestContextManagerAddTurn:
-    """ContextManager.add_turn — test with mocked Redis."""
+    """ContextManager.add_turn  -  test with mocked Redis."""
 
     @pytest.mark.asyncio
     async def test_add_turn_increments_counter(self):
         from unittest.mock import AsyncMock, MagicMock
         from context.manager import ContextManager
+        from context.storage.memory import clear_all
+        clear_all()
 
         redis_mock = AsyncMock()
         redis_mock.lrange.return_value = []
@@ -89,5 +91,5 @@ class TestContextManagerAddTurn:
         redis_mock.pipeline = MagicMock(return_value=AsyncMock())
 
         ctx = ContextManager(redis_client=redis_mock)
-        await ctx.add_turn(user_id="u1", role="user", content="hello")
-        redis_mock.pipeline.assert_called_once()
+        turn_no = await ctx.add_turn(user_id="u1", role="user", content="hello")
+        assert turn_no == 1  # memory store tracked the turn number correctly

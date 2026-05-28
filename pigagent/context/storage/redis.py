@@ -11,8 +11,7 @@ from config import get_config
 
 _cfg = get_config()
 
-from core.llm.types import Message
-from context.schema import UserMemory, ConversationRecord, SummaryRecord
+from context.schema import ConversationRecord
 
 class RedisKeys:
     """Canonical Redis key patterns. All keyed by user_id."""
@@ -26,32 +25,12 @@ class RedisKeys:
         return f"ctx:{user_id}:compressing"
 
     @staticmethod
-    def summary(user_id: str) -> str:
-        return f"ctx:{user_id}:summary"
+    def summaries(user_id: str) -> str:
+        return f"ctx:{user_id}:summaries"
 
     @staticmethod
     def game_state(user_id: str) -> str:
         return f"ctx:{user_id}:game_state"
-
-    @staticmethod
-    def user_memory(user_id: str) -> str:
-        return f"pigugu:user:{user_id}:memory"
-
-    @staticmethod
-    def roast_prompt(user_id: str) -> str:
-        return f"ctx:{user_id}:roast:prompt"
-
-    @staticmethod
-    def roast_turns(user_id: str) -> str:
-        return f"ctx:{user_id}:roast:turns"
-
-    @staticmethod
-    def roast_summary(user_id: str) -> str:
-        return f"ctx:{user_id}:roast:summary"
-
-    @staticmethod
-    def roast_meta(user_id: str) -> str:
-        return f"ctx:{user_id}:roast:meta"
 
 
 class RedisStorage:
@@ -64,7 +43,7 @@ class RedisStorage:
     # ── Turns ───────────────────────────────────────────────────────
 
     async def get_hot_turns(self, n: int, *, after_anchor: int = 0) -> list[ConversationRecord]:
-        """Return the last N turns (newest last), oldest→newest order."""
+        """Return the last N turns (newest last), oldest -> newest order."""
         if not self._redis:
             return []
         try:
@@ -138,24 +117,39 @@ class RedisStorage:
         except Exception:
             pass
 
-    # ── Summaries ────────────────────────────────────────────────────
+    # ── Summaries (L2 + L3 + L4 in one key) ──────────────────────────
 
-    async def read_summary(self) -> SummaryRecord | None:
+    async def read_summaries(self) -> dict:
+        """Read all three layer summaries in one GET. Returns empty dict on miss."""
         if not self._redis:
-            return None
+            return {}
         try:
-            raw = await self._redis.get(RedisKeys.summary(self._user_id))
+            raw = await self._redis.get(RedisKeys.summaries(self._user_id))
             if raw:
-                return SummaryRecord.deserialize(raw.decode() if isinstance(raw, bytes) else raw)
+                return json.loads(raw.decode() if isinstance(raw, bytes) else raw)
         except Exception:
             pass
-        return None
+        return {}
 
-    async def write_summary(self, sr: SummaryRecord) -> None:
+    async def write_summaries(
+        self, end_turn: int, *,
+        l2_profile: str = "", l3_session: str = "", l4_roast: str = "",
+        roast_id: str = "", roast_prompt: str = "", roast_prompt_turn: int = 0,
+    ) -> None:
+        """Write all three layer summaries in one SET."""
         if not self._redis:
             return
         try:
-            await self._redis.set(RedisKeys.summary(self._user_id), sr.serialize())
+            data = json.dumps({
+                "end_turn": end_turn,
+                "l2_profile": l2_profile,
+                "l3_session": l3_session,
+                "l4_roast": l4_roast,
+                "roast_id": roast_id,
+                "roast_prompt": roast_prompt,
+                "roast_prompt_turn": roast_prompt_turn,
+            }, ensure_ascii=False)
+            await self._redis.set(RedisKeys.summaries(self._user_id), data)
         except Exception:
             pass
 
@@ -176,35 +170,6 @@ class RedisStorage:
             pass
         return {}
 
-    # ── User Memory ──────────────────────────────────────────────────
-
-    async def load_user_memory(self) -> UserMemory | None:
-        if not self._redis:
-            return None
-        try:
-            raw = await self._redis.hgetall(RedisKeys.user_memory(self._user_id))
-            if raw:
-                h = {
-                    (k.decode() if isinstance(k, bytes) else k):
-                    (v.decode() if isinstance(v, bytes) else v)
-                    for k, v in raw.items()
-                }
-                return UserMemory.from_hash(h)
-        except Exception:
-            pass
-        return None
-
-    async def write_user_memory(self, um: UserMemory) -> None:
-        if not self._redis:
-            return
-        try:
-            await self._redis.hset(
-                RedisKeys.user_memory(self._user_id),
-                mapping=um.to_hash(),
-            )
-        except Exception:
-            pass
-
     # ── Turns Write ──────────────────────────────────────────────────
 
     async def push_turn(self, turn_data: str) -> None:
@@ -218,76 +183,5 @@ class RedisStorage:
         except Exception as e:
             logger.warning(f"Redis turn push failed: {e}")
 
-    # ── Roast ────────────────────────────────────────────────────────
 
-    async def read_roast_prompt(self) -> str:
-        if not self._redis:
-            return ""
-        try:
-            raw = await self._redis.get(RedisKeys.roast_prompt(self._user_id))
-            return raw.decode() if isinstance(raw, bytes) else raw if raw else ""
-        except Exception:
-            return ""
-
-    async def read_roast_summary(self) -> str:
-        if not self._redis:
-            return ""
-        try:
-            raw = await self._redis.get(RedisKeys.roast_summary(self._user_id))
-            return raw.decode() if isinstance(raw, bytes) else raw if raw else ""
-        except Exception:
-            return ""
-
-    async def write_roast_summary(self, summary: str) -> None:
-        if not self._redis:
-            return
-        try:
-            await self._redis.set(RedisKeys.roast_summary(self._user_id), summary)
-        except Exception:
-            pass
-
-    async def read_roast_meta(self) -> dict:
-        if not self._redis:
-            return {}
-        try:
-            raw = await self._redis.hgetall(RedisKeys.roast_meta(self._user_id))
-            if raw:
-                return {
-                    (k.decode() if isinstance(k, bytes) else k):
-                    (v.decode() if isinstance(v, bytes) else v)
-                    for k, v in raw.items()
-                }
-        except Exception:
-            pass
-        return {}
-
-    async def write_roast_meta(self, mapping: dict) -> None:
-        if not self._redis:
-            return
-        try:
-            await self._redis.hset(RedisKeys.roast_meta(self._user_id), mapping=mapping)
-        except Exception:
-            pass
-
-    async def read_roast_turns_raw(self) -> list[bytes]:
-        if not self._redis:
-            return []
-        try:
-            raw = await self._redis.lrange(RedisKeys.roast_turns(self._user_id), 0, -1)
-            return list(raw)
-        except Exception:
-            return []
-
-    async def delete_roast_keys(self) -> None:
-        if not self._redis:
-            return
-        try:
-            await self._redis.delete(
-                RedisKeys.roast_prompt(self._user_id),
-                RedisKeys.roast_turns(self._user_id),
-                RedisKeys.roast_summary(self._user_id),
-                RedisKeys.roast_meta(self._user_id),
-            )
-        except Exception:
-            pass
 

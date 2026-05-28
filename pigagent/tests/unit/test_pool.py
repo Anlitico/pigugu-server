@@ -3,6 +3,7 @@
 
 import pytest
 
+from core.llm import get_llm, _pool, LLMProvider, create_llm  # pyright: ignore[reportAttributeAccessIssue]
 from core.llm.registry import ModelRegistry, get_provider_config
 from core.llm.types import ModelInfo, ModelCapability
 
@@ -16,27 +17,23 @@ class TestPool:
     """
 
     def test_get_llm_returns_provider(self):
-        from core.llm import get_llm, _pool, LLMProvider
-        provider = get_llm("qwen-plus")
+        provider = get_llm("qwen-plus-us")
         assert isinstance(provider, LLMProvider)
         assert "qwen-us" in _pool
 
     def test_get_llm_different_models_same_backend_same_instance(self):
-        from core.llm import get_llm
-        # Both qwen-plus and qwen-flash use the same qwen-us backend
-        a = get_llm("qwen-plus")
+        # qwen-plus (qwen-cn) and doubao use different backends
+        a = get_llm("qwen-plus-us")
         b = get_llm("doubao-seed-1-6-251015")
         assert a is not b  # different backends
         assert a.base_url != b.base_url
 
     def test_same_model_same_instance(self):
-        from core.llm import get_llm
-        a = get_llm("qwen-plus")
-        b = get_llm("qwen-plus")
+        a = get_llm("qwen-plus-us")
+        b = get_llm("qwen-plus-us")
         assert a is b
 
     def test_all_registered_models_resolvable(self):
-        from core.llm import _pool
         for info in ModelRegistry.list():
             cfg = get_provider_config(info.provider)
             if cfg is None:
@@ -44,17 +41,33 @@ class TestPool:
             assert info.provider in _pool, f"Missing pool entry for provider {info.provider}"
 
     def test_get_llm_unknown_raises(self):
-        from core.llm import get_llm
         with pytest.raises(KeyError):
             get_llm("nonexistent-model")
 
     def test_create_llm_alias(self):
-        from core.llm import create_llm, get_llm
-        a = create_llm("qwen-plus")
-        b = get_llm("qwen-plus")
+        a = create_llm("qwen-plus-us")
+        b = get_llm("qwen-plus-us")
         assert a is b
 
     def test_pool_providers_have_base_url(self):
-        from core.llm import _pool
         for pid, p in _pool.items():
             assert p.base_url, f"Missing base_url for provider {pid}"
+
+    def test_cn_provider_in_pool(self):
+        assert "qwen-cn" in _pool, "qwen-cn provider should be in pool"
+
+    def test_cn_model_resolves_to_cn_provider(self):
+        info = ModelRegistry.get("qwen-plus-cn")
+        assert info.provider == "qwen-cn"
+
+    def test_us_model_resolves_to_us_provider(self):
+        info = ModelRegistry.get("qwen-plus-us")
+        assert info.provider == "qwen-us"
+
+    def test_cn_and_us_are_different_instances(self):
+        a = get_llm("qwen-plus-us")
+        b = get_llm("qwen-plus-cn")
+        assert a is not b
+        assert a.base_url != b.base_url
+        assert "dashscope-us" in a.base_url
+        assert "dashscope.aliyuncs.com" in b.base_url.replace("-us.", ".")

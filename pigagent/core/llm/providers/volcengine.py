@@ -1,10 +1,9 @@
 ﻿# pigagent/core/llm/providers/volcengine.py
-"""Volcengine Ark provider — OpenAI-compatible API (Doubao models)"""
+"""Volcengine Ark provider  -  OpenAI-compatible API (Doubao models)"""
 
 from __future__ import annotations
 
 import os
-from typing import AsyncIterator
 
 from ..provider import LLMProvider
 from ..registry import ModelRegistry
@@ -61,12 +60,14 @@ class VolcengineProvider(LLMProvider):
         response_format: dict | None = None,
         **kwargs,
     ) -> ChatResponse:
+        info = ModelRegistry.get(model)
+        api_model = info.api_model or model
         self._validate(tools, thinking, search, model=model)
         params = self._build_params(
             messages, tools, tool_choice, parallel_tool_calls,
             temperature, top_p, max_tokens, stop, seed,
             thinking, search, response_format,
-            model=model, stream=False, **kwargs,
+            model=api_model, stream=False, **kwargs,
         )
         completion = await self._client.chat.completions.create(**params)
 
@@ -78,10 +79,12 @@ class VolcengineProvider(LLMProvider):
                 for tc in choice.message.tool_calls
             ]
 
+        usage_tok = self._extract_usage(completion.usage) if completion.usage else None
+        self._report_usage(usage_tok)
         return ChatResponse(
             content=choice.message.content or "",
             tool_calls=tool_calls,
-            usage=self._extract_usage(completion.usage) if completion.usage else None,
+            usage=usage_tok,
             finish_reason=choice.finish_reason,
         )
 
@@ -102,20 +105,27 @@ class VolcengineProvider(LLMProvider):
         search: dict | None = None,
         response_format: dict | None = None,
         **kwargs,
-    ) -> AsyncIterator[ChatDelta]:
+    ):
+        info = ModelRegistry.get(model)
+        api_model = info.api_model or model
         self._validate(tools, thinking, search, model=model)
         params = self._build_params(
             messages, tools, tool_choice, parallel_tool_calls,
             temperature, top_p, max_tokens, stop, seed,
             thinking, search, response_format,
-            model=model, stream=True, **kwargs,
+            model=api_model, stream=True, **kwargs,
         )
         stream = await self._client.chat.completions.create(**params)
 
         buf: dict[int, dict] = {}
+        usage: TokenUsage | None = None
+        usage_final: TokenUsage | None = None
 
         async for chunk in stream:
             if not chunk.choices:
+                usage = self._extract_usage(chunk.usage) if chunk.usage else None
+                if usage:
+                    usage_final = usage
                 continue
             delta = chunk.choices[0].delta
 
@@ -139,7 +149,6 @@ class VolcengineProvider(LLMProvider):
                         if tc.function.arguments:
                             buf[idx]["arguments"] += tc.function.arguments
 
-            usage = self._extract_usage(chunk.usage) if chunk.usage else None
             finish = chunk.choices[0].finish_reason
 
             if finish and buf:
@@ -151,6 +160,8 @@ class VolcengineProvider(LLMProvider):
                 buf.clear()
             elif finish:
                 yield ChatDelta(usage=usage, finish_reason=finish)
+
+        self._report_usage(usage_final)
 
     # ── Validation ──
 
@@ -211,6 +222,8 @@ class VolcengineProvider(LLMProvider):
             "messages": [self._serialize_message(m) for m in messages],
             "temperature": temperature if temperature is not None else 0.6,
             "stream": stream,
+            # Enable context cache (Seed 2.0+ implicit, Seed 1.x manual via extra_body)
+            "extra_body": {"caching": {"type": "enabled"}},
         }
 
         if max_tokens is not None:
@@ -241,7 +254,7 @@ class VolcengineProvider(LLMProvider):
             body.setdefault("extra_body", {})["thinking"] = think_cfg
 
         # ── Web Search (tool-based, not extra_body) ──
-        # Volcengine provides "联网内容插件" (Web Search plugin tool),
+        # Volcengine provides a Web Search plugin tool,
         # not a native enable_search parameter like Qwen.
 
         # ── Structured output ──
@@ -266,7 +279,7 @@ class VolcengineProvider(LLMProvider):
         if not text:
             return 0
         try:
-            resp = await self._client.post(
+            resp = await self._client.post(  # type: ignore[reportCallIssue]
                 f"{self._base_url}/tokenizer",
                 json={"model": "doubao-seed-1-6-251015", "input": text},
             )
@@ -279,12 +292,20 @@ class VolcengineProvider(LLMProvider):
         d = m.to_openai_dict()
         if m.partial and m.role == "assistant":
             # Volcengine continuation mode: prefix=True on the assistant message.
-            # Ref: https://www.volcengine.com/docs/82379/1359497 (续写模式)
+            # Ref: https://www.volcengine.com/docs/82379/1359497 (continuation mode)
             d["prefix"] = True
         return d
 
     @staticmethod
-    def _extract_usage(u) -> TokenUsage:
+    def _extract_usage(u: object) -> TokenUsage:
+        if isinstance(u, dict):
+            details = u.get("prompt_tokens_details") or {}
+            return TokenUsage(
+                prompt_tokens=u.get("prompt_tokens", 0) or 0,
+                completion_tokens=u.get("completion_tokens", 0) or 0,
+                total_tokens=u.get("total_tokens", 0) or 0,
+                cached_prompt_tokens=details.get("cached_tokens", 0) if details else 0,
+            )
         details = getattr(u, "prompt_tokens_details", None)
         return TokenUsage(
             prompt_tokens=getattr(u, "prompt_tokens", 0),

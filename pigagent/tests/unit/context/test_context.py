@@ -1,5 +1,5 @@
 # tests/unit/context/test_context.py
-"""Unit tests for core types and validation — Message serialization, tool call
+"""Unit tests for core types and validation  -  Message serialization, tool call
 validation, token counting, context config constants."""
 
 import pytest
@@ -12,42 +12,36 @@ from config import get_config
 _cfg = get_config()
 
 
-# ═══════════════════════════════════════════════════════════════════════════════
+# -------------------------------------------------------------------------------
 # Token counting
-# ═══════════════════════════════════════════════════════════════════════════════
+# -------------------------------------------------------------------------------
 
 class TestProviderTokenCounting:
     """Token counting: fast (tiktoken) + async (API, falls back to offline)."""
 
-    def test_qwen_count_tokens_uses_tiktoken(self):
-        from core.llm.providers.qwen import QwenProvider
+    def test_qwen_count_tokens_uses_tiktoken(self, qwen_provider):
         import asyncio
-        p = QwenProvider(api_key="sk-test")
 
         async def run():
-            assert await p.count_tokens("") == 0
-            tokens = await p.count_tokens("hello world")
+            assert await qwen_provider.count_tokens("") == 0
+            tokens = await qwen_provider.count_tokens("hello world")
             assert 2 <= tokens <= 3
         asyncio.run(run())
 
-    def test_qwen_count_tokens_chinese(self):
-        from core.llm.providers.qwen import QwenProvider
+    def test_qwen_count_tokens_chinese(self, qwen_provider):
         import asyncio
-        p = QwenProvider(api_key="sk-test")
 
         async def run():
-            tokens = await p.count_tokens("你好世界")
+            tokens = await qwen_provider.count_tokens("你好世界")
             assert tokens > 0
         asyncio.run(run())
 
-    def test_volcengine_count_tokens_uses_tiktoken(self):
-        from core.llm.providers.volcengine import VolcengineProvider
+    def test_volcengine_count_tokens_uses_tiktoken(self, volcengine_provider):
         import asyncio
-        p = VolcengineProvider(api_key="sk-test")
 
         async def run():
-            assert await p.count_tokens("") == 0
-            tokens = await p.count_tokens("hello world")
+            assert await volcengine_provider.count_tokens("") == 0
+            tokens = await volcengine_provider.count_tokens("hello world")
             assert 2 <= tokens <= 3
         asyncio.run(run())
 
@@ -62,16 +56,16 @@ class TestProviderTokenCounting:
         assert len(msgs) == 1
 
 
-# ═══════════════════════════════════════════════════════════════════════════════
+# -------------------------------------------------------------------------------
 # Context config constants
-# ═══════════════════════════════════════════════════════════════════════════════
+# -------------------------------------------------------------------------------
 
 class TestConstants:
     def test_hot_window_size(self):
-        assert _cfg.CONTEXT_HOT_WINDOW_SIZE == 500
+        assert _cfg.CONTEXT_HOT_WINDOW_SIZE == 150
 
     def test_max_turns(self):
-        assert _cfg.CONTEXT_MAX_TURNS == 400
+        assert _cfg.CONTEXT_MAX_TURNS == 100
 
     def test_token_budget_cap(self):
         assert _cfg.CONTEXT_TOKEN_BUDGET_CAP == 200_000
@@ -95,9 +89,9 @@ class TestConstants:
         assert _cfg.CONTEXT_L2_PROFILE_MAX_WORDS == 1500
 
 
-# ═══════════════════════════════════════════════════════════════════════════════
+# -------------------------------------------------------------------------------
 # Message serialization
-# ═══════════════════════════════════════════════════════════════════════════════
+# -------------------------------------------------------------------------------
 
 class TestMessageSerialization:
     """Verify Message.to_dict/from_dict roundtrip (used for Redis storage)."""
@@ -123,12 +117,12 @@ class TestMessageSerialization:
         assert not hasattr(m, "turn")
 
 
-# ═══════════════════════════════════════════════════════════════════════════════
+# -------------------------------------------------------------------------------
 # Tool call validation
-# ═══════════════════════════════════════════════════════════════════════════════
+# -------------------------------------------------------------------------------
 
 class TestToolCallValidation:
-    """validate_tool_calls — filter incomplete tool calls before LLM context."""
+    """validate_tool_calls  -  filter incomplete tool calls before LLM context."""
 
     def test_empty_list(self):
         assert validate_tool_calls([]) == []

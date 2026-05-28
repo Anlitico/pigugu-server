@@ -1,5 +1,6 @@
 # Local planning / scratch docs (not for commit)
 localDocs/
+temp/
 CLAUDE.md
 .claude/
 
@@ -40,6 +41,9 @@ MANIFEST
 # Installer logs
 pip-log.txt
 pip-delete-this-directory.txt
+
+# Application logs
+logs/
 
 # Unit test / coverage reports
 htmlcov/
@@ -224,3 +228,7 @@ htmlcov/
 tests/.pytest_cache/
 temp/
 .claude/
+
+# Project tooling (machine-specific, not for version control)
+pyrightconfig.json
+uv.lock

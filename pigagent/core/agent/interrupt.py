@@ -2,7 +2,7 @@
 """InterruptManager + @check_interrupt decorator for React agent loops.
 
 Local in-process interrupt system:
-  - asyncio.Event per key — lightweight, zero-dependency
+  - asyncio.Event per key  -  lightweight, zero-dependency
   - Thread-safe via threading.Lock
   - Auto-cleanup of expired events (background task)
   - @check_interrupt decorator (regular async + async generators)
@@ -32,7 +32,7 @@ class InterruptedException(Exception):
 
 
 class InterruptManager:
-    """Global interrupt event manager — in-process only.
+    """Global interrupt event manager  -  in-process only.
 
     Key-based design: each interrupt event has a unique key (e.g. "agent:room_abc").
     Events are stored as local asyncio.Event objects.
@@ -147,7 +147,7 @@ class InterruptManager:
             logger.info(f"Created interrupt event: {key} (total: {count})")
 
             if count > 100:
-                logger.warning(f"InterruptManager has {count} events — possible memory leak!")
+                logger.warning(f"InterruptManager has {count} events  -  possible memory leak!")
 
             return self._events[key]
 
@@ -261,9 +261,9 @@ class InterruptManager:
         return result
 
 
-# ═══════════════════════════════════════════════════════════════════════════════
+# -------------------------------------------------------------------------------
 # Singleton
-# ═══════════════════════════════════════════════════════════════════════════════
+# -------------------------------------------------------------------------------
 
 _interrupt_manager: InterruptManager | None = None
 
@@ -276,9 +276,9 @@ def get_interrupt_manager() -> InterruptManager:
     return _interrupt_manager
 
 
-# ═══════════════════════════════════════════════════════════════════════════════
+# -------------------------------------------------------------------------------
 # @check_interrupt decorator
-# ═══════════════════════════════════════════════════════════════════════════════
+# -------------------------------------------------------------------------------
 
 
 def _validate_and_bind_args(func: Callable, args: tuple, kwargs: dict):
@@ -374,7 +374,7 @@ def check_interrupt(
 ) -> Callable:
     """Decorator: monitor an interrupt event alongside an async function.
 
-    Uses asyncio.wait([func_task, event.wait()]) — whichever completes first wins.
+    Uses asyncio.wait([func_task, event.wait()])  -  whichever completes first wins.
     Supports both regular async functions and async generators.
 
     The decorated function MUST have a 'state' parameter of type AgentState.

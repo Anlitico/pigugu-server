@@ -1,5 +1,5 @@
 ﻿# pigagent/context/compression/l4_roast.py
-"""L4 roast compression — game-aware summary with prompt preservation."""
+"""L4 roast compression  -  game-aware summary with prompt preservation."""
 
 from __future__ import annotations
 
@@ -23,16 +23,11 @@ async def compress_roast(
     turns: list[Message],
     *,
     existing_summary: str = "",
-    roast_prompt: str = "",
-    model: str = "qwen3.6-plus",
+    model: str = "qwen-plus-us",
 ) -> str:
-    """Compress roast turns. Output includes roast_prompt verbatim at top."""
-    result_parts = [roast_prompt] if roast_prompt else []
-
+    """Compress roast turns into a game-aware summary."""
     if not turns:
-        if existing_summary:
-            result_parts.append(existing_summary)
-        return "\n\n---\n\n".join(p for p in result_parts if p)
+        return existing_summary
 
     turns_text = "\n".join(f"[{t.role}]: {t.content}" for t in turns)
 
@@ -59,6 +54,4 @@ async def compress_roast(
     except Exception:
         body = existing_summary.split("\n---\n", 1)[-1] if existing_summary and "\n---\n" in existing_summary else existing_summary
 
-    if body:
-        result_parts.append(body)
-    return "\n\n---\n\n".join(p for p in result_parts if p)
+    return body or existing_summary

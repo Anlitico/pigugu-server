@@ -1,3 +1,4 @@
+# Local development only — NOT used in CI/CD pipeline
 services:
   postgres:
     image: postgres:16-alpine
@@ -28,7 +29,7 @@ services:
   api:
     build:
       context: .
-      dockerfile: Dockerfile.api
+      dockerfile: .cicd/Dockerfile.api.local
     ports:
       - "8000:8000"
     env_file: .env
@@ -49,11 +50,18 @@ services:
   agent:
     build:
       context: .
-      dockerfile: Dockerfile.agent
+      dockerfile: .cicd/Dockerfile.agent.local
+    ports:
+      - "8080:8080"
     env_file: .env
     environment:
       DATABASE_URL: postgresql+asyncpg://pigugu:pigugu@postgres:5432/pigugu
       REDIS_URL: redis://redis:6379/0
+    volumes:
+      - ./logs/pigagent:/pigagent/logs
+      - ./pigagent/core/llm/providers.toml:/pigagent/core/llm/providers.toml
+      - ./pigagent/core/llm/models.toml:/pigagent/core/llm/models.toml
+      - ./pigagent/.config:/pigagent/.config
     depends_on:
       postgres:
         condition: service_healthy

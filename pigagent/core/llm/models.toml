@@ -1,46 +1,65 @@
 # Pigugu Agent — Model configuration
-# Add new models by appending a [[models]] block
-# Format: id = unique identifier under provider/namespace
+# [id]       model ID used in code (e.g., QWEN_MODEL env var)
+# provider   must match a [name] in providers.toml
+# api_model  actual model name sent to the API (defaults to id)
+# display    human-readable name for logs
+# context    context window size in tokens
+# output     max output tokens
+# capabilities: text, streaming, tool_use, web_search
+# thinking   whether thinking/reasoning mode is supported
+# search     whether built-in web search is supported
 
-[[models]]
-id = "qwen-plus"
+[qwen-plus-us]
 provider = "qwen-us"
-display = "Qwen Plus"
+api_model = "qwen-plus"
+display = "Qwen Plus (US)"
 context = 1000000
 output = 32768
 capabilities = ["text", "streaming", "tool_use", "web_search"]
 thinking = true
 search = true
 
+# NOTE: qwen3.6-plus / qwen3.6-flash removed — they don't support implicit KV cache
+# (x-dashscope-session-cache). They require manual cache_control per content block,
+# which doesn't work for our multi-turn conversation pattern.
+# See: https://www.alibabacloud.com/help/en/model-studio/context-cache
 
-[[models]]
-id = "qwen3.6-flash"
-provider = "qwen-us"
-display = "Qwen 3.6 Flash"
+[qwen-plus-cn]
+provider = "qwen-cn"
+api_model = "qwen-plus"
+display = "Qwen Plus (China)"
 context = 1000000
-output = 65536
+output = 32768
 capabilities = ["text", "streaming", "tool_use", "web_search"]
 thinking = true
 search = true
 
-[[models]]
-id = "qwen3.6-plus"
+[qwen-flash-us]
 provider = "qwen-us"
-display = "Qwen 3.6 Plus"
+api_model = "qwen-flash"
+display = "Qwen Flash (US)"
 context = 1000000
-output = 65536
+output = 8192
 capabilities = ["text", "streaming", "tool_use", "web_search"]
-thinking = true
+thinking = false
 search = true
 
+[qwen-flash-cn]
+provider = "qwen-cn"
+api_model = "qwen-flash"
+display = "Qwen Flash (China)"
+context = 1000000
+output = 8192
+capabilities = ["text", "streaming", "tool_use", "web_search"]
+thinking = false
+search = true
 
-[[models]]
-id = "doubao-seed-1-6-251015"
+[doubao-seed-1-6-251015]
 provider = "volcengine"
+api_model = "doubao-seed-1-6-251015"
 display = "Doubao Seed 1.6"
 context = 256000
 output = 16384
 capabilities = ["text", "streaming", "tool_use"]
 thinking = true
 search = false
-

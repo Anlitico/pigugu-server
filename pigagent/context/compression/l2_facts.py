@@ -19,7 +19,7 @@ def _load(name: str) -> str:
     return path.read_text(encoding="utf-8") if path.exists() else ""
 
 
-async def extract_facts(turns: list[Message], model: str = "qwen3.6-plus") -> list[dict]:
+async def extract_facts(turns: list[Message], model: str = "qwen-plus-us") -> list[dict]:
     if not turns:
         return []
 
@@ -39,7 +39,7 @@ async def extract_facts(turns: list[Message], model: str = "qwen3.6-plus") -> li
         return []
 
 
-async def summarize_profile(facts: list[str], *, existing: str = "", model: str = "qwen3.6-plus") -> str:
+async def summarize_profile(facts: list[str], *, existing: str = "", model: str = "qwen-plus-us") -> str:
     if not facts and not existing:
         return ""
 

@@ -1,5 +1,5 @@
 ﻿# pigagent/core/llm/types.py
-"""统一类型系统 — 不绑定任何框架或 provider"""
+"""Unified type system — no framework or provider binding"""
 
 from __future__ import annotations
 
@@ -8,13 +8,13 @@ from enum import Enum
 from typing import Literal
 
 
-# ═══════════════════════════════════════════════════════════════════════════════
-# 消息模型
-# ═══════════════════════════════════════════════════════════════════════════════
+# -------------------------------------------------------------------------------
+# Message model
+# -------------------------------------------------------------------------------
 
 @dataclass
 class ToolCall:
-    """LLM 请求的工具调用"""
+    """Tool call in an LLM request"""
     id: str
     name: str
     arguments: str  # JSON string
@@ -22,10 +22,10 @@ class ToolCall:
 
 @dataclass
 class Message:
-    """统一消息格式 — 兼容 OpenAI 的 role/content 语义"""
+    """Unified message format — OpenAI-compatible role/content semantics"""
     role: Literal["system", "user", "assistant", "tool"]
     content: str
-    partial: bool = False                       # 续写标记（Qwen partial / DeepSeek prefix）
+    partial: bool = False                       # Continuation marker (Qwen partial / DeepSeek prefix)
     tool_calls: list[ToolCall] | None = None
     tool_call_id: str | None = None
     name: str | None = None
@@ -79,7 +79,7 @@ class Message:
         )
 
     def to_openai_dict(self) -> dict:
-        """转为 OpenAI API 兼容的 dict"""
+        """Convert to OpenAI API compatible dict"""
         d: dict = {"role": self.role, "content": self.content}
         if self.tool_calls:
             d["tool_calls"] = [
@@ -97,29 +97,29 @@ class Message:
         return d
 
 
-# ═══════════════════════════════════════════════════════════════════════════════
-# Token 用量（计费基础）
-# ═══════════════════════════════════════════════════════════════════════════════
+# -------------------------------------------------------------------------------
+# Token usage (billing basis)
+# -------------------------------------------------------------------------------
 
 @dataclass
 class TokenUsage:
-    """一次请求的 token 用量"""
-    prompt_tokens: int = 0           # 输入 token
-    completion_tokens: int = 0       # 输出 token
+    """Token usage for one request."""
+    prompt_tokens: int = 0           # input tokens
+    completion_tokens: int = 0       # output tokens
     total_tokens: int = 0            # prompt + completion
 
-    # 缓存（部分 provider 支持 context caching）
-    cached_prompt_tokens: int = 0    # 命中缓存的输入 token
-    cache_write_tokens: int = 0      # 写入缓存的 token
+    # Cache (some providers support context caching)
+    cached_prompt_tokens: int = 0    # cached input tokens (cache hit)
+    cache_write_tokens: int = 0      # tokens written to cache
 
 
-# ═══════════════════════════════════════════════════════════════════════════════
-# LLM 响应模型
-# ═══════════════════════════════════════════════════════════════════════════════
+# -------------------------------------------------------------------------------
+# LLM response model
+# -------------------------------------------------------------------------------
 
 @dataclass
 class ChatResponse:
-    """chat() 非流式响应"""
+    """Non-streaming chat response"""
     content: str = ""
     tool_calls: list[ToolCall] | None = None
     usage: TokenUsage | None = None
@@ -128,17 +128,17 @@ class ChatResponse:
 
 @dataclass
 class ChatDelta:
-    """chat_stream() 流式增量"""
+    """Streaming chat delta."""
     content: str | None = None
-    reasoning_content: str | None = None   # thinking 模式的思考过程
+    reasoning_content: str | None = None   # reasoning content in thinking mode
     tool_calls: list[ToolCall] | None = None
-    usage: TokenUsage | None = None        # 仅最后一个 chunk 有值
+    usage: TokenUsage | None = None        # only present on the last chunk
     finish_reason: str | None = None
 
 
-# ═══════════════════════════════════════════════════════════════════════════════
-# 模型元数据
-# ═══════════════════════════════════════════════════════════════════════════════
+# -------------------------------------------------------------------------------
+# Model metadata
+# -------------------------------------------------------------------------------
 
 class ModelCapability(str, Enum):
     TEXT = "text"
@@ -150,24 +150,25 @@ class ModelCapability(str, Enum):
 
 @dataclass
 class ModelInfo:
-    """模型描述 — 从 models.toml 加载"""
+    """Model descriptor — loaded from models.toml"""
     model_id: str
     provider: str
     display_name: str
     capabilities: set[ModelCapability] = field(default_factory=set)
     context_window: int = 0
     max_output_tokens: int = 0
-    thinking: bool = False          # 是否支持 thinking 模式
-    search: bool = False            # 是否支持内置搜索
+    thinking: bool = False          # whether thinking mode is supported
+    search: bool = False            # whether built-in search is supported
+    api_model: str = ""             # actual model name sent to API (defaults to model_id)
 
 
-# ═══════════════════════════════════════════════════════════════════════════════
-# 工具定义
-# ═══════════════════════════════════════════════════════════════════════════════
+# -------------------------------------------------------------------------------
+# Tool definition
+# -------------------------------------------------------------------------------
 
 @dataclass
 class ToolSpec:
-    """工具定义 — OpenAI function calling 格式"""
+    """Tool definition — OpenAI function calling format"""
     name: str
     description: str
     parameters: dict  # JSON Schema

@@ -1,5 +1,5 @@
 # tests/unit/core/agent/test_state.py
-"""Tests for core.agent.state — AgentState, StateStatus."""
+"""Tests for core.agent.state  -  AgentState, StateStatus."""
 
 
 class TestAgentState:

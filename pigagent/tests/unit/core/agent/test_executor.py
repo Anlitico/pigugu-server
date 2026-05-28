@@ -1,5 +1,5 @@
 # tests/unit/core/agent/test_executor.py
-"""Tests for core.agent.executor — ToolExecutor, ToolResult, ToolExecutionResult."""
+"""Tests for core.agent.executor  -  ToolExecutor, ToolResult, ToolExecutionResult."""
 
 import asyncio
 
@@ -45,7 +45,7 @@ class TestToolExecutor:
         tc = ToolCall(id="1", name="unknown", arguments="{}")
         results = asyncio.run(executor.run([tc]))
         assert not results.results[0].success
-        assert "No handler" in results.results[0].error
+        assert results.results[0].error and "No handler" in results.results[0].error
 
     def test_invalid_json_arguments(self):
         from core.llm.types import ToolCall
@@ -53,7 +53,7 @@ class TestToolExecutor:
         tc = ToolCall(id="1", name="test", arguments="not json")
         results = asyncio.run(executor.run([tc]))
         assert not results.results[0].success
-        assert "Invalid JSON" in results.results[0].error
+        assert results.results[0].error and "Invalid JSON" in results.results[0].error
 
     def test_executes_handler(self):
         from core.llm.types import ToolCall
@@ -110,7 +110,7 @@ class TestToolExecutor:
         tc = ToolCall(id="1", name="slow", arguments="{}")
         results = asyncio.run(executor.run([tc], timeout=0.05))
         assert not results.results[0].success
-        assert "timed out" in results.results[0].error.lower()
+        assert results.results[0].error and "timed out" in results.results[0].error.lower()
 
     def test_handler_exception(self):
         from core.llm.types import ToolCall
@@ -122,7 +122,7 @@ class TestToolExecutor:
         tc = ToolCall(id="1", name="fail", arguments="{}")
         results = asyncio.run(executor.run([tc]))
         assert not results.results[0].success
-        assert "boom" in results.results[0].error
+        assert results.results[0].error and "boom" in results.results[0].error
 
     def test_dict_result_serialized(self):
         from core.llm.types import ToolCall

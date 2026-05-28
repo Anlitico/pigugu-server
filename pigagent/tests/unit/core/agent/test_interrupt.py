@@ -1,5 +1,5 @@
 # tests/unit/core/agent/test_interrupt.py
-"""Tests for core.agent.interrupt — InterruptManager, check_interrupt."""
+"""Tests for core.agent.interrupt  -  InterruptManager, check_interrupt."""
 
 import asyncio
 

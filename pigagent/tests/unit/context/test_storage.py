@@ -1,16 +1,17 @@
 # tests/unit/context/test_storage.py
-"""Unit tests for context storage — RedisKeys, RedisStorage, PgStorage."""
+"""Unit tests for context storage  -  RedisKeys, RedisStorage, PgStorage."""
 
 import json
+from unittest.mock import patch
 
 import pytest
 
 from context.storage.redis import RedisKeys
 
 
-# ═══════════════════════════════════════════════════════════════════════════════
+# -------------------------------------------------------------------------------
 # RedisKeys
-# ═══════════════════════════════════════════════════════════════════════════════
+# -------------------------------------------------------------------------------
 
 class TestRedisKeys:
     def test_turns(self):
@@ -19,34 +20,20 @@ class TestRedisKeys:
     def test_compressing(self):
         assert RedisKeys.compressing("u1") == "ctx:u1:compressing"
 
-    def test_summary(self):
-        assert RedisKeys.summary("u1") == "ctx:u1:summary"
+    def test_summaries(self):
+        assert RedisKeys.summaries("u1") == "ctx:u1:summaries"
 
     def test_game_state(self):
         assert RedisKeys.game_state("u1") == "ctx:u1:game_state"
 
-    def test_user_memory(self):
-        assert RedisKeys.user_memory("u1") == "pigugu:user:u1:memory"
-
-    def test_roast_prompt(self):
-        assert RedisKeys.roast_prompt("u1") == "ctx:u1:roast:prompt"
-
-    def test_roast_turns(self):
-        assert RedisKeys.roast_turns("u1") == "ctx:u1:roast:turns"
-
-    def test_roast_summary(self):
-        assert RedisKeys.roast_summary("u1") == "ctx:u1:roast:summary"
-
-    def test_roast_meta(self):
-        assert RedisKeys.roast_meta("u1") == "ctx:u1:roast:meta"
 
 
-# ═══════════════════════════════════════════════════════════════════════════════
-# RedisStorage — happy path with mocked Redis
-# ═══════════════════════════════════════════════════════════════════════════════
+# -------------------------------------------------------------------------------
+# RedisStorage  -  happy path with mocked Redis
+# -------------------------------------------------------------------------------
 
 class TestRedisStorage:
-    """RedisStorage — all methods with mocked Redis client."""
+    """RedisStorage  -  all methods with mocked Redis client."""
 
     @pytest.fixture
     def redis_mock(self):
@@ -175,34 +162,34 @@ class TestRedisStorage:
         await store.set_compressing(False)
         redis_mock.delete.assert_called_once()
 
-    # ── read_summary / write_summary ──
+    # ── read_summaries / write_summaries ──
 
     @pytest.mark.asyncio
-    async def test_read_summary_none_when_no_redis(self):
+    async def test_read_summaries_no_redis(self):
         from context.storage.redis import RedisStorage
         store = RedisStorage("u1", None)
-        assert await store.read_summary() is None
+        assert await store.read_summaries() == {}
 
     @pytest.mark.asyncio
-    async def test_read_summary_none_when_no_data(self, store, redis_mock):
+    async def test_read_summaries_empty(self, store, redis_mock):
         redis_mock.get.return_value = None
-        assert await store.read_summary() is None
+        assert await store.read_summaries() == {}
 
     @pytest.mark.asyncio
-    async def test_read_summary_returns_record(self, store, redis_mock):
+    async def test_read_summaries_returns_data(self, store, redis_mock):
         import json
-        raw = json.dumps({"text": "summary text", "end_turn": 10})
-        redis_mock.get.return_value = raw.encode()
-        sr = await store.read_summary()
-        assert sr is not None
-        assert sr.text == "summary text"
-        assert sr.end_turn == 10
+        data = {"end_turn": 10, "l2_profile": "p", "l3_session": "s",
+                "l4_roast": "r", "roast_id": "rid"}
+        redis_mock.get.return_value = json.dumps(data).encode()
+        result = await store.read_summaries()
+        assert result["end_turn"] == 10
+        assert result["l2_profile"] == "p"
+        assert result["l3_session"] == "s"
+        assert result["l4_roast"] == "r"
 
     @pytest.mark.asyncio
-    async def test_write_summary(self, store, redis_mock):
-        from context.schema import SummaryRecord
-        sr = SummaryRecord(text="summary", end_turn=5)
-        await store.write_summary(sr)
+    async def test_write_summaries(self, store, redis_mock):
+        await store.write_summaries(5, l2_profile="p", l3_session="s", l4_roast="r")
         redis_mock.set.assert_called_once()
 
     # ── read_game_state ──
@@ -219,32 +206,6 @@ class TestRedisStorage:
         result = await store.read_game_state()
         assert result == {"score": "100"}
 
-    # ── load_user_memory / write_user_memory ──
-
-    @pytest.mark.asyncio
-    async def test_load_user_memory_no_redis(self):
-        from context.storage.redis import RedisStorage
-        store = RedisStorage("u1", None)
-        assert await store.load_user_memory() is None
-
-    @pytest.mark.asyncio
-    async def test_load_user_memory_returns_um(self, store, redis_mock):
-        import json
-        redis_mock.hgetall.return_value = {
-            b"profile_summary": b"user profile",
-            b"stats_json": json.dumps({"turns": 5}),
-        }
-        um = await store.load_user_memory()
-        assert um is not None
-        assert um.profile_summary == "user profile"
-
-    @pytest.mark.asyncio
-    async def test_write_user_memory(self, store, redis_mock):
-        from context.schema import UserMemory
-        um = UserMemory(user_id="u1", profile_summary="test")
-        await store.write_user_memory(um)
-        redis_mock.hset.assert_called_once()
-
     # ── push_turn ──
 
     @pytest.mark.asyncio
@@ -260,55 +221,14 @@ class TestRedisStorage:
 
     # ── Roast methods ──
 
-    @pytest.mark.asyncio
-    async def test_read_roast_prompt_empty(self, store, redis_mock):
-        redis_mock.get.return_value = None
-        assert await store.read_roast_prompt() == ""
-
-    @pytest.mark.asyncio
-    async def test_read_roast_prompt_returns_str(self, store, redis_mock):
-        redis_mock.get.return_value = b"game rules here"
-        assert await store.read_roast_prompt() == "game rules here"
-
-    @pytest.mark.asyncio
-    async def test_read_roast_summary_empty(self, store, redis_mock):
-        redis_mock.get.return_value = None
-        assert await store.read_roast_summary() == ""
-
-    @pytest.mark.asyncio
-    async def test_write_roast_summary(self, store, redis_mock):
-        await store.write_roast_summary("roast summary")
-        redis_mock.set.assert_called_once()
-
-    @pytest.mark.asyncio
-    async def test_read_roast_meta_returns_dict(self, store, redis_mock):
-        redis_mock.hgetall.return_value = {b"roast_id": b"rx", b"turn_count": b"3"}
-        result = await store.read_roast_meta()
-        assert result == {"roast_id": "rx", "turn_count": "3"}
-
-    @pytest.mark.asyncio
-    async def test_write_roast_meta(self, store, redis_mock):
-        await store.write_roast_meta({"roast_id": "rx"})
-        redis_mock.hset.assert_called_once()
-
-    @pytest.mark.asyncio
-    async def test_read_roast_turns_raw(self, store, redis_mock):
-        redis_mock.lrange.return_value = [b"t1", b"t2"]
-        result = await store.read_roast_turns_raw()
-        assert result == [b"t1", b"t2"]
-
-    @pytest.mark.asyncio
-    async def test_delete_roast_keys(self, store, redis_mock):
-        await store.delete_roast_keys()
-        redis_mock.delete.assert_called_once()
 
 
-# ═══════════════════════════════════════════════════════════════════════════════
-# RedisStorage — exception handling
-# ═══════════════════════════════════════════════════════════════════════════════
+# -------------------------------------------------------------------------------
+# RedisStorage  -  exception handling
+# -------------------------------------------------------------------------------
 
 class TestRedisStorageExceptionHandling:
-    """RedisStorage — exception handling returns safe defaults."""
+    """RedisStorage  -  exception handling returns safe defaults."""
 
     @pytest.fixture
     def broken_redis(self):
@@ -347,82 +267,60 @@ class TestRedisStorageExceptionHandling:
         assert await safe_store.is_compressing() is False
 
     @pytest.mark.asyncio
-    async def test_read_summary_returns_none(self, safe_store):
-        assert await safe_store.read_summary() is None
+    async def test_read_summaries_returns_empty(self, safe_store):
+        assert await safe_store.read_summaries() == {}
 
     @pytest.mark.asyncio
     async def test_read_game_state_returns_empty(self, safe_store):
         assert await safe_store.read_game_state() == {}
 
     @pytest.mark.asyncio
-    async def test_load_user_memory_returns_none(self, safe_store):
-        assert await safe_store.load_user_memory() is None
-
-    @pytest.mark.asyncio
     async def test_set_compressing_no_raise(self, safe_store):
         await safe_store.set_compressing(True)
 
     @pytest.mark.asyncio
-    async def test_write_summary_no_raise(self, safe_store):
-        from context.schema import SummaryRecord
-        await safe_store.write_summary(SummaryRecord(text="x"))
-
-    @pytest.mark.asyncio
-    async def test_write_user_memory_no_raise(self, safe_store):
-        from context.schema import UserMemory
-        await safe_store.write_user_memory(UserMemory(user_id="u1"))
+    async def test_write_summaries_no_raise(self, safe_store):
+        await safe_store.write_summaries(0)
 
     @pytest.mark.asyncio
     async def test_push_turn_no_raise(self, safe_store):
         await safe_store.push_turn("{}")
 
-    @pytest.mark.asyncio
-    async def test_read_roast_prompt_returns_empty(self, safe_store):
-        assert await safe_store.read_roast_prompt() == ""
-
-    @pytest.mark.asyncio
-    async def test_read_roast_summary_returns_empty(self, safe_store):
-        assert await safe_store.read_roast_summary() == ""
-
-    @pytest.mark.asyncio
-    async def test_write_roast_summary_no_raise(self, safe_store):
-        await safe_store.write_roast_summary("summary")
-
-    @pytest.mark.asyncio
-    async def test_read_roast_meta_returns_empty(self, safe_store):
-        assert await safe_store.read_roast_meta() == {}
-
-    @pytest.mark.asyncio
-    async def test_write_roast_meta_no_raise(self, safe_store):
-        await safe_store.write_roast_meta({})
-
-    @pytest.mark.asyncio
-    async def test_read_roast_turns_raw_returns_empty(self, safe_store):
-        assert await safe_store.read_roast_turns_raw() == []
-
-    @pytest.mark.asyncio
-    async def test_delete_roast_keys_no_raise(self, safe_store):
-        await safe_store.delete_roast_keys()
 
 
-# ═══════════════════════════════════════════════════════════════════════════════
+# -------------------------------------------------------------------------------
+# PgStorage — mock helpers (mirrors test_pg_fallback.py)
+# -------------------------------------------------------------------------------
+
+class _MockPool:
+    """Async context manager that yields a mock connection."""
+
+    def __init__(self, conn):
+        self._conn = conn
+
+    async def __aenter__(self):
+        return self._conn
+
+    async def __aexit__(self, *args):
+        pass
+
+
+def _mock_pg_conn(fetchrow=None, fetch=None):
+    """Build a mock connection with optional fetchrow / fetch / execute."""
+    from unittest.mock import AsyncMock, MagicMock
+    conn = MagicMock()
+    conn.fetchrow = AsyncMock(return_value=fetchrow)
+    conn.fetch = AsyncMock(return_value=fetch or [])
+    conn.execute = AsyncMock()
+    return conn
+
+
+# -------------------------------------------------------------------------------
 # PgStorage
-# ═══════════════════════════════════════════════════════════════════════════════
+# -------------------------------------------------------------------------------
 
 class TestPgStorage:
-    """PgStorage — all methods with mocked PG pool."""
-
-    @pytest.fixture
-    def pg_mock(self):
-        from unittest.mock import AsyncMock, MagicMock
-        mock = AsyncMock()
-        mock.acquire = MagicMock(return_value=AsyncMock())
-        return mock
-
-    @pytest.fixture
-    def pg_store(self, pg_mock):
-        from context.storage.pg import PgStorage
-        return PgStorage("u1", pg_mock)
+    """PgStorage  -  all methods with mocked _connect."""
 
     # ── No-pool short-circuits ──
 
@@ -445,63 +343,70 @@ class TestPgStorage:
             await store.upsert_profile("profile")
         asyncio.run(run())
 
+    @pytest.fixture
+    def pg_store(self):
+        from context.storage.pg import PgStorage
+        return PgStorage("u1", "postgresql://test")
+
     # ── recover_turn_counter ──
 
     @pytest.mark.asyncio
-    async def test_recover_turn_counter_returns_max(self, pg_store, pg_mock):
-        conn = pg_mock.acquire.return_value.__aenter__.return_value
-        conn.fetchrow.return_value = [55]
-        result = await pg_store.recover_turn_counter()
-        assert result == 55
+    async def test_recover_turn_counter_returns_max(self, pg_store):
+        pool = _MockPool(_mock_pg_conn(fetchrow=[55]))
+        with patch("context.storage.pg._connect", return_value=pool):
+            assert await pg_store.recover_turn_counter() == 55
 
     @pytest.mark.asyncio
-    async def test_recover_turn_counter_empty_db(self, pg_store, pg_mock):
-        conn = pg_mock.acquire.return_value.__aenter__.return_value
-        conn.fetchrow.return_value = None
-        result = await pg_store.recover_turn_counter()
-        assert result == 0
+    async def test_recover_turn_counter_empty_db(self, pg_store):
+        pool = _MockPool(_mock_pg_conn(fetchrow=None))
+        with patch("context.storage.pg._connect", return_value=pool):
+            assert await pg_store.recover_turn_counter() == 0
 
     # ── read_new_facts ──
 
     @pytest.mark.asyncio
-    async def test_read_new_facts_returns_list(self, pg_store, pg_mock):
-        conn = pg_mock.acquire.return_value.__aenter__.return_value
-        conn.fetch.return_value = [
+    async def test_read_new_facts_returns_list(self, pg_store):
+        pool = _MockPool(_mock_pg_conn(fetch=[
             {"fact": "loves pizza", "category": "food"},
             {"fact": "lives in SH", "category": "location"},
-        ]
-        result = await pg_store.read_new_facts()
-        assert len(result) == 2
-        assert "loves pizza (food)" in result
-        assert "lives in SH (location)" in result
+        ]))
+        with patch("context.storage.pg._connect", return_value=pool):
+            result = await pg_store.read_new_facts()
+            assert len(result) == 2
+            assert "loves pizza (food)" in result
+            assert "lives in SH (location)" in result
 
     # ── read_profile ──
 
     @pytest.mark.asyncio
-    async def test_read_profile_returns_data(self, pg_store, pg_mock):
+    async def test_read_profile_returns_data(self, pg_store):
         from datetime import datetime, timezone
-        conn = pg_mock.acquire.return_value.__aenter__.return_value
         now = datetime.now(timezone.utc)
-        conn.fetchrow.return_value = {"profile_summary": "User profile", "updated_at": now}
-        profile, ts = await pg_store.read_profile()
-        assert profile == "User profile"
-        assert ts == now
+        pool = _MockPool(_mock_pg_conn(
+            fetchrow={"profile_summary": "User profile", "updated_at": now},
+        ))
+        with patch("context.storage.pg._connect", return_value=pool):
+            profile, ts = await pg_store.read_profile()
+            assert profile == "User profile"
+            assert ts == now
 
     @pytest.mark.asyncio
-    async def test_read_profile_empty_row(self, pg_store, pg_mock):
-        conn = pg_mock.acquire.return_value.__aenter__.return_value
-        conn.fetchrow.return_value = None
-        profile, ts = await pg_store.read_profile()
-        assert profile == ""
-        assert ts is None
+    async def test_read_profile_empty_row(self, pg_store):
+        pool = _MockPool(_mock_pg_conn(fetchrow=None))
+        with patch("context.storage.pg._connect", return_value=pool):
+            profile, ts = await pg_store.read_profile()
+            assert profile == ""
+            assert ts is None
 
     # ── flush_one ──
 
     @pytest.mark.asyncio
-    async def test_flush_one_inserts(self, pg_store, pg_mock):
+    async def test_flush_one_inserts(self, pg_store):
         from core.llm.types import Message
-        conn = pg_mock.acquire.return_value.__aenter__.return_value
-        await pg_store.flush_one(1, Message.user("hello"), "rx")
+        conn = _mock_pg_conn()
+        pool = _MockPool(conn)
+        with patch("context.storage.pg._connect", return_value=pool):
+            await pg_store.flush_one(1, Message.user("hello"), "rx")
         conn.execute.assert_called_once()
 
     # ── _serialize_tool_calls ──
@@ -520,6 +425,7 @@ class TestPgStorage:
         tcs = [ToolCall(id="c1", name="f", arguments="{}")]
         result = _serialize_tool_calls(tcs)
         import json
+        assert result is not None
         data = json.loads(result)
         assert data[0]["id"] == "c1"
         assert data[0]["name"] == "f"

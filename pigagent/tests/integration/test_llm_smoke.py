@@ -1,5 +1,5 @@
 # tests/integration/test_llm_smoke.py
-"""Integration tests — all models, all features, real API keys.
+"""Integration tests  -  all models, all features, real API keys.
 
 Requires DASHSCOPE_US_API_KEY and ARK_API_KEY in root .env.
 Run: pytest tests/integration/ -v --tb=short
@@ -38,14 +38,14 @@ async def _chat(model_id: str, env_var: str, **kwargs):
     return resp
 
 
-# ═══════════════════════════════════════════════════════════════════════════════
+# -------------------------------------------------------------------------------
 # Qwen Plus (legacy)
-# ═══════════════════════════════════════════════════════════════════════════════
+# -------------------------------------------------------------------------------
 
 @pytest.mark.asyncio
 class TestQwenPlus:
     ENV = "DASHSCOPE_US_API_KEY"
-    MODEL = "qwen-plus"
+    MODEL = "qwen-plus-us"
 
     async def test_connectivity(self):
         await _chat(self.MODEL, self.ENV)
@@ -54,7 +54,7 @@ class TestQwenPlus:
         _need(self.ENV)
         p = get_llm(self.MODEL)
         chunks = []
-        async for d in p.chat_stream(
+        async for d in p.chat_stream(  # type: ignore[reportGeneralTypeIssues]
             model=self.MODEL,
             messages=[Message.user("Count from 1 to 5.")],
             max_tokens=100,
@@ -139,9 +139,9 @@ class TestQwenPlus:
         assert resp.content
 
 
-# ═══════════════════════════════════════════════════════════════════════════════
+# -------------------------------------------------------------------------------
 # Qwen 3.6 Flash
-# ═══════════════════════════════════════════════════════════════════════════════
+# -------------------------------------------------------------------------------
 
 @pytest.mark.asyncio
 class TestQwen36Flash:
@@ -155,7 +155,7 @@ class TestQwen36Flash:
         _need(self.ENV)
         p = get_llm(self.MODEL)
         chunks = []
-        async for d in p.chat_stream(
+        async for d in p.chat_stream(  # type: ignore[reportGeneralTypeIssues]
             model=self.MODEL,
             messages=[Message.user("Count from 1 to 5.")],
             max_tokens=100,
@@ -194,9 +194,9 @@ class TestQwen36Flash:
         assert len(resp.content) > 0
 
 
-# ═══════════════════════════════════════════════════════════════════════════════
+# -------------------------------------------------------------------------------
 # Qwen 3.6 Plus
-# ═══════════════════════════════════════════════════════════════════════════════
+# -------------------------------------------------------------------------------
 
 @pytest.mark.asyncio
 class TestQwen36Plus:
@@ -210,7 +210,7 @@ class TestQwen36Plus:
         _need(self.ENV)
         p = get_llm(self.MODEL)
         chunks = []
-        async for d in p.chat_stream(
+        async for d in p.chat_stream(  # type: ignore[reportGeneralTypeIssues]
             model=self.MODEL,
             messages=[Message.user("Count from 1 to 5.")],
             max_tokens=100,
@@ -249,9 +249,9 @@ class TestQwen36Plus:
         assert len(resp.content) > 0
 
 
-# ═══════════════════════════════════════════════════════════════════════════════
-# Doubao Seed 1.6 — Volcengine
-# ═══════════════════════════════════════════════════════════════════════════════
+# -------------------------------------------------------------------------------
+# Doubao Seed 1.6  -  Volcengine
+# -------------------------------------------------------------------------------
 
 @pytest.mark.asyncio
 class TestDoubaoSeed:
@@ -265,7 +265,7 @@ class TestDoubaoSeed:
         _need(self.ENV)
         p = get_llm(self.MODEL)
         chunks = []
-        async for d in p.chat_stream(
+        async for d in p.chat_stream(  # type: ignore[reportGeneralTypeIssues]
             model=self.MODEL,
             messages=[Message.user("Count from 1 to 5.")],
             max_tokens=100,
@@ -298,9 +298,9 @@ class TestDoubaoSeed:
             pytest.fail(f"Not valid JSON: {resp.content[:100]}")
 
 
-# ═══════════════════════════════════════════════════════════════════════════════
-# Cross-model — model switching via the model= parameter
-# ═══════════════════════════════════════════════════════════════════════════════
+# -------------------------------------------------------------------------------
+# Cross-model  -  model switching via the model= parameter
+# -------------------------------------------------------------------------------
 
 @pytest.mark.asyncio
 class TestModelSwitching:

@@ -1,0 +1,113 @@
+# tests/unit/test_factory.py
+"""Unit tests for bootstrap/factory.py  -  singleton creation, validation."""
+
+import os
+from unittest.mock import MagicMock, patch
+
+import pytest
+
+
+class TestValidateConfiguration:
+    def test_missing_livekit_key_fails(self, monkeypatch):
+        monkeypatch.delenv("LIVEKIT_API_KEY", raising=False)
+        monkeypatch.setenv("LIVEKIT_API_SECRET", "test")
+        monkeypatch.setenv("CARTESIA_API_KEY", "test")
+        monkeypatch.setenv("DASHSCOPE_US_API_KEY", "test")
+
+        from bootstrap.factory import validate_configuration
+        config = MagicMock()
+        config.STT_PROVIDER = "cartesia"
+        config.resolve_model = MagicMock(return_value="qwen-plus-us")
+        config.ENABLE_POLICY_SEARCH = False
+
+        with patch("core.llm.registry.get_provider_config") as mock_cfg:
+            mock_cfg.return_value = MagicMock(env="DASHSCOPE_US_API_KEY")
+            result = validate_configuration(config)
+            assert not result
+
+    def test_all_keys_present_passes(self, monkeypatch):
+        monkeypatch.setenv("LIVEKIT_API_KEY", "test")
+        monkeypatch.setenv("LIVEKIT_API_SECRET", "test")
+        monkeypatch.setenv("CARTESIA_API_KEY", "test")
+        monkeypatch.setenv("DASHSCOPE_US_API_KEY", "test")
+
+        from bootstrap.factory import validate_configuration
+        config = MagicMock()
+        config.STT_PROVIDER = "cartesia"
+        config.resolve_model = MagicMock(return_value="qwen-plus-us")
+        config.ENABLE_POLICY_SEARCH = False
+
+        with patch("core.llm.registry.get_provider_config") as mock_cfg:
+            mock_cfg.return_value = MagicMock(env="DASHSCOPE_US_API_KEY")
+            result = validate_configuration(config)
+            assert result
+
+    def test_unknown_llm_provider_reported(self, monkeypatch):
+        monkeypatch.setenv("LIVEKIT_API_KEY", "test")
+        monkeypatch.setenv("LIVEKIT_API_SECRET", "test")
+        monkeypatch.setenv("CARTESIA_API_KEY", "test")
+
+        from bootstrap.factory import validate_configuration
+        config = MagicMock()
+        config.STT_PROVIDER = "cartesia"
+        config.resolve_model = MagicMock(return_value="nonexistent-model")
+        config.ENABLE_POLICY_SEARCH = False
+
+        with patch("core.llm.registry.get_provider_config", return_value=None):
+            result = validate_configuration(config)
+            assert not result
+
+    def test_deepgram_missing_key(self, monkeypatch):
+        monkeypatch.setenv("LIVEKIT_API_KEY", "test")
+        monkeypatch.setenv("LIVEKIT_API_SECRET", "test")
+        monkeypatch.setenv("CARTESIA_API_KEY", "test")
+        monkeypatch.delenv("DEEPGRAM_API_KEY", raising=False)
+        monkeypatch.setenv("DASHSCOPE_US_API_KEY", "test")
+
+        from bootstrap.factory import validate_configuration
+        config = MagicMock()
+        config.STT_PROVIDER = "deepgram"
+        config.resolve_model = MagicMock(return_value="qwen-plus-us")
+        config.ENABLE_POLICY_SEARCH = False
+
+        with patch("core.llm.registry.get_provider_config") as mock_cfg:
+            mock_cfg.return_value = MagicMock(env="DASHSCOPE_US_API_KEY")
+            result = validate_configuration(config)
+            assert not result
+
+
+class TestGetPigAgent:
+    def test_returns_singleton(self):
+        from bootstrap.factory import get_pig_agent, _pig_agent
+        # Reset singleton for test
+        import bootstrap.factory as f
+        f._pig_agent = None
+
+        with patch("bootstrap.factory._build_pig_agent") as mock_build:
+            mock_agent = MagicMock()
+            mock_build.return_value = mock_agent
+
+            a1 = get_pig_agent()
+            a2 = get_pig_agent()
+            assert a1 is a2
+            mock_build.assert_called_once()
+
+
+class TestGetRedis:
+    def test_requires_env_var(self, monkeypatch):
+        monkeypatch.delenv("REDIS_URL", raising=False)
+        import bootstrap.factory as f
+        f._redis = None
+
+        with pytest.raises(RuntimeError, match="REDIS_URL"):
+            f._init_redis()
+
+
+class TestGetPgPool:
+    def test_requires_env_var(self, monkeypatch):
+        monkeypatch.delenv("DATABASE_URL", raising=False)
+        import bootstrap.factory as f
+        f._pg_pool = None
+
+        with pytest.raises(RuntimeError, match="DATABASE_URL"):
+            f._init_pg_pool()

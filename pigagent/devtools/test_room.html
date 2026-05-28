@@ -1,0 +1,99 @@
+<!DOCTYPE html>
+<html><head><meta charset="UTF-8"><meta http-equiv="Cache-Control" content="no-cache"><title>Pigugu Test</title><style>
+body{font-family:monospace;background:#111;color:#0f0;padding:20px;line-height:1.8;font-size:14px}
+.err{color:#f44} .ok{color:#0f0} .warn{color:#fa0} .info{color:#0af}
+#vbar{width:100%;height:24px;background:#222;border-radius:4px;overflow:hidden;margin:10px 0}
+#vbar-inner{height:100%;width:0%;background:#0f0;transition:width 0.05s}
+</style></head><body>
+<h1>Pigugu Agent Debug</h1>
+<div id="vbar"><div id="vbar-inner"></div></div>
+<small id="vol-label">Vol: --</small>
+<div id="log"></div>
+<script>
+function L(m,c){
+  var d=document.createElement('div');d.className=c||'';
+  d.textContent='['+new Date().toLocaleTimeString()+'] '+m;
+  document.getElementById('log').appendChild(d);
+  fetch('/log',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({level:c||'info',msg:m})}).catch(function(){});
+}
+
+L('Page loaded. Loading SDK...','info');
+var s=document.createElement('script');
+s.src='https://cdn.jsdelivr.net/npm/livekit-client@2/dist/livekit-client.umd.min.js';
+s.onload=function(){setTimeout(function(){
+  if(typeof LivekitClient!=='undefined'){L('SDK OK','ok');}else{L('SDK FAIL','err');}
+},500);};
+s.onerror=function(){L('SDK CDN blocked','err');};
+document.head.appendChild(s);
+
+var room=null,vuTimer=null,stream=null;
+
+async function go(){
+  var btn=document.querySelector('button');if(btn)btn.remove();
+  L('[1] Fetching token...','info');
+  try{
+    // Persistent identity across sessions (localStorage), unique room each time
+    var uid=localStorage.getItem('pigugu_uid');
+    if(!uid){uid='web-'+Date.now().toString(36);localStorage.setItem('pigugu_uid',uid);}
+    L('[0] User ID: '+uid,'info');
+    var r=await fetch('/token',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({room:'room-'+Date.now(),identity:uid})});
+    var d=await r.json();
+    L('[2] Token OK. Server='+d.url,'info');
+
+    room=new LivekitClient.Room();
+
+    room.on('participantConnected',function(p){
+      L('[ROOM] '+p.identity+' JOINED',p.identity.startsWith('agent-')?'ok':'info');
+    });
+    room.on('participantDisconnected',function(p){L('[ROOM] '+p.identity+' left','warn');});
+    room.on('disconnected',function(reason){L('[ROOM] Disconnected: '+(reason&&reason.message||'manual'),'warn');});
+    room.on('connectionStateChanged',function(s){L('[SIGNAL] '+s,'info');});
+    room.on('trackSubscribed',function(track,pub,p){
+      L('[AUDIO IN] From '+p.identity+' kind='+track.kind,'ok');
+      if(track.kind===LivekitClient.Track.Kind.Audio||track.kind==='audio'){
+        var a=new Audio();a.srcObject=new MediaStream([track.mediaStreamTrack]);
+        a.play().then(function(){L('[AUDIO] Playing agent reply','ok');}).catch(function(e){L('[AUDIO] Play failed: '+e,'err');});
+      }
+    });
+    room.on('trackPublished',function(pub,p){L('[TRACK] '+p.identity+' published '+pub.kind,'info');});
+    room.on('mediaDevicesError',function(e){L('[MEDIA ERR] '+e.message,'err');});
+
+    L('[3] Connecting to LiveKit...','info');
+    await room.connect(d.url,d.token,{autoSubscribe:true,adaptiveStream:false});
+    L('[4] CONNECTED as '+room.localParticipant.identity,'ok');
+    L('[4b] Room state='+room.state+' participants='+room.remoteParticipants.size,'info');
+
+    // --- MIC ---
+    L('[5] Getting mic...','info');
+    stream=await navigator.mediaDevices.getUserMedia({audio:{echoCancellation:true,noiseSuppression:true}});
+    var t=stream.getAudioTracks()[0];
+    L('[6] Mic: '+t.label+' readyState='+t.readyState+' muted='+t.muted,'ok');
+
+    var ctx=new AudioContext();
+    if(ctx.state==='suspended'){await ctx.resume();}
+    var src=ctx.createMediaStreamSource(stream);
+    var a=ctx.createAnalyser();a.fftSize=128;src.connect(a);
+    var buf=new Uint8Array(a.frequencyBinCount);
+
+    vuTimer=setInterval(function(){
+      a.getByteFrequencyData(buf);
+      var mx=0;for(var i=0;i<buf.length;i++){if(buf[i]>mx)mx=buf[i];}
+      document.getElementById('vbar-inner').style.width=Math.min(100,mx*2)+'%';
+      document.getElementById('vbar-inner').style.background=mx>8?'#0f0':'#333';
+      document.getElementById('vol-label').textContent='Vol: max='+Math.round(mx);
+    },100);
+
+    t.addEventListener('ended',function(){L('[MIC] Track ENDED','err');});
+    t.addEventListener('mute',function(){L('[MIC] MUTED','warn');});
+    t.addEventListener('unmute',function(){L('[MIC] unmuted','info');});
+
+    L('[7] Publishing audio track...','info');
+    var ltrack=new LivekitClient.LocalAudioTrack(t);
+    await room.localParticipant.publishTrack(ltrack,{source:'microphone'});
+    L('[8] AUDIO TRACK PUBLISHED','ok');
+    L('[9] READY - speak now!', 'ok');
+  }catch(e){L('ERROR: '+e.message,'err');console.error(e);}
+}
+</script>
+<button onclick="go()" style="font-size:18px;padding:10px 20px;margin:10px 0;background:#e94560;color:#fff;border:none;border-radius:6px;cursor:pointer">CONNECT</button>
+</body></html>

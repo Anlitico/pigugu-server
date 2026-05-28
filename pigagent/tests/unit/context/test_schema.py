@@ -1,5 +1,5 @@
 # tests/unit/test_context_schema.py
-"""Unit tests for context schemas — ConversationRecord, SummaryRecord, TokenBudget,
+"""Unit tests for context schemas  -  ConversationRecord, SummaryRecord, TokenBudget,
 UserMemory, RoastContext, WorkingContext."""
 
 import json
@@ -15,9 +15,9 @@ from config import get_config
 _cfg = get_config()
 
 
-# ═══════════════════════════════════════════════════════════════════════════════
+# -------------------------------------------------------------------------------
 # TokenBudget
-# ═══════════════════════════════════════════════════════════════════════════════
+# -------------------------------------------------------------------------------
 
 class TestTokenBudget:
     def test_defaults(self):
@@ -44,37 +44,37 @@ class TestTokenBudget:
         assert "remaining" in d
 
 
-# ═══════════════════════════════════════════════════════════════════════════════
+# -------------------------------------------------------------------------------
 # RoastContext
-# ═══════════════════════════════════════════════════════════════════════════════
+# -------------------------------------------------------------------------------
 
 class TestRoastContext:
     def test_defaults(self):
-        rc = RoastContext(roast_id="r1")
-        assert rc.roast_id == "r1"
+        rc = RoastContext(roast_instance_id="r1")
+        assert rc.roast_instance_id == "r1"
         assert rc.prompt == ""
         assert rc.turns == []
         assert rc.summary == ""
 
     def test_is_active(self):
-        assert RoastContext(roast_id="r1").is_active
-        assert not RoastContext(roast_id="").is_active
+        assert RoastContext(roast_instance_id="r1").is_active
+        assert not RoastContext(roast_instance_id="").is_active
 
     def test_total_tokens(self):
-        rc = RoastContext(roast_id="r1", prompt_tokens=100, turns_tokens=200, summary_tokens=50)
+        rc = RoastContext(roast_instance_id="r1", prompt_tokens=100, turns_tokens=200, summary_tokens=50)
         assert rc.total_tokens == 350
 
     def test_to_meta(self):
-        rc = RoastContext(roast_id="r1")
+        rc = RoastContext(roast_instance_id="r1")
         rc.turns = [Message.user("hi")]
         meta = rc.to_meta()
-        assert meta["roast_id"] == "r1"
+        assert meta["roast_instance_id"] == "r1"
         assert meta["turn_count"] == 1
 
 
-# ═══════════════════════════════════════════════════════════════════════════════
+# -------------------------------------------------------------------------------
 # WorkingContext
-# ═══════════════════════════════════════════════════════════════════════════════
+# -------------------------------------------------------------------------------
 
 class TestWorkingContext:
     def test_defaults(self):
@@ -128,7 +128,7 @@ class TestWorkingContext:
         wc = WorkingContext(
             user_id="u1",
             roast=RoastContext(
-                roast_id="r1",
+                roast_instance_id="r1",
                 summary="Game: trivia challenge\n\n---\n\nEarlier: user answered 3 questions.",
             ),
             raw_turns=[
@@ -139,7 +139,7 @@ class TestWorkingContext:
         msgs = wc.to_messages()
         assert len(msgs) == 3
         assert "trivia challenge" in msgs[0].content
-        assert msgs[0].role == "system"
+        assert msgs[0].role == "user"
 
     def test_budget_summary(self):
         wc = WorkingContext(user_id="u1")
@@ -164,7 +164,7 @@ class TestWorkingContextRawTurns:
         from context.schema import WorkingContext, RoastContext
         wc = WorkingContext(
             user_id="u1",
-            roast=RoastContext(roast_id="r1", summary=""),
+            roast=RoastContext(roast_instance_id="r1", summary=""),
         )
         msgs = wc.to_messages()
         assert len(msgs) == 0
@@ -185,9 +185,9 @@ class TestWorkingContextRawTurns:
         assert s["breakdown"]["L4_roast_prompt"] == 2000
 
 
-# ═══════════════════════════════════════════════════════════════════════════════
+# -------------------------------------------------------------------------------
 # UserMemory
-# ═══════════════════════════════════════════════════════════════════════════════
+# -------------------------------------------------------------------------------
 
 class TestUserMemory:
     def test_defaults(self):
@@ -215,12 +215,12 @@ class TestUserMemory:
         assert um.token_count() > 0
 
 
-# ═══════════════════════════════════════════════════════════════════════════════
+# -------------------------------------------------------------------------------
 # ConversationRecord
-# ═══════════════════════════════════════════════════════════════════════════════
+# -------------------------------------------------------------------------------
 
 class TestConversationRecord:
-    """ConversationRecord — serialization and conversion to Message."""
+    """ConversationRecord  -  serialization and conversion to Message."""
 
     def test_to_message_basic(self):
         from context.schema import ConversationRecord
@@ -274,7 +274,7 @@ class TestConversationRecord:
         assert d["turn"] == 1
         assert d["role"] == "user"
         assert d["content"] == "hi"
-        assert "roast_id" not in d
+        assert "roast_instance_id" not in d
         assert "ts" in d
 
     def test_to_dict_with_all_fields(self):
@@ -282,11 +282,11 @@ class TestConversationRecord:
         tcs = [{"id": "c1", "name": "s", "arguments": "{}"}]
         cr = ConversationRecord(
             turn_number=10, role="assistant", content="ok", created_at=200.0,
-            roast_id="r1", tool_calls=tcs, tool_call_id="c1",
+            roast_instance_id="r1", tool_calls=tcs, tool_call_id="c1",
             name="s", partial=True,
         )
         d = cr.to_dict()
-        assert d["roast_id"] == "r1"
+        assert d["roast_instance_id"] == "r1"
         assert d["partial"] is True
         assert d["name"] == "s"
         assert "tool_calls" in d
@@ -298,14 +298,14 @@ class TestConversationRecord:
         assert cr.turn_number == 5
         assert cr.role == "assistant"
         assert cr.content == "reply"
-        assert cr.roast_id is None
+        assert cr.roast_instance_id is None
         assert cr.partial is False
 
-    def test_from_dict_with_roast_id(self):
+    def test_from_dict_with_roast_instance_id(self):
         from context.schema import ConversationRecord
-        d = {"turn": 8, "role": "user", "content": "play", "roast_id": "rx", "ts": 400.0}
+        d = {"turn": 8, "role": "user", "content": "play", "roast_instance_id": "rx", "ts": 400.0}
         cr = ConversationRecord.from_dict(d)
-        assert cr.roast_id == "rx"
+        assert cr.roast_instance_id == "rx"
 
     def test_from_dict_tool_calls_json_string(self):
         from context.schema import ConversationRecord
@@ -328,22 +328,22 @@ class TestConversationRecord:
         from context.schema import ConversationRecord
         cr = ConversationRecord(
             turn_number=42, role="assistant", content="done", created_at=999.0,
-            roast_id="rx", tool_calls=[{"id": "c1", "name": "f", "arguments": "{}"}],
+            roast_instance_id="rx", tool_calls=[{"id": "c1", "name": "f", "arguments": "{}"}],
             tool_call_id="c1", name="f", partial=True,
         )
         restored = ConversationRecord.from_dict(cr.to_dict())
         assert restored.turn_number == 42
         assert restored.role == "assistant"
-        assert restored.roast_id == "rx"
+        assert restored.roast_instance_id == "rx"
         assert restored.partial is True
 
 
-# ═══════════════════════════════════════════════════════════════════════════════
+# -------------------------------------------------------------------------------
 # SummaryRecord
-# ═══════════════════════════════════════════════════════════════════════════════
+# -------------------------------------------------------------------------------
 
 class TestSummaryRecord:
-    """SummaryRecord — serialize/deserialize with end_turn anchor."""
+    """SummaryRecord  -  serialize/deserialize with end_turn anchor."""
 
     def test_serialize(self):
         from context.schema import SummaryRecord

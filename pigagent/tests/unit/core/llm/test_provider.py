@@ -1,5 +1,5 @@
 # tests/unit/core/llm/test_provider.py
-"""Tests for LLMProvider base class — count_tokens and _tokenize."""
+"""Tests for LLMProvider base class  -  count_tokens and _tokenize."""
 
 import asyncio
 
@@ -65,8 +65,8 @@ class _ConcreteProvider(LLMProvider):
     def base_url(self) -> str:
         return "http://test"
 
-    async def chat(self, **kwargs):
+    async def chat(self, messages, *, model, **kwargs):
         raise NotImplementedError
 
-    async def chat_stream(self, **kwargs):
+    def chat_stream(self, messages, *, model, **kwargs):
         raise NotImplementedError

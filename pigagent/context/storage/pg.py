@@ -1,15 +1,27 @@
 ﻿# pigagent/context/storage/pg.py
-"""PostgreSQL I/O for context module — turns, facts, profile, recovery."""
+"""PostgreSQL I/O for context module  -  turns, facts, profile, recovery."""
 
 from __future__ import annotations
 
 import json
+from contextlib import asynccontextmanager
 from datetime import datetime
+from typing import AsyncIterator
 
+import asyncpg  # type: ignore[import-untyped]
 from loguru import logger
 
 from core.llm.types import Message
-from context.schema import UserMemory
+from context.schema import UserMemory, ConversationRecord, SummaryRow
+
+
+@asynccontextmanager
+async def _connect(dsn: str) -> AsyncIterator[asyncpg.Connection]:
+    conn = await asyncpg.connect(dsn)
+    try:
+        yield conn
+    finally:
+        await conn.close()
 
 
 def _serialize_tool_calls(tool_calls: list | None) -> str | None:
@@ -31,67 +43,69 @@ class PgStorage:
 
     # ── Turns ──────────────────────────────────────────────────────
 
-    async def flush_one(self, turn_number: int, turn: Message, roast_id: str | None) -> None:
+    async def flush_one(self, turn_number: int, turn: Message, roast_instance_id: str | None) -> None:
         if not self._pg:
             return
         try:
-            async with self._pg.acquire() as conn:
+            async with _connect(self._pg) as conn:
                 await conn.execute(
                     """INSERT INTO agent_conversations
                        (user_id, turn_number, role, content,
-                        tool_calls, tool_call_id, name, partial, roast_id)
+                        tool_calls, tool_call_id, name, partial, roast_instance_id)
                        VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7, $8, $9)
                        ON CONFLICT (user_id, turn_number) DO NOTHING""",
                     self._user_id, turn_number,
                     turn.role, turn.content,
                     _serialize_tool_calls(turn.tool_calls),
                     turn.tool_call_id, turn.name, turn.partial,
-                    roast_id,
+                    roast_instance_id,
                 )
         except Exception as e:
-            logger.warning(f"PG flush_one failed: {e}")
+            if "Event loop is closed" not in str(e):
+                logger.warning(f"PG flush_one failed: {e}")
 
     async def flush_buffer(self, batch: list[tuple[int, Message, str | None]]) -> None:
         if not self._pg:
             return
         try:
-            async with self._pg.acquire() as conn:
+            async with _connect(self._pg) as conn:
                 async with conn.transaction():
-                    for turn_number, turn, roast_id in batch:
+                    for turn_number, turn, roast_instance_id in batch:
                         await conn.execute(
                             """INSERT INTO agent_conversations
                                (user_id, turn_number, role, content,
-                                tool_calls, tool_call_id, name, partial, roast_id)
+                                tool_calls, tool_call_id, name, partial, roast_instance_id)
                                VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7, $8, $9)
                                ON CONFLICT (user_id, turn_number) DO NOTHING""",
                             self._user_id, turn_number,
                             turn.role, turn.content,
                             _serialize_tool_calls(turn.tool_calls),
                             turn.tool_call_id, turn.name, turn.partial,
-                            roast_id,
+                            roast_instance_id,
                         )
             logger.debug(f"Flushed {len(batch)} turns to PG")
         except Exception as e:
-            logger.warning(f"PG flush failed: {e}")
+            if "Event loop is closed" not in str(e):
+                logger.warning(f"PG flush failed: {e}")
 
     async def persist_turns(self, turns: list[tuple[int, Message, str | None]]) -> None:
         if not self._pg:
             return
         try:
-            async with self._pg.acquire() as conn:
+            async with _connect(self._pg) as conn:
                 async with conn.transaction():
-                    for turn_number, turn, roast_id in turns:
+                    for turn_number, turn, roast_instance_id in turns:
                         await conn.execute(
                             """INSERT INTO agent_conversations
                                (user_id, turn_number, role, content,
-                                tool_calls, tool_call_id, name, partial, roast_id)
+                                tool_calls, tool_call_id, name, partial, roast_instance_id)
                                VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7, $8, $9)
                                ON CONFLICT (user_id, turn_number) DO NOTHING""",
                             self._user_id, turn_number,
                             turn.role, turn.content,
                             _serialize_tool_calls(turn.tool_calls),
                             turn.tool_call_id, turn.name, turn.partial,
-                            roast_id,
+                            roast_instance_id,
                         )
             logger.info(f"Persisted {len(turns)} turns to PG")
         except Exception as e:
@@ -101,7 +115,7 @@ class PgStorage:
         if not self._pg:
             return 0
         try:
-            async with self._pg.acquire() as conn:
+            async with _connect(self._pg) as conn:
                 row = await conn.fetchrow(
                     "SELECT COALESCE(MAX(turn_number), 0) FROM agent_conversations "
                     "WHERE user_id = $1",
@@ -109,8 +123,8 @@ class PgStorage:
                 )
                 if row:
                     return row[0]
-        except Exception as e:
-            logger.warning(f"Failed to recover turn_counter from PG: {e}")
+        except Exception:
+            pass  # table not found — expected until migration runs
         return 0
 
     # ── Facts ──────────────────────────────────────────────────────
@@ -119,7 +133,7 @@ class PgStorage:
         if not self._pg:
             return
         try:
-            async with self._pg.acquire() as conn:
+            async with _connect(self._pg) as conn:
                 async with conn.transaction():
                     for fd in fact_dicts:
                         await conn.execute(
@@ -137,7 +151,7 @@ class PgStorage:
         if not self._pg:
             return []
         try:
-            async with self._pg.acquire() as conn:
+            async with _connect(self._pg) as conn:
                 if since:
                     rows = await conn.fetch(
                         "SELECT fact, category FROM user_facts WHERE user_id=$1 "
@@ -160,7 +174,7 @@ class PgStorage:
         if not self._pg:
             return "", None
         try:
-            async with self._pg.acquire() as conn:
+            async with _connect(self._pg) as conn:
                 row = await conn.fetchrow(
                     "SELECT profile_summary, updated_at FROM user_memory WHERE user_id=$1",
                     self._user_id,
@@ -175,7 +189,7 @@ class PgStorage:
         if not self._pg:
             return
         try:
-            async with self._pg.acquire() as conn:
+            async with _connect(self._pg) as conn:
                 await conn.execute(
                     """INSERT INTO user_memory (user_id, profile_summary, updated_at)
                        VALUES ($1, $2, NOW())
@@ -186,3 +200,100 @@ class PgStorage:
                 )
         except Exception as e:
             logger.warning(f"Failed to persist profile_summary: {e}")
+
+    # ── Summaries ───────────────────────────────────────────────────
+
+    async def write_summary_row(
+        self, end_turn: int, *,
+        l2_profile: str = "", l3_session: str = "", l4_roast: str = "",
+        roast_id: str | None = None, roast_prompt: str = "", roast_prompt_turn: int = 0,
+        model_used: str = "",
+    ) -> None:
+        if not self._pg:
+            return
+        try:
+            async with _connect(self._pg) as conn:
+                await conn.execute(
+                    """INSERT INTO context_summaries
+                       (user_id, end_turn, l2_profile, l3_session, l4_roast,
+                        roast_id, roast_prompt, roast_prompt_turn, model_used)
+                       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+                       ON CONFLICT (user_id, end_turn) DO NOTHING""",
+                    self._user_id, end_turn,
+                    l2_profile, l3_session, l4_roast,
+                    roast_id or "", roast_prompt, roast_prompt_turn, model_used,
+                )
+        except Exception as e:
+            logger.warning(f"Failed to write summary row: {e}")
+
+    async def read_latest_summary(self) -> SummaryRow | None:
+        if not self._pg:
+            return None
+        try:
+            async with _connect(self._pg) as conn:
+                row = await conn.fetchrow(
+                    """SELECT user_id, end_turn, l2_profile, l3_session, l4_roast,
+                              roast_id, roast_prompt, roast_prompt_turn, model_used
+                       FROM context_summaries
+                       WHERE user_id = $1
+                       ORDER BY end_turn DESC
+                       LIMIT 1""",
+                    self._user_id,
+                )
+                if row:
+                    return SummaryRow(
+                        user_id=row["user_id"],
+                        end_turn=row["end_turn"],
+                        l2_profile=row["l2_profile"],
+                        l3_session=row["l3_session"],
+                        l4_roast=row["l4_roast"],
+                        roast_id=row["roast_id"],
+                        roast_prompt=row["roast_prompt"],
+                        roast_prompt_turn=row["roast_prompt_turn"] or 0,
+                        model_used=row["model_used"],
+                    )
+        except Exception:
+            pass
+        return None
+
+    # ── Turn Recovery ───────────────────────────────────────────────
+
+    async def recover_turns(
+        self, after_turn: int = 0, limit: int = 100,
+    ) -> list[ConversationRecord]:
+        if not self._pg:
+            return []
+        try:
+            async with _connect(self._pg) as conn:
+                rows = await conn.fetch(
+                    """SELECT turn_number, role, content, tool_calls,
+                              tool_call_id, name, partial, roast_instance_id, created_at
+                       FROM agent_conversations
+                       WHERE user_id = $1 AND turn_number > $2
+                       ORDER BY turn_number
+                       LIMIT $3""",
+                    self._user_id, after_turn, limit,
+                )
+                records: list[ConversationRecord] = []
+                for r in rows:
+                    tcs_raw = r["tool_calls"]
+                    tcs = None
+                    if tcs_raw:
+                        tcs = json.loads(tcs_raw) if isinstance(tcs_raw, str) else tcs_raw
+                    created_at = r["created_at"]
+                    ts = created_at.timestamp() if created_at else 0.0
+                    records.append(ConversationRecord(
+                        turn_number=r["turn_number"],
+                        role=r["role"],
+                        content=r["content"],
+                        created_at=ts,
+                        tool_calls=tcs,
+                        tool_call_id=r["tool_call_id"],
+                        name=r["name"],
+                        partial=r["partial"] or False,
+                        roast_instance_id=r["roast_instance_id"],
+                    ))
+                return records
+        except Exception:
+            pass  # table mismatch / no data — expected until migration runs
+        return []

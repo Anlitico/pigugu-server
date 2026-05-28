@@ -10,12 +10,10 @@ API Keys (MUST be provided by environment variables, usually .env locally):
 - DEEPGRAM_API_KEY (if using Deepgram STT)
 - CARTESIA_API_KEY (if using Cartesia STT/TTS)
 - DASHSCOPE_API_KEY
-- XAI_API_KEY (if using Grok LLM)
 """
 
 import os
 import tomllib
-from datetime import date
 from pathlib import Path
 from typing import Optional, Dict, Any
 from pydantic_settings import BaseSettings
@@ -57,15 +55,15 @@ def get_config_value(key: str, default: Any = None) -> Any:
     """
     env_value = os.getenv(key)
     if env_value is not None and env_value != "":
-        config_logger.debug(f"Config {key}: from environment")
+        config_logger.trace(f"Config {key}: from environment")
         return env_value
 
     config_value = CONFIG_FILE_DATA.get(key)
     if config_value is not None and config_value != "":
-        config_logger.debug(f"Config {key}: from .config file")
+        config_logger.trace(f"Config {key}: from .config file")
         return config_value
 
-    config_logger.debug(f"Config {key}: using default={default}")
+    config_logger.trace(f"Config {key}: using default={default}")
     return default
 
 
@@ -105,7 +103,7 @@ class AgentConfig(BaseSettings):
     
     # TTS Configuration (Cartesia)
     CARTESIA_TTS_MODEL: str = Field(default_factory=lambda: get_config_value("CARTESIA_TTS_MODEL", "sonic-2"))
-    CARTESIA_TTS_VOICE: str = Field(default_factory=lambda: get_config_value("CARTESIA_TTS_VOICE", "a0e99841-438c-4a64-b679-ae501e7d6091"))
+    CARTESIA_TTS_VOICE: str = Field(default_factory=lambda: get_config_value("CARTESIA_TTS_VOICE", "9783574a-63f4-46bf-b56b-928eb52d3140"))
     CARTESIA_TTS_LANGUAGE: Optional[str] = Field(default_factory=lambda: get_config_value("CARTESIA_TTS_LANGUAGE", "en"))
     CARTESIA_TTS_ENCODING: str = Field(default_factory=lambda: get_config_value("CARTESIA_TTS_ENCODING", "pcm_s16le"))
     CARTESIA_TTS_SAMPLE_RATE: int = Field(default_factory=lambda: int(get_config_value("CARTESIA_TTS_SAMPLE_RATE", 24000)))
@@ -116,34 +114,15 @@ class AgentConfig(BaseSettings):
     CARTESIA_TTS_BASE_URL: str = Field(default_factory=lambda: get_config_value("CARTESIA_TTS_BASE_URL", "https://api.cartesia.ai"))
     
     # LLM Configuration
-    # LLM_PROVIDER: provider ID used to resolve api_key / base_url
-    #   ("qwen", "qwen-us", "grok", "xai", "deepseek", etc.)
-    LLM_PROVIDER: str = Field(default_factory=lambda: get_config_value("LLM_PROVIDER", "qwen"))
 
-    # LLM_MODEL: unified model field — when set, takes priority over QWEN_MODEL/GROK_MODEL
-    LLM_MODEL: str = Field(default_factory=lambda: get_config_value("LLM_MODEL", ""))
-
-    # Legacy per-provider model fields (still supported)
-    QWEN_MODEL: str = Field(default_factory=lambda: get_config_value("QWEN_MODEL", "qwen-plus"))
-    GROK_MODEL: str = Field(default_factory=lambda: get_config_value("GROK_MODEL", "grok-4-fast-reasoning"))
+    QWEN_MODEL: str = Field(default_factory=lambda: get_config_value("QWEN_MODEL", "qwen-plus-us"))
 
     # LLM Settings
-    # Lightweight model for background tasks (segment end detection, compression)
-    SEGMENT_DETECT_MODEL: str = Field(default_factory=lambda: get_config_value("SEGMENT_DETECT_MODEL", "qwen3.6-flash"))
-
     LLM_TEMPERATURE: float = Field(default_factory=lambda: float(get_config_value("LLM_TEMPERATURE", 0.6)))
     LLM_MAX_TOKENS: Optional[int] = Field(default_factory=lambda: int(get_config_value("LLM_MAX_TOKENS")) if get_config_value("LLM_MAX_TOKENS") else None)
 
     def resolve_model(self) -> str:
-        """Resolve the effective model name.
-
-        Priority: LLM_MODEL > provider-specific field (QWEN_MODEL / GROK_MODEL)
-        """
-        if self.LLM_MODEL:
-            return self.LLM_MODEL
-        provider = self.LLM_PROVIDER.lower()
-        if provider in ("grok", "xai"):
-            return self.GROK_MODEL
+        """Resolve the effective model name."""
         return self.QWEN_MODEL
 
     def create_provider(self):
@@ -158,77 +137,32 @@ class AgentConfig(BaseSettings):
         config_logger.info(f"Getting LLM provider for model={model}")
         return get_llm(model)
 
-    def get_llm_config(self) -> dict:
-        """Backward-compat wrapper. New code should use create_provider()."""
-        provider = self.LLM_PROVIDER.lower()
-        model = self.resolve_model()
-
-        from core.llm.registry import resolve_provider
-        base_url, api_key, _ = resolve_provider(provider)
-
-        return {
-            "model": model,
-            "api_key": api_key,
-            "base_url": base_url,
-            "provider": provider,
-        }
-    
     # Agent Settings
     AGENT_WORKERS: int = Field(default_factory=lambda: int(get_config_value("AGENT_WORKERS", 2)))
-    AGENT_LOG_CONVERSATIONS: bool = Field(default_factory=lambda: get_bool_config_value("AGENT_LOG_CONVERSATIONS", True))
     ENABLE_INTERRUPTIONS: bool = Field(default_factory=lambda: get_bool_config_value("ENABLE_INTERRUPTIONS", True))
-    SILENCE_THRESHOLD: float = Field(default_factory=lambda: float(get_config_value("SILENCE_THRESHOLD", 30.0)))
+    AGENT_MAX_STEPS: int = Field(default_factory=lambda: int(get_config_value("AGENT_MAX_STEPS", 5)))
 
-    # Context Module — compression / extraction tuning
-    CONTEXT_HOT_WINDOW_SIZE: int = Field(default_factory=lambda: int(get_config_value("CONTEXT_HOT_WINDOW_SIZE", 500)))
+    # Context Module  -  compression / extraction tuning
     CONTEXT_TOKEN_BUDGET_CAP: int = Field(default_factory=lambda: int(get_config_value("CONTEXT_TOKEN_BUDGET_CAP", 200_000)))
     CONTEXT_ROAST_COMPRESSION_RATIO: float = Field(default_factory=lambda: float(get_config_value("CONTEXT_ROAST_COMPRESSION_RATIO", 0.05)))
     CONTEXT_ROAST_COMPRESSION_MIN_TOKENS: int = Field(default_factory=lambda: int(get_config_value("CONTEXT_ROAST_COMPRESSION_MIN_TOKENS", 1000)))
-    AGENT_MAX_STEPS: int = Field(default_factory=lambda: int(get_config_value("AGENT_MAX_STEPS", 5)))
-    CONTEXT_MAX_TURNS: int = Field(default_factory=lambda: int(get_config_value("CONTEXT_MAX_TURNS", 400)))
+    CONTEXT_MAX_TURNS: int = Field(default_factory=lambda: int(get_config_value("CONTEXT_MAX_TURNS", 100)))
     CONTEXT_L3_COMPRESS_MAX_WORDS: int = Field(default_factory=lambda: int(get_config_value("CONTEXT_L3_COMPRESS_MAX_WORDS", 5000)))
     CONTEXT_L3_MERGE_MAX_WORDS: int = Field(default_factory=lambda: int(get_config_value("CONTEXT_L3_MERGE_MAX_WORDS", 8000)))
     CONTEXT_L4_ROAST_MAX_WORDS: int = Field(default_factory=lambda: int(get_config_value("CONTEXT_L4_ROAST_MAX_WORDS", 5000)))
     CONTEXT_L2_PROFILE_MAX_WORDS: int = Field(default_factory=lambda: int(get_config_value("CONTEXT_L2_PROFILE_MAX_WORDS", 1500)))
-    
-    # Welcome Greeting
-    ENABLE_WELCOME_GREETING: bool = Field(default_factory=lambda: get_bool_config_value("ENABLE_WELCOME_GREETING", True))
-    WELCOME_GREETING: str = Field(default_factory=lambda: get_config_value("WELCOME_GREETING", "Hello! It's Trump here. I'm the best AI assistant you'll ever talk to, believe me. What can I do for you today?"))
-    
+
+    @property
+    def CONTEXT_HOT_WINDOW_SIZE(self) -> int:
+        """Redis turn storage = max turns + 50 buffer. Not a separate config knob."""
+        return self.CONTEXT_MAX_TURNS + 50
+
     # Advanced Agent Features
     ENABLE_PREEMPTIVE_SYNTHESIS: bool = Field(default_factory=lambda: get_bool_config_value("ENABLE_PREEMPTIVE_SYNTHESIS", True))
-    ENABLE_TURN_DETECTOR: bool = Field(default_factory=lambda: get_bool_config_value("ENABLE_TURN_DETECTOR", True))
-    ENABLE_FILLER_WORDS: bool = Field(default_factory=lambda: get_bool_config_value("ENABLE_FILLER_WORDS", False))
     ENABLE_POLICY_SEARCH: bool = Field(default_factory=lambda: get_bool_config_value("ENABLE_POLICY_SEARCH", False))
-    FORCE_POLICY_SEARCH: bool = Field(default_factory=lambda: get_bool_config_value("FORCE_POLICY_SEARCH", False))
-    
+
     # Policy Search Backend: "built_in" (default) or "perplexity"
     POLICY_SEARCH_BACKEND: str = Field(default_factory=lambda: get_config_value("POLICY_SEARCH_BACKEND", "built_in"))
-    
-    # Perplexity Search Configuration (only used when POLICY_SEARCH_BACKEND = "perplexity")
-    PERPLEXITY_SEARCH_MODEL: str = Field(default_factory=lambda: get_config_value("PERPLEXITY_SEARCH_MODEL", "sonar-pro"))
-    PERPLEXITY_SEARCH_BASE_URL: str = Field(default_factory=lambda: get_config_value("PERPLEXITY_SEARCH_BASE_URL", "https://api.perplexity.ai"))
-    
-    # Agent Mode: 1 = Default, 2 = Interrupt Mode, 3 = Group Discussion Mode
-    AGENT_MODE: int = Field(default_factory=lambda: int(get_config_value("AGENT_MODE", 1)))
-    INTERRUPT_INTERVAL_SECONDS: float = Field(default_factory=lambda: float(get_config_value("INTERRUPT_INTERVAL_SECONDS", 30.0)))
-    GROUP_MODE_SILENCE_CHECK_SECONDS: float = Field(default_factory=lambda: float(get_config_value("GROUP_MODE_SILENCE_CHECK_SECONDS", 10.0)))
-    
-    # Mode 3 Response Gating
-    GROUP_RESPONSE_COOLDOWN_SECONDS: float = Field(default_factory=lambda: float(get_config_value("GROUP_RESPONSE_COOLDOWN_SECONDS", 15.0)))
-    GROUP_MIN_TURNS_BEFORE_RESPONSE: int = Field(default_factory=lambda: int(get_config_value("GROUP_MIN_TURNS_BEFORE_RESPONSE", 4)))
-    GROUP_RAPID_EXCHANGE_THRESHOLD: float = Field(default_factory=lambda: float(get_config_value("GROUP_RAPID_EXCHANGE_THRESHOLD", 3.0)))
-    GROUP_MIN_ENDPOINTING_DELAY: float = Field(default_factory=lambda: float(get_config_value("GROUP_MIN_ENDPOINTING_DELAY", 1.5)))
-    GROUP_MAX_ENDPOINTING_DELAY: float = Field(default_factory=lambda: float(get_config_value("GROUP_MAX_ENDPOINTING_DELAY", 5.0)))
-    
-    # Smart Response Settings (Phase 4)
-    ENABLE_SMART_RESPONSE: bool = Field(default_factory=lambda: get_bool_config_value("ENABLE_SMART_RESPONSE", False))
-    GROUP_RESPONSE_SILENCE_THRESHOLD: float = Field(default_factory=lambda: float(get_config_value("GROUP_RESPONSE_SILENCE_THRESHOLD", 3.0)))
-    DIRECT_ADDRESS_KEYWORDS: str = Field(default_factory=lambda: get_config_value("DIRECT_ADDRESS_KEYWORDS", "Trump,president,Donald,you,what do you think"))
-    
-    # Advanced Settings (Phase 5)
-    ENGAGEMENT_THRESHOLD: float = Field(default_factory=lambda: float(get_config_value("ENGAGEMENT_THRESHOLD", 0.7)))
-    DEBATE_MODE_SILENCE_MULTIPLIER: float = Field(default_factory=lambda: float(get_config_value("DEBATE_MODE_SILENCE_MULTIPLIER", 1.5)))
     
     # Logging
     LOG_LEVEL: str = Field(default_factory=lambda: get_config_value("LOG_LEVEL", "INFO"))
@@ -242,48 +176,52 @@ class AgentConfig(BaseSettings):
         # Environment variables can override any setting.
 
 
-# ── AI Personality ───────────────────────────────────────────────────
-# Migrated to personas/ package. These re-exports preserve backward compatibility
-# during phased migration. New code should use PersonaRegistry.get("trump").
-
-from personas.trump import TRUMP_PERSONALITY_PROMPT
-from personas import GROUP_DISCUSSION_PROMPT
-
-AI_PERSONALITY = TRUMP_PERSONALITY_PROMPT.format(today=date.today().isoformat())
-
-
-def get_personality_prompt(provider: str = "qwen") -> str:
-    """Get personality prompt with provider-specific additions.
-
-    During migration, delegates to TrumpPersona. New code should use
-    Persona.get_full_prompt(provider) instead.
-    """
-    from personas import get_persona
-    persona = get_persona("trump")
-    return persona.get_full_prompt(provider)
+_config_cache: AgentConfig | None = None
 
 
 def get_config() -> AgentConfig:
-    """
-    Get agent configuration
+    """Get agent configuration (singleton, cached after first call).
 
     Configuration is loaded from environment variables, then flat .config TOML.
     """
+    global _config_cache
+    if _config_cache is not None:
+        return _config_cache
+
     config_logger.info("=" * 70)
-    config_logger.info(f"Loading Agent Configuration")
+    config_logger.info("Loading Agent Configuration")
     config_logger.info("Config sources: environment, then .config")
     config_logger.info("=" * 70)
 
-    config = AgentConfig()
+    _config_cache = AgentConfig()
+    _log_config_summary(_config_cache)
+    return _config_cache
 
-    # Log the actual model being used and its source
-    file_grok = CONFIG_FILE_DATA.get("GROK_MODEL")
-    if os.getenv("GROK_MODEL"):
-        config_logger.info(f"GROK_MODEL: {config.GROK_MODEL} (from environment)")
-    elif file_grok:
-        config_logger.info(f"GROK_MODEL: {config.GROK_MODEL} (from .config file)")
-    else:
-        config_logger.info(f"GROK_MODEL: {config.GROK_MODEL} (using default)")
 
-    return config
+def _log_config_summary(cfg: AgentConfig) -> None:
+    """Print all config values at INFO level once after loading."""
+    fields = [
+        ("LIVEKIT_URL", cfg.LIVEKIT_URL),
+        ("STT_PROVIDER", cfg.STT_PROVIDER),
+        ("DEEPGRAM", f"model={cfg.DEEPGRAM_STT_MODEL} lang={cfg.DEEPGRAM_STT_LANGUAGE} rate={cfg.DEEPGRAM_STT_SAMPLE_RATE} diarization={cfg.DEEPGRAM_ENABLE_DIARIZATION}"),
+        ("CARTESIA_STT", f"model={cfg.CARTESIA_STT_MODEL} lang={cfg.CARTESIA_STT_LANGUAGE} encoding={cfg.CARTESIA_STT_ENCODING} rate={cfg.CARTESIA_STT_SAMPLE_RATE}"),
+        ("CARTESIA_TTS", f"model={cfg.CARTESIA_TTS_MODEL} voice={cfg.CARTESIA_TTS_VOICE} lang={cfg.CARTESIA_TTS_LANGUAGE} speed={cfg.CARTESIA_TTS_SPEED} emotion={cfg.CARTESIA_TTS_EMOTION} volume={cfg.CARTESIA_TTS_VOLUME}"),
+        ("QWEN_MODEL", cfg.QWEN_MODEL),
+        ("LLM_TEMPERATURE", cfg.LLM_TEMPERATURE),
+        ("LLM_MAX_TOKENS", cfg.LLM_MAX_TOKENS),
+        ("AGENT_WORKERS", cfg.AGENT_WORKERS),
+        ("AGENT_MAX_STEPS", cfg.AGENT_MAX_STEPS),
+        ("ENABLE_INTERRUPTIONS", cfg.ENABLE_INTERRUPTIONS),
+        ("ENABLE_PREEMPTIVE_SYNTHESIS", cfg.ENABLE_PREEMPTIVE_SYNTHESIS),
+        ("ENABLE_POLICY_SEARCH", cfg.ENABLE_POLICY_SEARCH),
+        ("POLICY_SEARCH_BACKEND", cfg.POLICY_SEARCH_BACKEND),
+        ("CONTEXT_HOT_WINDOW_SIZE", cfg.CONTEXT_HOT_WINDOW_SIZE),
+        ("CONTEXT_TOKEN_BUDGET_CAP", cfg.CONTEXT_TOKEN_BUDGET_CAP),
+        ("CONTEXT_MAX_TURNS", cfg.CONTEXT_MAX_TURNS),
+        ("LOG_LEVEL", cfg.LOG_LEVEL),
+        ("LOG_TO_FILE", cfg.LOG_TO_FILE),
+    ]
+    for name, value in fields:
+        config_logger.info(f"  {name}: {value}")
+    config_logger.info("=" * 70)
 

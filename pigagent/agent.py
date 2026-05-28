@@ -1,0 +1,376 @@
+"""PigAgent  -  pigugu voice agent: LLM orchestration, context, tools, roast.
+
+Owns all content-level logic (system prompt, context assembly, tool execution,
+game mode triggers). The voice bridge (lk.bridge) handles the LiveKit
+pipeline adaptation  -  PigAgent itself has zero LiveKit dependency.
+
+Public API:
+    agent.generate_reply(user_id, user_text, persona_id)   -  high-level entry
+    agent.stream(messages, persona_id)                     -  low-level ReAct loop
+    agent.start_roast(user_id, persona_id, roast_id, mode_id)  -  begin roast game
+"""
+
+from __future__ import annotations
+
+import asyncio
+from collections.abc import AsyncIterator
+from typing import Any
+
+from loguru import logger
+from metrics.turn import TelemetryCollector
+
+from core.llm.types import Message
+from core.agent.runner import AgentRunner, RunnerConfig
+from core.agent.stop import no_tool_calls
+from context.manager import ContextManager
+from roast.pending import consume
+from roast.state import RoastState
+from roast.types import Mode
+
+_ROAST_USER_TAG = "[System  -  Game Background]"
+_ROAST_TRIGGER_TAG = "[System]"
+
+
+class PigAgent:
+    """Pigugu agent  -  all LLM/content logic. Zero LiveKit dependency."""
+
+    def __init__(
+        self,
+        ctx: ContextManager | None = None,
+        *,
+        redis,
+        pg_pool,
+        model: str = "qwen-plus-us",
+        prompts: dict[int, str] | None = None,
+        game_modes: dict[str, Any] | None = None,
+        tools: list | None = None,
+        tool_handlers: dict | None = None,
+        temperature: float = 0.6,
+        max_tokens: int | None = None,
+        max_iterations: int = 5,
+        tool_timeout: float = 60.0,
+    ):
+        self.ctx = ctx
+        self._redis = redis
+        self._pg_pool = pg_pool
+        self._prompts: dict[int, str] = prompts or {}
+        self._game_modes: dict[str, Any] = game_modes or {}
+
+        if tools is None:
+            default_registry = self._create_default_tools()
+            tools = default_registry.tools
+            tool_handlers = default_registry.tool_handlers
+
+        runner_config = RunnerConfig(
+            model=model,
+            tools=tools or [],
+            tool_handlers=tool_handlers or {},
+            tool_timeout=tool_timeout,
+            max_steps=max_iterations,
+            stop_when=[no_tool_calls],
+            temperature=temperature,
+            max_tokens=max_tokens,
+        )
+        self._model = model
+        self.runner = AgentRunner(runner_config)
+
+    @staticmethod
+    def _create_default_tools():
+        """Create the default tool set: web_search + volume_control."""
+        from tools import create_web_search_tool, volume_tool
+        from tools.search import TavilyProvider
+        from core.agent import ToolRegistry
+        registry = ToolRegistry()
+        registry.register(create_web_search_tool(TavilyProvider()))
+        registry.register(volume_tool)
+        return registry
+
+    @property
+    def model(self) -> str:
+        return self._model
+
+    # ── High-level entry point (called by bridge) ─────────────────────
+
+    async def generate_reply(
+        self,
+        user_id: str,
+        user_text: str,
+        *,
+        persona_id: int = 1,
+        interrupt_event: asyncio.Event | None = None,
+    ) -> AsyncIterator[str]:
+        """Complete reply pipeline: load context  ->  assemble  ->  stream  ->  persist.
+
+        The single entry point for the voice bridge. Handles:
+        - Context loading from Redis/PG
+        - System prompt injection
+        - Roast game routing (consume pending, inject body, tick)
+        - Turn persistence after stream completes
+        """
+        if not user_text.strip():
+            return
+
+        # 1. Build new user message
+        new_msg = Message.user(user_text.strip())
+
+        # 2. Load context from Redis/PG
+        messages: list[Message] = []
+        if self.ctx and user_id:
+            try:
+                messages = await self.ctx.load(user_id=user_id)
+            except Exception as e:
+                logger.warning(f"[PigAgent] load context failed: {e}")
+
+        messages.append(new_msg)
+
+        # 3. Prepend system prompt
+        prompt = self._prompts.get(persona_id, "")
+        if prompt:
+            messages.insert(0, Message.system(prompt))
+
+        # 4. Check roast routing
+        roast_state = await self.get_active_roast(user_id)
+        game_mode = None
+        if roast_state:
+            mode_id = str(roast_state.mode) if hasattr(roast_state, "mode") else ""
+            game_mode = self._game_modes.get(mode_id)
+
+        TelemetryCollector.mark("ctx_done")
+
+        # 5. Persist user message before streaming — so it's in context even if interrupted
+        if self.ctx and user_id:
+            await self._persist_turns(user_id, [new_msg])
+
+        # 6. Stream and collect response
+        response_chunks: list[str] = []
+        logger.info(
+            f"[PigAgent] generate_reply user={user_id} persona={persona_id} "
+            f"roast={roast_state is not None} msgs={len(messages)}"
+        )
+
+        first_yield = True
+        pre_stream_count = len(messages)  # messages added after this = runner output
+
+        TelemetryCollector.mark("llm_req")
+        if roast_state and game_mode:
+            async for text in self._stream_roast(
+                messages, roast_state, game_mode,
+                interrupt_event=interrupt_event,
+            ):
+                if first_yield:
+                    TelemetryCollector.mark("llm_internal")
+                    first_yield = False
+                response_chunks.append(text)
+                yield text
+        else:
+            async for text in self.runner.stream(messages, interrupt_event=interrupt_event):
+                if first_yield:
+                    TelemetryCollector.mark("llm_internal")
+                    first_yield = False
+                response_chunks.append(text)
+                yield text
+
+        TelemetryCollector.mark("llm_end")
+        logger.info(
+            f"[PigAgent] Reply complete: {self.runner.last_step_count} steps, "
+            f"status={self.runner.last_status}"
+        )
+
+        # 7. Persist runner-added messages (assistant, tool calls). User message was persisted before stream.
+        if self.ctx and user_id:
+            runner_msgs = self.runner.last_messages[pre_stream_count:] if self.runner.last_messages else []
+            if runner_msgs:
+                turn_no = await self._persist_turns(user_id, runner_msgs)
+                if turn_no:
+                    TelemetryCollector.set_meta("turn_number", turn_no)
+
+    # ── Low-level stream (no side effects, used by tests) ──────────────
+
+    async def stream(
+        self,
+        messages: list[Message],
+        *,
+        persona_id: int = 1,
+        search: dict | None = None,
+        interrupt_event: asyncio.Event | None = None,
+    ) -> AsyncIterator[str]:
+        """Low-level ReAct loop. No context loading, no persistence."""
+        prompt = self._prompts.get(persona_id, "")
+        if prompt:
+            messages = [Message.system(prompt)] + messages
+
+        async for text in self.runner.stream(
+            messages, search=search, interrupt_event=interrupt_event,
+        ):
+            yield text
+
+    # ── Roast ──────────────────────────────────────────────────────────
+
+    async def start_roast(
+        self,
+        user_id: str,
+        persona_id: int,
+        roast_id: str,
+        mode_id: str,
+        prompt: str,
+    ) -> AsyncIterator[str]:
+        """Start a roast game and stream the opening reply.
+
+        Called by the API service after resolving the scenario from PG.
+        Creates the roast session, persists the roast body to context,
+        then triggers generate_reply() to deliver the opening lines.
+        Yields text chunks for TTS playback.
+        """
+        game_mode = self._game_modes.get(mode_id)
+        if game_mode is None:
+            logger.error(f"[PigAgent] Unknown game mode: {mode_id}")
+            return
+
+        state = await RoastState.start(
+            user_id=user_id,
+            persona_id=persona_id,
+            roast_id=roast_id,
+            mode=Mode(mode_id),
+            extra=game_mode.init_extra() if hasattr(game_mode, "init_extra") else None,
+            redis=self._redis,
+            pg_pool=self._pg_pool,
+        )
+
+        # Persist roast body to context  -  loaded automatically on each turn
+        roast_body = self._build_roast_body(
+            game_mode=game_mode,
+            prompt=prompt,
+        )
+        if roast_body and self.ctx:
+            try:
+                await self.ctx.add_turn(
+                    user_id=user_id,
+                    role="user",
+                    content=f"{_ROAST_USER_TAG}\n{roast_body}",
+                )
+            except Exception as e:
+                logger.error(f"[PigAgent] Failed to persist roast body: {e}")
+
+        logger.info(
+            f"[PigAgent] Roast started: {state.roast_instance_id} "
+            f"roast_id={roast_id} mode={mode_id} user={user_id}"
+        )
+
+        # Trigger opening reply  -  roast body is already in context
+        async for text in self.generate_reply(
+            user_id, "Game start",
+            persona_id=persona_id,
+        ):
+            yield text
+
+    async def get_active_roast(self, user_id: str):
+        try:
+            return await RoastState._load_active(user_id, self._redis)
+        except Exception as e:
+            logger.warning(f"[PigAgent] get_active_roast failed: {e}")
+            return None
+
+    async def close_roast(self, user_id: str) -> None:
+        try:
+            state = await RoastState._load_active(user_id, self._redis)
+            if state:
+                await state.close(self._redis, self._pg_pool)
+                logger.info(f"[PigAgent] Roast closed: {state.roast_instance_id}")
+        except Exception as e:
+            logger.error(f"[PigAgent] close_roast failed: {e}")
+
+    # ── Internal ───────────────────────────────────────────────────────
+
+    async def _stream_roast(
+        self,
+        messages: list[Message],
+        roast_state,
+        game_mode,
+        *,
+        interrupt_event: asyncio.Event | None = None,
+    ) -> AsyncIterator[str]:
+        """Roast pipeline: consume pending  ->  stream  ->  tick.
+
+        Roast body (news + game rules) was already persisted to context
+        by start_roast()  -  it loads via ctx.load() in generate_reply().
+        """
+        # 1. Consume pending trigger prompt
+        try:
+            pending_prompt = await consume(roast_state.roast_instance_id, self._redis)
+            if pending_prompt:
+                messages.append(Message.user(
+                    f"{_ROAST_TRIGGER_TAG}\n{pending_prompt}"
+                ))
+        except Exception as e:
+            logger.warning(f"[PigAgent] consume_pending failed: {e}")
+
+        # 2. Stream LLM
+        async for text in self.runner.stream(messages, interrupt_event=interrupt_event):
+            yield text
+
+        # 3. Tick  -  fire-and-forget, don't block the reply
+        asyncio.create_task(self._tick_roast(roast_state, game_mode, messages))
+
+    async def _tick_roast(self, roast_state, game_mode, messages) -> None:
+        """Background: advance state, check triggers, persist."""
+        try:
+            triggered = await game_mode.tick(
+                roast_state, records=messages,
+                redis=self._redis, pg_pool=self._pg_pool,
+            )
+            if triggered:
+                logger.info(f"[PigAgent] Trigger fired: {triggered[:80]}...")
+        except Exception as e:
+            logger.error(f"[PigAgent] tick failed: {e}")
+
+    async def _persist_turns(
+        self, user_id: str, messages: list[Message],
+    ) -> int:
+        """Persist all new messages (user, assistant, tool) to Redis/PG.
+
+        Returns the first turn number, or 0 if nothing was persisted.
+        System messages are skipped — they are injected, not conversation turns.
+        """
+        if not messages:
+            return 0
+        ctx = self._require_ctx()
+        first_turn = 0
+        try:
+            for msg in messages:
+                if msg.role == "system":
+                    continue
+                tool_calls_raw = None
+                if msg.tool_calls:
+                    tool_calls_raw = [
+                        {"id": tc.id, "name": tc.name, "arguments": tc.arguments}
+                        for tc in msg.tool_calls
+                    ]
+                turn_no = await ctx.add_turn(
+                    user_id=user_id,
+                    role=msg.role,
+                    content=msg.content or "",
+                    tool_calls=tool_calls_raw,
+                    tool_call_id=msg.tool_call_id,
+                    name=msg.name,
+                    partial=msg.partial,
+                )
+                if not first_turn:
+                    first_turn = turn_no
+            return first_turn
+        except Exception as e:
+            logger.error(f"[PigAgent] persist_turns failed: {e}")
+            return 0
+
+    def _build_roast_body(self, *, game_mode, prompt: str = "") -> str:
+        parts: list[str] = []
+        if prompt.strip():
+            parts.append(f"## News Context\n{prompt.strip()}")
+        ext = getattr(game_mode, "system_prompt_extension", "")
+        if ext:
+            parts.append(f"## Game Mode\n{ext}")
+        return "\n\n".join(parts)
+
+    def _require_ctx(self) -> ContextManager:
+        if self.ctx is None:
+            raise RuntimeError("PigAgent created without ContextManager")
+        return self.ctx

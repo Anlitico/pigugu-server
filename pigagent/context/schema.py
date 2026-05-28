@@ -1,10 +1,10 @@
 ﻿# pigagent/context/schema.py
 """Core data structures for the 4-layer agent context architecture.
 
-Layer 1 — System Prompt (injected by PigAgent, not stored in context)
-Layer 2 — User Preference (~1-2K, prefix-cached)
-Layer 3 — Session Context (dynamic: raw turns + summaries)
-Layer 4 — Active Roast (transient: prompt → summary → raw turns)
+Layer 1  -  System Prompt (injected by PigAgent, not stored in context)
+Layer 2  -  User Preference (~1-2K, prefix-cached)
+Layer 3  -  Session Context (dynamic: raw turns + summaries)
+Layer 4  -  Active Roast (transient: prompt  ->  summary  ->  raw turns)
 
 Token Budget: 200K cap, dynamically allocated at assembly time.
 """
@@ -21,9 +21,9 @@ from core.agent.sanitize import _len_fallback, validate_tool_calls
 
 @dataclass
 class ConversationRecord:
-    """A stored turn — Redis/PG intermediate between Message and AgentConversation.
+    """A stored turn  -  Redis/PG intermediate between Message and AgentConversation.
 
-    turn_number is the global counter. roast_id is embedded in the data
+    turn_number is the global counter. roast_instance_id is embedded in the data
     so assembly can determine boundaries without reading meta.
     """
 
@@ -31,7 +31,7 @@ class ConversationRecord:
     role: str
     content: str
     created_at: float                       # time.time() when recorded
-    roast_id: str | None = None            # None = free chat, str = in this roast
+    roast_instance_id: str | None = None            # None = free chat, str = in this roast
     tool_calls: list | None = None         # [{"id":..., "name":..., "arguments":...}]
     tool_call_id: str | None = None
     name: str | None = None
@@ -52,8 +52,8 @@ class ConversationRecord:
     def to_dict(self) -> dict:
         import json
         d = {"turn": self.turn_number, "role": self.role, "content": self.content}
-        if self.roast_id:
-            d["roast_id"] = self.roast_id
+        if self.roast_instance_id:
+            d["roast_instance_id"] = self.roast_instance_id
         if self.tool_calls:
             d["tool_calls"] = json.dumps(self.tool_calls, ensure_ascii=False)
         if self.tool_call_id:
@@ -76,7 +76,7 @@ class ConversationRecord:
             turn_number=d["turn"],
             role=d["role"],
             content=d["content"],
-            roast_id=d.get("roast_id"),
+            roast_instance_id=d.get("roast_instance_id"),
             created_at=d.get("ts", 0.0),
             tool_calls=tcs,
             tool_call_id=d.get("tool_call_id"),
@@ -89,7 +89,7 @@ class ConversationRecord:
 class SummaryRecord:
     """A stored summary with embedded position info.
 
-    end_turn anchors the summary to the turn timeline — all turns ≤ end_turn
+    end_turn anchors the summary to the turn timeline  -  all turns ≤ end_turn
     are covered by this summary.
     """
 
@@ -108,6 +108,24 @@ class SummaryRecord:
             return cls(text=data["text"], end_turn=data.get("end_turn", 0))
         except Exception:
             return cls(text=raw)
+
+
+@dataclass
+class SummaryRow:
+    """One PG row per compression run — all three context layers in a single row.
+
+    PK is (user_id, end_turn). Latest query: ORDER BY end_turn DESC LIMIT 1.
+    """
+
+    user_id: str
+    end_turn: int
+    l2_profile: str = ""
+    l3_session: str = ""
+    l4_roast: str = ""
+    roast_id: str = ""
+    roast_prompt: str = ""
+    roast_prompt_turn: int = 0
+    model_used: str = ""
 
 
 @dataclass
@@ -178,17 +196,18 @@ class UserMemory:
 
 @dataclass
 class RoastContext:
-    """Active roast data. Loaded when the latest record has an active roast_id.
+    """Active roast data. Loaded when the latest record has an active roast_instance_id.
 
-    4a — prompt: RAW game rules, preserved verbatim by L4 compression (never passed to LLM).
-    4b — summary: L4-compressed gameplay history.
+    4a  -  prompt: RAW game rules, preserved verbatim by L4 compression (never passed to LLM).
+    4b  -  summary: L4-compressed gameplay history.
 
-    Roast lifecycle is data-driven: active while records carry roast_id,
-    ends via 24h staleness or new roast_id. No explicit cleanup needed.
+    Roast lifecycle is data-driven: active while records carry roast_instance_id,
+    ends via 24h staleness or new roast_instance_id. No explicit cleanup needed.
     """
 
-    roast_id: str
+    roast_instance_id: str
     prompt: str = ""
+    prompt_turn: int = 0
     turns: list = field(default_factory=list)
     summary: str = ""
     prompt_tokens: int = 0
@@ -201,11 +220,11 @@ class RoastContext:
 
     @property
     def is_active(self) -> bool:
-        return bool(self.roast_id)
+        return bool(self.roast_instance_id)
 
     def to_meta(self) -> dict:
         return {
-            "roast_id": self.roast_id,
+            "roast_instance_id": self.roast_instance_id,
             "prompt_tokens": self.prompt_tokens,
             "turns_tokens": self.turns_tokens,
             "summary_tokens": self.summary_tokens,
@@ -217,24 +236,25 @@ class RoastContext:
 class WorkingContext:
     """Per-user LLM-visible context. Hot-path assembled from Redis < 5ms.
 
-    L3 — single recursive summary (anchor via SummaryRecord.end_turn)
-    L4 — roast context (only if active roast)
-    L2 — user memory profile
+    L3  -  single recursive summary (anchor via SummaryRecord.end_turn)
+    L4  -  roast context (only if active roast)
+    L2  -  user memory profile
     """
 
     user_id: str
 
-    # L3 — Session
-    raw_turns: list = field(default_factory=list)
+    # L3  -  Session
+    raw_turns: list = field(default_factory=list)    # list[Message] — for LLM
+    raw_records: list = field(default_factory=list)  # list[ConversationRecord] — for compression
     summary: str = ""                # recursive conversation summary
     summary_end_turn: int = 0        # anchor: all turns ≤ this are covered
     game_state: dict = field(default_factory=dict)
     meta: dict = field(default_factory=dict)
 
-    # L4 — Active Roast
+    # L4  -  Active Roast
     roast: RoastContext | None = None
 
-    # L2 — User Memory
+    # L2  -  User Memory
     user_memory: UserMemory | None = None
 
     # Budget
@@ -243,7 +263,7 @@ class WorkingContext:
     def to_messages(self, *, token_counter=None) -> list:
         """Assemble context messages: L2 profile + L3 summary + L4 roast + raw turns.
 
-        L1 (system prompt) is NOT included — the caller (PigAgent) injects it.
+        L1 (system prompt) is NOT included  -  the caller (PigAgent) injects it.
         """
         from core.llm.types import Message
 
@@ -259,11 +279,13 @@ class WorkingContext:
             result.append(Message.system(f"[Conversation history]\n{self.summary}"))
             budget.layer_3_session = tc(self.summary)
 
+        if self.roast and self.roast.prompt:
+            result.append(Message.user(f"[Game rules]\n{self.roast.prompt}"))
+            budget.layer_4_roast_prompt = tc(self.roast.prompt)
         if self.roast and self.roast.summary:
-            result.append(Message.system(f"[Game scenario + history]\n{self.roast.summary}"))
-            budget.layer_4_roast_prompt = tc(self.roast.summary)
+            result.append(Message.user(f"[Game history]\n{self.roast.summary}"))
 
-        # raw_turns are oldest→newest (RPUSH order)
+        # raw_turns are oldest -> newest (RPUSH order)
         for turn in self.raw_turns:
             if isinstance(turn, ConversationRecord):
                 result.append(turn.to_message())
@@ -271,6 +293,52 @@ class WorkingContext:
                 result.append(turn)
 
         return validate_tool_calls(result)
+
+    def to_records(self) -> list:
+        """Flatten all context layers into a unified ConversationRecord list.
+
+        Virtual turn numbers: L2=-3, L3=-2, L4=-1.
+        Real turn numbers from raw_records and roast prompt_turn.
+        This list is the single input for compression — no heterogeneous queries.
+        """
+        records = []
+
+        # L2 (virtual)
+        if self.user_memory and self.user_memory.profile_summary:
+            records.append(ConversationRecord(
+                turn_number=-3, role="system",
+                content=f"[User profile]\n{self.user_memory.profile_summary}",
+                created_at=0,
+            ))
+
+        # L3 (virtual)
+        if self.summary:
+            records.append(ConversationRecord(
+                turn_number=-2, role="system",
+                content=f"[Conversation history]\n{self.summary}",
+                created_at=0,
+            ))
+
+        # Roast prompt (real turn_number)
+        if self.roast and self.roast.prompt and self.roast.prompt_turn > 0:
+            records.append(ConversationRecord(
+                turn_number=self.roast.prompt_turn, role="user",
+                content=self.roast.prompt, created_at=0,
+                roast_instance_id=self.roast.roast_instance_id,
+            ))
+
+        # L4 (virtual)
+        if self.roast and self.roast.summary:
+            records.append(ConversationRecord(
+                turn_number=-1, role="user",
+                content=f"[Game history]\n{self.roast.summary}",
+                created_at=0,
+            ))
+
+        # Raw turns (real)
+        records.extend(self.raw_records)
+
+        return records
 
     def budget_summary(self) -> dict:
         return {
