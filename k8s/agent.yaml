@@ -80,3 +80,13 @@ spec:
             secretKeyRef:
               name: pigugu-secrets
               key: OPENROUTER_API_KEY
+        - name: ARK_API_KEY
+          valueFrom:
+            secretKeyRef:
+              name: pigugu-secrets
+              key: ARK_API_KEY
+        - name: TAVILY_API_KEY
+          valueFrom:
+            secretKeyRef:
+              name: pigugu-secrets
+              key: TAVILY_API_KEY
