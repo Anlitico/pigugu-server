@@ -2,7 +2,6 @@
 localDocs/
 temp/
 CLAUDE.md
-.claude/
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
@@ -227,7 +226,6 @@ firebase-credentials.json
 htmlcov/
 tests/.pytest_cache/
 temp/
-.claude/
 
 # Project tooling (machine-specific, not for version control)
 pyrightconfig.json
