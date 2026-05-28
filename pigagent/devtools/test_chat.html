@@ -93,7 +93,20 @@ footer .mic-indicator.active { background: #e94560; box-shadow: 0 0 8px #e94560;
 
 <script src="https://cdn.jsdelivr.net/npm/livekit-client@2/dist/livekit-client.umd.min.js"></script>
 <script>
-var room = null, stream = null, vuTimer = null;
+var room = null, stream = null, vuTimer = null, sdkReady = false;
+
+// Wait for SDK to load
+document.getElementById('btn-connect').disabled = true;
+document.getElementById('btn-connect').textContent = 'Loading SDK...';
+var sdkCheck = setInterval(function() {
+  if (typeof LivekitClient !== 'undefined') {
+    clearInterval(sdkCheck);
+    sdkReady = true;
+    document.getElementById('btn-connect').disabled = false;
+    document.getElementById('btn-connect').textContent = 'Connect';
+    addMsg('system', 'SDK loaded');
+  }
+}, 200);
 
 // Restore saved identity from localStorage
 (function() {
@@ -152,6 +165,10 @@ async function getToken(roomName, identity) {
 }
 
 async function connect() {
+  if (!sdkReady) {
+    addMsg('system', 'SDK not loaded yet, wait a moment...', 'error');
+    return;
+  }
   var identity = document.getElementById('identity').value.trim();
   if (!identity || identity.length < 8) {
     addMsg('system', 'Identity must be at least 8 characters', 'error');
@@ -212,6 +229,15 @@ async function connect() {
     });
 
     await room.connect(d.url, d.token, { autoSubscribe: true, adaptiveStream: false });
+
+    // Dispatch agent to this room
+    try {
+      await fetch('/dispatch', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ room: roomName })
+      });
+    } catch (e) { addMsg('system', 'Dispatch error: ' + e.message, 'error'); }
 
     // Start mic
     await startMic();
