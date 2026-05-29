@@ -28,13 +28,6 @@ class TestResolveGameMode:
         assert str(mode.mode) == "roast_together"
 
 
-class TestFormatRoastMessage:
-    def test_wraps_with_system_tag(self):
-        from roast.activate import format_roast_message
-        msg = format_roast_message("body content")
-        assert msg == "[System  -  Game Background]\nbody content"
-
-
 class TestBuildRoastBody:
     def test_prompt_only(self):
         from roast.activate import _build_roast_body

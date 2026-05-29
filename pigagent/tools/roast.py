@@ -117,7 +117,7 @@ def create_start_roast_tool(
     _connect = connect or asyncpg.connect
 
     async def _handler(args: dict) -> dict[str, Any]:
-        from roast.activate import activate_roast, format_roast_message
+        from roast.activate import activate_roast
 
         roast_id = args["roast_id"]
         user_id = _current_user_id.get()
@@ -167,7 +167,7 @@ def create_start_roast_tool(
                 f"roast_instance_id: {instance_id}"
             ),
             "_inject": [
-                {"role": "user", "content": format_roast_message(body)},
+                {"role": "system", "content": body},
             ],
         }
 
