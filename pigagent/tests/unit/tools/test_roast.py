@@ -122,7 +122,7 @@ class TestStartRoastTool:
 
     def test_parameters_require_roast_id(self):
         tool, *_ = _make_start_tool()
-        assert tool.parameters["required"] == ["roast_id"]
+        assert tool.parameters["required"] == ["user_reply", "roast_id"]
 
     @pytest.mark.asyncio
     async def test_not_found_returns_message(self):
@@ -157,8 +157,8 @@ class TestStartRoastTool:
         assert "rid-abc123" in result["message"]
         assert "_inject" in result
         assert len(result["_inject"]) == 1
-        assert result["_inject"][0]["role"] == "user"
-        assert result["_inject"][0]["content"].startswith("[System  -  Game Background]")
+        assert result["_inject"][0]["role"] == "system"
+        assert "News Context" in result["_inject"][0]["content"]
 
     @pytest.mark.asyncio
     async def test_activate_failure_returns_error(self):

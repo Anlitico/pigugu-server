@@ -14,6 +14,8 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import AsyncIterator
+from datetime import datetime
+from zoneinfo import ZoneInfo
 from typing import Any
 
 from loguru import logger
@@ -26,8 +28,6 @@ from context.manager import ContextManager
 from roast.pending import consume
 from roast.state import RoastState
 from tools.roast import _current_user_id, _current_persona_id
-
-_ROAST_TRIGGER_TAG = "[System]"
 
 
 class PigAgent:
@@ -196,6 +196,23 @@ class PigAgent:
                 if turn_no:
                     TelemetryCollector.set_meta("turn_number", turn_no)
 
+    # ── Session ────────────────────────────────────────────────────────
+
+    def build_session_info(self) -> str:
+        """Build a one-time system message injected at conversation start."""
+        now = datetime.now(ZoneInfo("America/Los_Angeles")).strftime("%Y-%m-%d %H:%M:%S %Z")
+        return f"[Session Start]\nCurrent time: {now}"
+
+    async def seed_session_info(self, user_id: str) -> None:
+        """Persist session-info system message at the start of a new conversation."""
+        if not self.ctx or not user_id:
+            return
+        msg = self.build_session_info()
+        try:
+            await self.ctx.add_turn(user_id=user_id, role="system", content=msg)
+        except Exception as e:
+            logger.warning(f"[PigAgent] Failed to seed session info: {e}")
+
     # ── Low-level stream (no side effects, used by tests) ──────────────
 
     async def stream(
@@ -233,7 +250,7 @@ class PigAgent:
         then triggers generate_reply() to deliver the opening lines.
         Yields text chunks for TTS playback.
         """
-        from roast.activate import activate_roast, format_roast_message
+        from roast.activate import activate_roast
 
         try:
             instance_id, body = await activate_roast(
@@ -254,8 +271,8 @@ class PigAgent:
             try:
                 await self.ctx.add_turn(
                     user_id=user_id,
-                    role="user",
-                    content=format_roast_message(body),
+                    role="system",
+                    content=body,
                 )
             except Exception as e:
                 logger.error(f"[PigAgent] Failed to persist roast body: {e}")
@@ -310,9 +327,7 @@ class PigAgent:
         try:
             pending_prompt = await consume(roast_state.roast_instance_id, self._redis)
             if pending_prompt:
-                messages.append(Message.user(
-                    f"{_ROAST_TRIGGER_TAG}\n{pending_prompt}"
-                ))
+                messages.append(Message.system(f"[Game Event]\n{pending_prompt}"))
         except Exception as e:
             logger.warning(f"[PigAgent] consume_pending failed: {e}")
 
@@ -342,10 +357,9 @@ class PigAgent:
     async def _persist_turns(
         self, user_id: str, messages: list[Message],
     ) -> int:
-        """Persist all new messages (user, assistant, tool) to Redis/PG.
+        """Persist all new messages to Redis/PG.
 
         Returns the first turn number, or 0 if nothing was persisted.
-        System messages are skipped — they are injected, not conversation turns.
         """
         if not messages:
             return 0
@@ -353,8 +367,6 @@ class PigAgent:
         first_turn = 0
         try:
             for msg in messages:
-                if msg.role == "system":
-                    continue
                 tool_calls_raw = None
                 if msg.tool_calls:
                     tool_calls_raw = [

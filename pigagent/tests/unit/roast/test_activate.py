@@ -28,13 +28,6 @@ class TestResolveGameMode:
         assert str(mode.mode) == "roast_together"
 
 
-class TestFormatRoastMessage:
-    def test_wraps_with_system_tag(self):
-        from roast.activate import format_roast_message
-        msg = format_roast_message("body content")
-        assert msg == "[System  -  Game Background]\nbody content"
-
-
 class TestBuildRoastBody:
     def test_prompt_only(self):
         from roast.activate import _build_roast_body
@@ -94,5 +87,6 @@ class TestActivateRoast:
             )
 
         assert instance_id == "inst-123"
+        assert body.startswith("[Game Background]")
         assert "test prompt" in body
         mock_rs.start.assert_called_once()

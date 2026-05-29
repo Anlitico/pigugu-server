@@ -18,6 +18,7 @@ class ToolCall:
     id: str
     name: str
     arguments: str  # JSON string
+    index: int = 0  # tool index in a streaming response
 
 
 @dataclass

@@ -14,8 +14,6 @@ from loguru import logger
 from roast.state import RoastState
 from roast.registry import GameModeRegistry
 
-_ROAST_USER_TAG = "[System  -  Game Background]"
-
 # Map DB game_mode values → Mode enum strings.
 # DB values come from the classifier (poison_opinion, debate, etc.)
 # and don't match the Mode enum (roast_together, debate_bicker, etc.).
@@ -78,7 +76,7 @@ async def activate_roast(
         pg_pool=pg_pool,
     )
 
-    body = _build_roast_body(game_mode_obj=mode, prompt=prompt)
+    body = f"[Game Background]\n{_build_roast_body(game_mode_obj=mode, prompt=prompt)}"
 
     logger.info(
         f"[activate_roast] Started: {state.roast_instance_id} "
@@ -86,11 +84,6 @@ async def activate_roast(
     )
 
     return state.roast_instance_id, body
-
-
-def format_roast_message(body: str) -> str:
-    """Wrap the roast body with the system tag for context insertion."""
-    return f"{_ROAST_USER_TAG}\n{body}"
 
 
 def _build_roast_body(*, game_mode_obj: Any, prompt: str = "") -> str:
