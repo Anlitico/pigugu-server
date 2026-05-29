@@ -74,7 +74,7 @@ async def run(ctx: JobContext) -> None:
     # ── Components ────────────────────────────────────────────────────
     stt, pig_agent, tts = create_agent_components(config, persona=persona)
     stt_plugin = stt.get_plugin()
-    tts_plugin = tts
+    tts_plugin = tts.get_plugin()
     vad = get_vad()
 
     logger.info(f"[DEBUG] STT: {type(stt_plugin).__name__}, TTS: {type(tts_plugin).__name__}")
@@ -100,7 +100,7 @@ async def run(ctx: JobContext) -> None:
         turn_detection="vad",
         min_endpointing_delay=config.ENDPOINTING_DELAY,
         turn_handling=TurnHandlingOptions(
-            preemptive_generation={"enabled": config.ENABLE_PREEMPTIVE_SYNTHESIS, "preemptive_tts": True},
+            preemptive_generation={"enabled": config.ENABLE_PREEMPTIVE_SYNTHESIS},
             interruption={"mode": "adaptive", "min_duration": 0.1},
         ),
     )
