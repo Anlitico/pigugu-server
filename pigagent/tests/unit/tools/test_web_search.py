@@ -29,7 +29,7 @@ class TestCreateWebSearchTool:
     def test_description_is_hand_written(self):
         tool = create_web_search_tool(FakeProvider())
         assert "Search the web" in tool.description
-        assert len(tool.description) > 50
+        assert "synthesized answers" in tool.description
 
     def test_parameters_schema(self):
         tool = create_web_search_tool(FakeProvider())
@@ -37,6 +37,7 @@ class TestCreateWebSearchTool:
         assert params["type"] == "object"
         assert "query" in params["properties"]
         assert params["properties"]["query"]["type"] == "string"
+        assert "user_reply" in params.get("required", [])
         assert "query" in params.get("required", [])
 
     def test_spec_is_tool_spec(self):

@@ -36,20 +36,22 @@ def create_web_search_tool(provider: SearchProvider) -> Tool:
     return Tool(
         name="web_search",
         description=(
-            "Search the web for current information. "
-            "Use this for questions about recent events, news, facts, or "
-            "anything that may have changed since the model's training data. "
+            "Search the web for information. "
             "Returns synthesized answers with source citations."
         ),
         parameters={
             "type": "object",
             "properties": {
+                "user_reply": {
+                    "type": "string",
+                    "description": "A brief spoken sentence before searching. Always fill this first.",
+                },
                 "query": {
                     "type": "string",
                     "description": "The search query to execute",
                 },
             },
-            "required": ["query"],
+            "required": ["user_reply", "query"],
         },
         execute=_handler,
     )

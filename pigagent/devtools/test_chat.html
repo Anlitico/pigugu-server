@@ -1,0 +1,294 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Pigugu Agent Chat Test</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body {
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  background: #1a1a2e; color: #e0e0e0; min-height: 100vh;
+  display: flex; flex-direction: column;
+}
+header {
+  background: #16213e; padding: 12px 20px;
+  display: flex; align-items: center; justify-content: space-between;
+  border-bottom: 1px solid #0f3460;
+}
+header h1 { font-size: 18px; color: #e94560; }
+.status { font-size: 13px; }
+.status.disconnected { color: #888; }
+.status.connecting { color: #fa0; }
+.status.connected { color: #0f0; }
+
+#controls {
+  background: #16213e; padding: 10px 20px;
+  display: flex; gap: 10px; align-items: center; flex-wrap: wrap;
+  border-bottom: 1px solid #0f3460;
+}
+#controls label { font-size: 12px; color: #888; }
+#controls input, #controls button {
+  padding: 6px 10px; border-radius: 4px; border: 1px solid #0f3460;
+  background: #1a1a2e; color: #e0e0e0; font-size: 13px;
+}
+#controls button {
+  background: #e94560; border: none; color: #fff; cursor: pointer; font-weight: 600;
+}
+#controls button:disabled { background: #555; cursor: not-allowed; }
+#controls button#btn-disconnect { background: #555; }
+#room-id { width: 180px; }
+
+main {
+  flex: 1; overflow-y: auto; padding: 20px; display: flex; flex-direction: column; gap: 8px;
+}
+.msg {
+  max-width: 80%; padding: 10px 14px; border-radius: 12px; font-size: 14px; line-height: 1.5;
+  word-break: break-word; animation: fadeIn 0.2s;
+}
+@keyframes fadeIn { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
+.msg.user { align-self: flex-end; background: #0f3460; color: #fff; border-bottom-right-radius: 4px; }
+.msg.agent { align-self: flex-start; background: #1e2a3a; color: #e0e0e0; border-bottom-left-radius: 4px; }
+.msg.system { align-self: center; font-size: 12px; color: #666; max-width: 100%; text-align: center; padding: 4px 10px; }
+.msg.system.error { color: #e94560; }
+.msg .label { font-size: 11px; font-weight: 600; margin-bottom: 4px; opacity: 0.7; text-transform: uppercase; }
+
+#vu-bar-outer {
+  width: 100%; height: 4px; background: #333; position: sticky; bottom: 0;
+}
+#vu-bar-inner { height: 100%; width: 0%; background: #0f0; transition: width 0.05s; }
+
+footer {
+  background: #16213e; padding: 10px 20px; border-top: 1px solid #0f3460;
+  display: flex; align-items: center; gap: 10px; font-size: 12px;
+}
+footer .mic-indicator { width: 10px; height: 10px; border-radius: 50%; background: #555; }
+footer .mic-indicator.active { background: #e94560; box-shadow: 0 0 8px #e94560; }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>Pigugu Agent Chat</h1>
+  <span id="status" class="status disconnected">DISCONNECTED</span>
+</header>
+
+<div id="controls">
+  <label>Identity (user_id)</label>
+  <input id="identity" placeholder="min 8 characters" minlength="8">
+  <button id="btn-connect" onclick="connect()">Connect</button>
+  <button id="btn-disconnect" onclick="disconnect()" disabled>Disconnect</button>
+  <span style="margin-left:auto;font-size:12px;color:#888;" id="token-source"></span>
+</div>
+
+<main id="chat"></main>
+
+<div id="vu-bar-outer"><div id="vu-bar-inner"></div></div>
+
+<footer>
+  <span class="mic-indicator" id="mic-dot"></span>
+  <span id="mic-label">Mic idle</span>
+  <span style="margin-left:auto;color:#888;" id="vol-label">Vol: --</span>
+</footer>
+
+<script src="https://cdn.jsdelivr.net/npm/livekit-client@2/dist/livekit-client.umd.min.js"></script>
+<script>
+var room = null, stream = null, vuTimer = null, sdkReady = false;
+
+// Wait for SDK to load
+document.getElementById('btn-connect').disabled = true;
+document.getElementById('btn-connect').textContent = 'Loading SDK...';
+var sdkCheck = setInterval(function() {
+  if (typeof LivekitClient !== 'undefined') {
+    clearInterval(sdkCheck);
+    sdkReady = true;
+    document.getElementById('btn-connect').disabled = false;
+    document.getElementById('btn-connect').textContent = 'Connect';
+    addMsg('system', 'SDK loaded');
+  }
+}, 200);
+
+// Restore saved identity from localStorage
+(function() {
+  var saved = localStorage.getItem('pigugu_identity');
+  if (saved) { document.getElementById('identity').value = saved; }
+})();
+
+function setStatus(s, cls) {
+  var el = document.getElementById('status');
+  el.textContent = s; el.className = 'status ' + cls;
+}
+
+function addMsg(role, text, cls) {
+  var main = document.getElementById('chat');
+  var d = document.createElement('div');
+  d.className = 'msg ' + role + (cls ? ' ' + cls : '');
+  var label = role === 'user' ? 'YOU' : role === 'agent' ? 'AGENT' : '';
+  d.innerHTML = (label ? '<div class="label">' + label + '</div>' : '') + text;
+  main.appendChild(d);
+  main.scrollTop = main.scrollHeight;
+}
+
+// Try getting token from debug_server.py first, fall back to direct LiveKit API
+async function getToken(roomName, identity) {
+  try {
+    var r = await fetch('/token', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ room: roomName, identity: identity })
+    });
+    if (r.ok) {
+      var d = await r.json();
+      document.getElementById('token-source').textContent = 'Token: debug server';
+      return d;
+    }
+  } catch (e) { /* fallback */ }
+
+  // Fallback: ask user for LiveKit credentials
+  var url = prompt('Debug server not available.\nEnter LiveKit WebSocket URL:', 'wss://');
+  if (!url) throw new Error('No LiveKit URL provided');
+  var key = prompt('Enter LiveKit API Key:');
+  if (!key) throw new Error('No API Key provided');
+  var secret = prompt('Enter LiveKit API Secret:');
+  if (!secret) throw new Error('No API Secret provided');
+
+  // Generate token locally using the JWT endpoint we'll serve
+  var r2 = await fetch('/token-direct', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ url: url, key: key, secret: secret, room: roomName, identity: identity })
+  });
+  if (!r2.ok) throw new Error('Token generation failed');
+  var d2 = await r2.json();
+  document.getElementById('token-source').textContent = 'Token: manual';
+  return d2;
+}
+
+async function connect() {
+  if (!sdkReady) {
+    addMsg('system', 'SDK not loaded yet, wait a moment...', 'error');
+    return;
+  }
+  var identity = document.getElementById('identity').value.trim();
+  if (!identity || identity.length < 8) {
+    addMsg('system', 'Identity must be at least 8 characters', 'error');
+    return;
+  }
+  localStorage.setItem('pigugu_identity', identity);
+  var roomName = 'chat-' + Date.now();
+
+  try {
+    setStatus('CONNECTING...', 'connecting');
+    addMsg('system', 'Connecting to LiveKit...');
+
+    var d = await getToken(roomName, identity);
+
+    room = new LivekitClient.Room();
+
+    room.on('participantConnected', function(p) {
+      addMsg('system', p.identity + ' joined the room');
+    });
+    room.on('participantDisconnected', function(p) {
+      addMsg('system', p.identity + ' left');
+    });
+    room.on('disconnected', function(reason) {
+      addMsg('system', 'Disconnected: ' + (reason && reason.message || 'manual'), 'error');
+      setStatus('DISCONNECTED', 'disconnected');
+      stopMic();
+      updateButtons(false);
+    });
+    room.on('connectionStateChanged', function(s) {
+      if (s === 'connected') {
+        setStatus('CONNECTED', 'connected');
+        addMsg('system', 'Connected as ' + identity, '');
+        updateButtons(true);
+      }
+    });
+
+    // Agent audio track
+    room.on('trackSubscribed', function(track, pub, p) {
+      if (track.kind === 'audio' || track.kind === LivekitClient.Track.Kind.Audio) {
+        var a = new Audio();
+        a.srcObject = new MediaStream([track.mediaStreamTrack]);
+        a.play().catch(function(e) { addMsg('system', 'Audio play failed: ' + e, 'error'); });
+      }
+    });
+
+    // Data messages: transcripts from agent
+    room.on('dataReceived', function(payload, p, kind, topic) {
+      var raw = new TextDecoder().decode(payload);
+      var text = '';
+      try { var parsed = JSON.parse(raw); text = parsed.text || raw; }
+      catch (e) { text = raw; }
+
+      if (topic === 'user_transcript' && text) {
+        addMsg('user', text);
+      } else if (topic === 'agent_response' && text) {
+        addMsg('agent', text);
+      }
+    });
+
+    // Token already includes agent dispatch config — agent joins when user connects
+    await room.connect(d.url, d.token, { autoSubscribe: true, adaptiveStream: false });
+
+    // Start mic
+    await startMic();
+
+    addMsg('system', 'Ready — speak now!', '');
+  } catch (e) {
+    addMsg('system', 'ERROR: ' + e.message, 'error');
+    setStatus('DISCONNECTED', 'disconnected');
+    updateButtons(false);
+    console.error(e);
+  }
+}
+
+async function startMic() {
+  stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true } });
+  var t = stream.getAudioTracks()[0];
+  addMsg('system', 'Mic: ' + t.label);
+
+  // VU meter
+  var ctx = new AudioContext();
+  if (ctx.state === 'suspended') { await ctx.resume(); }
+  var src = ctx.createMediaStreamSource(stream);
+  var a = ctx.createAnalyser(); a.fftSize = 128; src.connect(a);
+  var buf = new Uint8Array(a.frequencyBinCount);
+
+  vuTimer = setInterval(function() {
+    a.getByteFrequencyData(buf);
+    var mx = 0;
+    for (var i = 0; i < buf.length; i++) { if (buf[i] > mx) mx = buf[i]; }
+    document.getElementById('vu-bar-inner').style.width = Math.min(100, mx * 2) + '%';
+    document.getElementById('vu-bar-inner').style.background = mx > 8 ? '#e94560' : '#333';
+    document.getElementById('vol-label').textContent = 'Vol: ' + Math.round(mx);
+    var dot = document.getElementById('mic-dot');
+    if (mx > 8) { dot.classList.add('active'); document.getElementById('mic-label').textContent = 'Speaking'; }
+    else { dot.classList.remove('active'); document.getElementById('mic-label').textContent = 'Mic active'; }
+  }, 100);
+
+  var ltrack = new LivekitClient.LocalAudioTrack(t);
+  await room.localParticipant.publishTrack(ltrack, { source: 'microphone' });
+  addMsg('system', 'Microphone published');
+}
+
+function stopMic() {
+  if (vuTimer) { clearInterval(vuTimer); vuTimer = null; }
+  if (stream) { stream.getTracks().forEach(function(t) { t.stop(); }); stream = null; }
+  document.getElementById('vu-bar-inner').style.width = '0%';
+  document.getElementById('mic-dot').classList.remove('active');
+  document.getElementById('mic-label').textContent = 'Mic idle';
+}
+
+function disconnect() {
+  stopMic();
+  if (room) { room.disconnect(); room = null; }
+}
+
+function updateButtons(connected) {
+  document.getElementById('btn-connect').disabled = connected;
+  document.getElementById('btn-disconnect').disabled = !connected;
+}
+</script>
+</body>
+</html>

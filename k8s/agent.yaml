@@ -8,6 +8,7 @@ data:
   POLICY_SEARCH_BACKEND: "built_in"
   AGENT_MODE: "1"
   DEEPGRAM_ENABLE_DIARIZATION: "true"
+  ENDPOINTING_DELAY: "0.5"
   ENABLE_POLICY_SEARCH: "true"
   FORCE_POLICY_SEARCH: "false"
   LOG_LEVEL: "INFO"
@@ -80,3 +81,23 @@ spec:
             secretKeyRef:
               name: pigugu-secrets
               key: OPENROUTER_API_KEY
+        - name: ARK_API_KEY
+          valueFrom:
+            secretKeyRef:
+              name: pigugu-secrets
+              key: ARK_API_KEY
+        - name: TAVILY_API_KEY
+          valueFrom:
+            secretKeyRef:
+              name: pigugu-secrets
+              key: TAVILY_API_KEY
+        - name: REDIS_URL
+          valueFrom:
+            secretKeyRef:
+              name: pigugu-secrets
+              key: REDIS_URL
+        - name: DATABASE_URL
+          valueFrom:
+            secretKeyRef:
+              name: pigugu-secrets
+              key: DATABASE_URL

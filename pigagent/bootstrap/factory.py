@@ -39,6 +39,7 @@ def get_stt():
             language=config.DEEPGRAM_STT_LANGUAGE,
             sample_rate=config.DEEPGRAM_STT_SAMPLE_RATE,
             enable_diarization=config.DEEPGRAM_ENABLE_DIARIZATION,
+            endpointing_ms=int(config.ENDPOINTING_DELAY * 1000),
             api_key=os.getenv("DEEPGRAM_API_KEY"),
         )
     else:
@@ -154,7 +155,7 @@ def _build_pig_agent(config=None) -> PigAgent:
 
     model = config.resolve_model()
 
-    from personas import PersonaRegistry
+    from system_prompts import PersonaRegistry
     PersonaRegistry.register_defaults()
     prompts = PersonaRegistry.build_prompt_cache()
     logger.info(f"[Factory] Prompt cache built: {list(prompts.keys())}")
@@ -289,16 +290,15 @@ def create_agent_components(config=None, persona=None):
     if tts_emotion is None and config.CARTESIA_TTS_EMOTION:
         tts_emotion = [e.strip() for e in config.CARTESIA_TTS_EMOTION.split(",")]
 
+    tts_lang = config.CARTESIA_TTS_LANGUAGE or "en"
     tts = create_tts(
         model=config.CARTESIA_TTS_MODEL,
-        language=config.CARTESIA_TTS_LANGUAGE,
-        encoding=config.CARTESIA_TTS_ENCODING,
+        language=tts_lang,
         voice=tts_voice,
         speed=tts_speed,
         emotion=tts_emotion,
         volume=config.CARTESIA_TTS_VOLUME,
         sample_rate=config.CARTESIA_TTS_SAMPLE_RATE,
-        word_timestamps=config.CARTESIA_TTS_WORD_TIMESTAMPS,
         api_key=cartesia_api_key,
         base_url=config.CARTESIA_TTS_BASE_URL,
     )

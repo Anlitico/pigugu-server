@@ -20,7 +20,7 @@ class TestRoastStartEndpoint:
 
         from api.server import create_app
         from agent import PigAgent
-        from personas import PersonaRegistry
+        from system_prompts import PersonaRegistry
         from roast import GameModeRegistry
 
         PersonaRegistry.register_defaults()

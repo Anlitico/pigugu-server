@@ -47,6 +47,11 @@ class GameMode(ABC):
     @abstractmethod
     def system_prompt_extension(self) -> str: ...
 
+    @staticmethod
+    def init_extra() -> dict:
+        """Optional initial extra state. Override to set mode-specific defaults."""
+        return {}
+
     max_turns: int
 
     @property

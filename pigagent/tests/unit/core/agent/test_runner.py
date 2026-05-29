@@ -39,9 +39,16 @@ class MockProvider:
 
 
 class _FakeExecutor:
+    def __init__(self, inject=None):
+        self._inject = inject
+
     async def run(self, tool_calls, timeout=None, concurrent=True):
         from core.agent.executor import ToolExecutionResult, ToolResult
-        fake = [ToolResult(tool_call_id=tc.id, tool_name=tc.name, success=True, content="ok") for tc in tool_calls]
+        fake = []
+        for tc in tool_calls:
+            tr = ToolResult(tool_call_id=tc.id, tool_name=tc.name, success=True,
+                            content="ok", inject=self._inject)
+            fake.append(tr)
         return ToolExecutionResult(results=fake)
 
 
@@ -253,6 +260,48 @@ class TestStreamInterrupt:
         assert last_msg.partial is True
         assert "Hello, " in last_msg.content
 
+    def test_injected_message_appended_after_tool_result(self, monkeypatch):
+        """When a tool result has inject, the injected message appears in last_messages."""
+        from core.llm.types import ToolCall, ChatDelta
+
+        inject_msg = {"role": "user", "content": "[System - Game Background]\ngame body"}
+        call_count = [0]
+
+        class StepProvider:
+            async def chat_stream(self, **kw):
+                call_count[0] += 1
+                if call_count[0] == 1:
+                    tc = ToolCall(id="c1", name="start_roast", arguments='{"roast_id":"r1"}')
+                    yield ChatDelta(tool_calls=[tc], finish_reason="tool_calls")
+                else:
+                    yield ChatDelta(content="opening line", finish_reason="stop")
+
+        monkeypatch.setattr("core.agent.runner.get_llm", lambda model: StepProvider())
+        monkeypatch.setattr(
+            "core.agent.runner.ToolExecutor",
+            lambda *a, **kw: _FakeExecutor(inject=[inject_msg]),
+        )
+
+        runner = AgentRunner(RunnerConfig(model="test", max_steps=5))
+        msgs = self._msgs("start the game")
+
+        async def _collect():
+            chunks = []
+            async for t in runner.stream(msgs):
+                chunks.append(t)
+            return chunks
+
+        result = asyncio.run(_collect())
+        assert "".join(result) == "opening line"
+
+        # The injected message is in last_messages after the tool result
+        roles = [m.role for m in runner.last_messages if hasattr(m, "role")]
+        assert "tool" in roles
+        # Injected user message should be present
+        user_contents = [m.content for m in runner.last_messages if m.role == "user"]
+        injected_found = any(inject_msg["content"] in c for c in user_contents)
+        assert injected_found
+
     def test_interrupt_before_any_output(self, monkeypatch):
         provider = SlowStreamProvider(["a", "b", "c"], delay=0.05)
         monkeypatch.setattr("core.agent.runner.get_llm", lambda model: provider)
@@ -310,3 +359,97 @@ class TestStreamInterrupt:
         result = asyncio.run(_run())
         assert runner.last_status == StateStatus.INTERRUPTED.value
         assert runner.last_step_count >= 1
+
+
+# ── user_reply helpers ──────────────────────────────────────────────────────
+
+
+class TestUserReply:
+    def _make_tc(self, arguments: str):
+        from core.llm.types import ToolCall
+        return ToolCall(id="1", name="test", arguments=arguments, index=0)
+
+    def test_pull_complete_field(self):
+        from core.agent.runner import _pull_user_reply
+        tc = self._make_tc('{"user_reply": "Let me check that for you", "q": "x"}')
+        text = _pull_user_reply(tc)
+        assert text == "Let me check that for you"
+
+    def test_pull_streaming_partial_not_yet(self):
+        from core.agent.runner import _pull_user_reply
+        tc = self._make_tc('{"user_reply": "Let me check')  # no closing quote yet
+        text = _pull_user_reply(tc)
+        assert text is None
+
+    def test_pull_no_user_reply(self):
+        from core.agent.runner import _pull_user_reply
+        tc = self._make_tc('{"q": "x"}')
+        assert _pull_user_reply(tc) is None
+
+    def test_pull_empty_args(self):
+        from core.agent.runner import _pull_user_reply
+        tc = self._make_tc("")
+        assert _pull_user_reply(tc) is None
+
+    def test_pull_escaped_quotes(self):
+        from core.agent.runner import _pull_user_reply
+        tc = self._make_tc('{"user_reply": "he said \\"hello\\"", "q": "x"}')
+        text = _pull_user_reply(tc)
+        assert text == 'he said "hello"'
+
+    def test_user_reply_passed_through_to_handler(self, monkeypatch):
+        """user_reply is yielded, tool handler receives user_reply in args (pass-through)."""
+        from core.llm.types import ToolCall, ChatDelta
+        from core.agent.runner import AgentRunner, RunnerConfig
+
+        handler_calls = []
+        call_count = [0]
+
+        class LogExecutor:
+            async def run(self, tool_calls, **kw):
+                from core.agent.executor import ToolExecutionResult, ToolResult
+                for tc in tool_calls:
+                    import json
+                    handler_calls.append(json.loads(tc.arguments))
+                return ToolExecutionResult(results=[
+                    ToolResult(tool_call_id=tc.id, tool_name=tc.name, success=True, content="ok")
+                    for tc in tool_calls
+                ])
+
+        class StepProvider:
+            async def chat_stream(self, **kw):
+                call_count[0] += 1
+                if call_count[0] == 1:
+                    tc = ToolCall(id="c1", name="start_roast",
+                                  arguments='{"user_reply": "Give me a moment, starting the game...", "roast_id": "r1"}',
+                                  index=0)
+                    yield ChatDelta(tool_calls=[tc], finish_reason="tool_calls")
+                else:
+                    yield ChatDelta(content="opening line", finish_reason="stop")
+
+        monkeypatch.setattr("core.agent.runner.get_llm", lambda model: StepProvider())
+        monkeypatch.setattr("core.agent.runner.ToolExecutor",
+                            lambda *a, **kw: LogExecutor())
+
+        runner = AgentRunner(RunnerConfig(model="test", max_steps=3))
+        msgs = self._msgs("start the game")
+
+        async def _collect():
+            chunks = []
+            async for t in runner.stream(msgs):
+                chunks.append(t)
+            return chunks
+
+        result = asyncio.run(_collect())
+        full = "".join(result)
+        # user_reply text was yielded
+        assert "Give me a moment" in full
+        # Tool executor received user_reply in args (pass-through)
+        assert len(handler_calls) == 1
+        assert handler_calls[0]["roast_id"] == "r1"
+        assert "starting the game" in handler_calls[0]["user_reply"]
+
+    @staticmethod
+    def _msgs(*contents: str) -> list:
+        from core.llm.types import Message
+        return [Message.user(c) for c in contents]

@@ -76,7 +76,7 @@ class QwenProvider(LLMProvider):
         tool_calls = None
         if choice.message.tool_calls:
             tool_calls = [
-                ToolCall(id=tc.id, name=tc.function.name, arguments=tc.function.arguments)
+                ToolCall(id=tc.id, name=tc.function.name, arguments=tc.function.arguments, index=tc.index)
                 for tc in choice.message.tool_calls
             ]
 
@@ -148,6 +148,11 @@ class QwenProvider(LLMProvider):
                             buf[idx]["name"] += tc.function.name
                         if tc.function.arguments:
                             buf[idx]["arguments"] += tc.function.arguments
+                    # Yield incremental tool_call so runner can extract user_reply early
+                    yield ChatDelta(tool_calls=[
+                        ToolCall(id=buf[idx]["id"], name=buf[idx]["name"],
+                                 arguments=buf[idx]["arguments"], index=idx)
+                    ])
 
             finish = chunk.choices[0].finish_reason
 

@@ -266,8 +266,9 @@ class TestStream:
 
 
 class TestStartRoast:
-    def test_unknown_game_mode_returns_silently(self):
+    def test_unknown_game_mode_falls_back_to_roast_together(self):
         agent, ctx, redis, pg = _make_agent()
+        _mock_runner_stream(agent, ["Opening line!"])
 
         import asyncio
 
@@ -280,19 +281,21 @@ class TestStartRoast:
             return chunks
 
         result = asyncio.run(_collect())
-        assert result == []
+        # activate_roast() uses GameModeRegistry.get() which falls back
+        # to roast_together for unknown modes, so the roast starts normally.
+        assert result == ["Opening line!"]
 
     def test_creates_session_and_streams_reply(self):
         import asyncio
 
         game_mode = MagicMock()
+        game_mode.mode = MagicMock()
+        game_mode.mode.__str__ = MagicMock(return_value="roast_together")
         game_mode.tick = AsyncMock()
         game_mode.init_extra = MagicMock(return_value={"key": "val"})
         game_mode.system_prompt_extension = "Game rules here"
 
-        agent, ctx, redis, pg = _make_agent(
-            game_modes={"roast_together": game_mode},
-        )
+        agent, ctx, redis, pg = _make_agent()
         _mock_runner_stream(agent, ["Opening line!"])
 
         # Mock RoastState.start
@@ -305,23 +308,25 @@ class TestStartRoast:
         roast.turn_count = 0
         roast.extra = {}
         roast.mode = MagicMock()
-        roast.mode.__str__ = MagicMock(return_value="roast_together")  # type: ignore[reportAttributeAccessIssue]
+        roast.mode.__str__ = MagicMock(return_value="roast_together")
 
         agent.get_active_roast = AsyncMock(return_value=None)
 
-        async def _consume(*args, **kwargs):
-            return None
+        with (
+            patch("roast.state.RoastState.start", new=AsyncMock(return_value=roast)),
+            patch("roast.activate.GameModeRegistry") as mock_registry,
+        ):
+            mock_registry.get.return_value = game_mode
 
-        with patch("roast.state.RoastState.start", new=AsyncMock(return_value=roast)):
-            with patch("roast.pending.consume", _consume):
-                result = asyncio.run(_run_collect(
-                    agent.start_roast("u1", 1, "r1", "roast_together", "prompt")
-                ))
+            result = asyncio.run(_run_collect(
+                agent.start_roast("u1", 1, "r1", "roast_together", "prompt")
+            ))
 
         assert result == "Opening line!"
-        # Roast body should be persisted
         assert ctx.add_turn.call_count >= 1
-        first_call_content = ctx.add_turn.call_args_list[0][1]["content"]
+        first_call_kwargs = ctx.add_turn.call_args_list[0][1]
+        assert first_call_kwargs["role"] == "system"
+        first_call_content = first_call_kwargs["content"]
         assert "News Context" in first_call_content
         assert "prompt" in first_call_content
         assert "Game Mode" in first_call_content
@@ -344,10 +349,15 @@ class TestDefaultTools:
         vol_tool.name = "volume_control"
         vol_tool.execute = lambda x: None
 
+        # _create_default_tools is now an instance method that reads self._pg_pool.
+        # Pass empty tools to skip default tool creation in __init__, then
+        # call _create_default_tools() inside the patch context.
+        agent = PigAgent(pg_pool=None, redis=MagicMock(), ctx=None, tools=[], tool_handlers={})
+
         with patch("tools.create_web_search_tool", return_value=search_tool), \
              patch("tools.volume_tool", vol_tool), \
              patch("tools.search.TavilyProvider"):
-            registry = PigAgent._create_default_tools()
+            registry = agent._create_default_tools()
 
         assert len(registry) == 2
         assert "web_search" in registry
@@ -364,10 +374,12 @@ class TestDefaultTools:
         vol_tool = MagicMock()
         vol_tool.name = "volume_control"
 
+        agent = PigAgent(pg_pool=None, redis=MagicMock(), ctx=None, tools=[], tool_handlers={})
+
         with patch("tools.create_web_search_tool", return_value=search_tool), \
              patch("tools.volume_tool", vol_tool), \
              patch("tools.search.TavilyProvider", MagicMock()):
-            registry = PigAgent._create_default_tools()
+            registry = agent._create_default_tools()
 
         tool = registry.get("web_search")
         assert tool is not None
@@ -384,10 +396,12 @@ class TestDefaultTools:
         vol_tool.name = "volume_control"
         vol_tool.execute = lambda x: None
 
+        agent = PigAgent(pg_pool=None, redis=MagicMock(), ctx=None, tools=[], tool_handlers={})
+
         with patch("tools.create_web_search_tool", return_value=search_tool), \
              patch("tools.volume_tool", vol_tool), \
              patch("tools.search.TavilyProvider", MagicMock()):
-            registry = PigAgent._create_default_tools()
+            registry = agent._create_default_tools()
 
         tool = registry.get("volume_control")
         assert tool is not None
@@ -396,36 +410,36 @@ class TestDefaultTools:
 
 class TestBuildRoastBody:
     def test_prompt_only(self):
-        agent, ctx, redis, pg = _make_agent()
+        from roast.activate import _build_roast_body
         game_mode = MagicMock()
         game_mode.system_prompt_extension = ""
-        body = agent._build_roast_body(game_mode=game_mode, prompt="News text")
+        body = _build_roast_body(game_mode_obj=game_mode, prompt="News text")
         assert "## News Context" in body
         assert "News text" in body
         assert "## Game Mode" not in body
 
     def test_extension_only(self):
-        agent, ctx, redis, pg = _make_agent()
+        from roast.activate import _build_roast_body
         game_mode = MagicMock()
         game_mode.system_prompt_extension = "Rules"
-        body = agent._build_roast_body(game_mode=game_mode, prompt="")
+        body = _build_roast_body(game_mode_obj=game_mode, prompt="")
         assert "## Game Mode" in body
         assert "Rules" in body
         assert "## News Context" not in body
 
     def test_both(self):
-        agent, ctx, redis, pg = _make_agent()
+        from roast.activate import _build_roast_body
         game_mode = MagicMock()
         game_mode.system_prompt_extension = "Rules"
-        body = agent._build_roast_body(game_mode=game_mode, prompt="News")
+        body = _build_roast_body(game_mode_obj=game_mode, prompt="News")
         assert "## News Context" in body
         assert "## Game Mode" in body
 
     def test_empty(self):
-        agent, ctx, redis, pg = _make_agent()
+        from roast.activate import _build_roast_body
         game_mode = MagicMock()
         game_mode.system_prompt_extension = ""
-        body = agent._build_roast_body(game_mode=game_mode, prompt="")
+        body = _build_roast_body(game_mode_obj=game_mode, prompt="")
         assert body == ""
 
 
@@ -459,7 +473,77 @@ class TestModelProperty:
         assert agent.model == "qwen-plus-us"
 
 
-# ── Helpers ─────────────────────────────────────────────────────────────────
+# ── session info ───────────────────────────────────────────────────────────────
+
+
+class TestBuildSessionInfo:
+    def test_has_session_start_tag(self):
+        agent, ctx, redis, pg = _make_agent()
+        info = agent.build_session_info()
+        assert "[Session Start]" in info
+
+    def test_has_current_time(self):
+        agent, ctx, redis, pg = _make_agent()
+        info = agent.build_session_info()
+        assert "Current time:" in info
+
+    def test_includes_timezone(self):
+        agent, ctx, redis, pg = _make_agent()
+        info = agent.build_session_info()
+        # Pacific timezone (PDT or PST)
+        assert any(tz in info for tz in ("PDT", "PST", "-07", "-08"))
+
+
+class TestSeedSessionInfo:
+    def test_persists_system_message(self):
+        agent, ctx, redis, pg = _make_agent()
+        import asyncio
+        asyncio.run(agent.seed_session_info("u1"))
+        ctx.add_turn.assert_called_once()
+        call_kwargs = ctx.add_turn.call_args.kwargs
+        assert call_kwargs["user_id"] == "u1"
+        assert call_kwargs["role"] == "system"
+        assert "[Session Start]" in call_kwargs["content"]
+
+    def test_noop_when_no_ctx(self):
+        from agent import PigAgent
+        agent = PigAgent(pg_pool=MagicMock(), redis=MagicMock(), ctx=None, tools=[], tool_handlers={})
+        import asyncio
+        asyncio.run(agent.seed_session_info("u1"))
+        # Should not raise
+
+    def test_noop_when_empty_user(self):
+        agent, ctx, redis, pg = _make_agent()
+        import asyncio
+        asyncio.run(agent.seed_session_info(""))
+        ctx.add_turn.assert_not_called()
+
+
+# ── persistence ──────────────────────────────────────────────────────────────
+
+
+class TestPersistTurns:
+    def test_allows_system_messages_through(self):
+        agent, ctx, redis, pg = _make_agent()
+        from core.llm.types import Message
+        msgs = [
+            Message.system("session info"),
+            Message.user("hello"),
+        ]
+        import asyncio
+        asyncio.run(agent._persist_turns("u1", msgs))
+        assert ctx.add_turn.call_count == 2
+        roles = [c.kwargs["role"] for c in ctx.add_turn.call_args_list]
+        assert roles == ["system", "user"]
+
+    def test_empty_messages_returns_zero(self):
+        agent, ctx, redis, pg = _make_agent()
+        import asyncio
+        result = asyncio.run(agent._persist_turns("u1", []))
+        assert result == 0
+
+
+# ── helpers ─────────────────────────────────────────────────────────────────
 
 
 async def _run_collect(gen):

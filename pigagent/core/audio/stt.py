@@ -140,6 +140,7 @@ class DeepgramSTT(STTProvider):
         language: str = "en",
         sample_rate: int = 16000,
         enable_diarization: bool = False,
+        endpointing_ms: int = 500,
         api_key: Optional[str] = None,
         http_session: Optional[aiohttp.ClientSession] = None,
     ):
@@ -173,6 +174,7 @@ class DeepgramSTT(STTProvider):
                 model=model,
                 language=language,
                 sample_rate=sample_rate,
+                endpointing_ms=endpointing_ms,
                 enable_diarization=enable_diarization,
                 api_key=self.api_key,
                 http_session=http_session,
@@ -211,6 +213,7 @@ def create_stt(
     encoding: str = "pcm_s16le",
     sample_rate: int = 16000,
     enable_diarization: bool = False,
+    endpointing_ms: int = 500,
     api_key: Optional[str] = None,
     http_session: Optional[aiohttp.ClientSession] = None,
     base_url: str = "https://api.cartesia.ai"
@@ -254,6 +257,7 @@ def create_stt(
             language=language,
             sample_rate=sample_rate,
             enable_diarization=enable_diarization,
+            endpointing_ms=endpointing_ms,
             api_key=api_key,
             http_session=http_session,
         )

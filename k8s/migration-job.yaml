@@ -8,7 +8,7 @@ spec:
       containers:
       - name: migration
         # 使用和你 API 相同的镜像
-        image: 537557168531.dkr.ecr.us-west-1.amazonaws.com/pigugu-api:latest
+        image: __IMAGE__
         command: ["alembic", "upgrade", "head"]
         env:
         - name: DATABASE_URL

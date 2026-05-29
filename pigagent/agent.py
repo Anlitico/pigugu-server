@@ -14,6 +14,8 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import AsyncIterator
+from datetime import datetime
+from zoneinfo import ZoneInfo
 from typing import Any
 
 from loguru import logger
@@ -25,10 +27,7 @@ from core.agent.stop import no_tool_calls
 from context.manager import ContextManager
 from roast.pending import consume
 from roast.state import RoastState
-from roast.types import Mode
-
-_ROAST_USER_TAG = "[System  -  Game Background]"
-_ROAST_TRIGGER_TAG = "[System]"
+from tools.roast import _current_user_id, _current_persona_id
 
 
 class PigAgent:
@@ -74,15 +73,20 @@ class PigAgent:
         self._model = model
         self.runner = AgentRunner(runner_config)
 
-    @staticmethod
-    def _create_default_tools():
-        """Create the default tool set: web_search + volume_control."""
-        from tools import create_web_search_tool, volume_tool
+    def _create_default_tools(self):
+        """Create the default tool set: web_search + volume_control + list_active_roasts + start_roast."""
+        from tools import create_web_search_tool, volume_tool, create_list_roasts_tool, create_start_roast_tool
         from tools.search import TavilyProvider
         from core.agent import ToolRegistry
         registry = ToolRegistry()
         registry.register(create_web_search_tool(TavilyProvider()))
         registry.register(volume_tool)
+        if self._pg_pool:
+            registry.register(create_list_roasts_tool(self._pg_pool))
+            registry.register(create_start_roast_tool(
+                self._pg_pool,
+                redis=self._redis,
+            ))
         return registry
 
     @property
@@ -152,23 +156,31 @@ class PigAgent:
         pre_stream_count = len(messages)  # messages added after this = runner output
 
         TelemetryCollector.mark("llm_req")
-        if roast_state and game_mode:
-            async for text in self._stream_roast(
-                messages, roast_state, game_mode,
-                interrupt_event=interrupt_event,
-            ):
-                if first_yield:
-                    TelemetryCollector.mark("llm_internal")
-                    first_yield = False
-                response_chunks.append(text)
-                yield text
-        else:
-            async for text in self.runner.stream(messages, interrupt_event=interrupt_event):
-                if first_yield:
-                    TelemetryCollector.mark("llm_internal")
-                    first_yield = False
-                response_chunks.append(text)
-                yield text
+
+        # Make user context available to tool handlers via contextvars
+        token_user = _current_user_id.set(user_id)
+        token_persona = _current_persona_id.set(persona_id)
+        try:
+            if roast_state and game_mode:
+                async for text in self._stream_roast(
+                    messages, roast_state, game_mode,
+                    interrupt_event=interrupt_event,
+                ):
+                    if first_yield:
+                        TelemetryCollector.mark("llm_internal")
+                        first_yield = False
+                    response_chunks.append(text)
+                    yield text
+            else:
+                async for text in self.runner.stream(messages, interrupt_event=interrupt_event):
+                    if first_yield:
+                        TelemetryCollector.mark("llm_internal")
+                        first_yield = False
+                    response_chunks.append(text)
+                    yield text
+        finally:
+            _current_user_id.reset(token_user)
+            _current_persona_id.reset(token_persona)
 
         TelemetryCollector.mark("llm_end")
         logger.info(
@@ -183,6 +195,23 @@ class PigAgent:
                 turn_no = await self._persist_turns(user_id, runner_msgs)
                 if turn_no:
                     TelemetryCollector.set_meta("turn_number", turn_no)
+
+    # ── Session ────────────────────────────────────────────────────────
+
+    def build_session_info(self) -> str:
+        """Build a one-time system message injected at conversation start."""
+        now = datetime.now(ZoneInfo("America/Los_Angeles")).strftime("%Y-%m-%d %H:%M:%S %Z")
+        return f"[Session Start]\nCurrent time: {now}"
+
+    async def seed_session_info(self, user_id: str) -> None:
+        """Persist session-info system message at the start of a new conversation."""
+        if not self.ctx or not user_id:
+            return
+        msg = self.build_session_info()
+        try:
+            await self.ctx.add_turn(user_id=user_id, role="system", content=msg)
+        except Exception as e:
+            logger.warning(f"[PigAgent] Failed to seed session info: {e}")
 
     # ── Low-level stream (no side effects, used by tests) ──────────────
 
@@ -221,38 +250,35 @@ class PigAgent:
         then triggers generate_reply() to deliver the opening lines.
         Yields text chunks for TTS playback.
         """
-        game_mode = self._game_modes.get(mode_id)
-        if game_mode is None:
-            logger.error(f"[PigAgent] Unknown game mode: {mode_id}")
+        from roast.activate import activate_roast
+
+        try:
+            instance_id, body = await activate_roast(
+                user_id=user_id,
+                persona_id=persona_id,
+                roast_id=roast_id,
+                game_mode=mode_id,
+                prompt=prompt,
+                redis=self._redis,
+                pg_pool=self._pg_pool,
+            )
+        except Exception as e:
+            logger.error(f"[PigAgent] activate_roast failed: {e}")
             return
 
-        state = await RoastState.start(
-            user_id=user_id,
-            persona_id=persona_id,
-            roast_id=roast_id,
-            mode=Mode(mode_id),
-            extra=game_mode.init_extra() if hasattr(game_mode, "init_extra") else None,
-            redis=self._redis,
-            pg_pool=self._pg_pool,
-        )
-
         # Persist roast body to context  -  loaded automatically on each turn
-        roast_body = self._build_roast_body(
-            game_mode=game_mode,
-            prompt=prompt,
-        )
-        if roast_body and self.ctx:
+        if body and self.ctx:
             try:
                 await self.ctx.add_turn(
                     user_id=user_id,
-                    role="user",
-                    content=f"{_ROAST_USER_TAG}\n{roast_body}",
+                    role="system",
+                    content=body,
                 )
             except Exception as e:
                 logger.error(f"[PigAgent] Failed to persist roast body: {e}")
 
         logger.info(
-            f"[PigAgent] Roast started: {state.roast_instance_id} "
+            f"[PigAgent] Roast started: {instance_id} "
             f"roast_id={roast_id} mode={mode_id} user={user_id}"
         )
 
@@ -294,22 +320,27 @@ class PigAgent:
         Roast body (news + game rules) was already persisted to context
         by start_roast()  -  it loads via ctx.load() in generate_reply().
         """
+        token_user = _current_user_id.set(roast_state.user_id)
+        token_persona = _current_persona_id.set(roast_state.persona_id)
+
         # 1. Consume pending trigger prompt
         try:
             pending_prompt = await consume(roast_state.roast_instance_id, self._redis)
             if pending_prompt:
-                messages.append(Message.user(
-                    f"{_ROAST_TRIGGER_TAG}\n{pending_prompt}"
-                ))
+                messages.append(Message.system(f"[Game Event]\n{pending_prompt}"))
         except Exception as e:
             logger.warning(f"[PigAgent] consume_pending failed: {e}")
 
         # 2. Stream LLM
-        async for text in self.runner.stream(messages, interrupt_event=interrupt_event):
-            yield text
+        try:
+            async for text in self.runner.stream(messages, interrupt_event=interrupt_event):
+                yield text
 
-        # 3. Tick  -  fire-and-forget, don't block the reply
-        asyncio.create_task(self._tick_roast(roast_state, game_mode, messages))
+            # 3. Tick  -  fire-and-forget, don't block the reply
+            asyncio.create_task(self._tick_roast(roast_state, game_mode, messages))
+        finally:
+            _current_user_id.reset(token_user)
+            _current_persona_id.reset(token_persona)
 
     async def _tick_roast(self, roast_state, game_mode, messages) -> None:
         """Background: advance state, check triggers, persist."""
@@ -326,10 +357,9 @@ class PigAgent:
     async def _persist_turns(
         self, user_id: str, messages: list[Message],
     ) -> int:
-        """Persist all new messages (user, assistant, tool) to Redis/PG.
+        """Persist all new messages to Redis/PG.
 
         Returns the first turn number, or 0 if nothing was persisted.
-        System messages are skipped — they are injected, not conversation turns.
         """
         if not messages:
             return 0
@@ -337,8 +367,6 @@ class PigAgent:
         first_turn = 0
         try:
             for msg in messages:
-                if msg.role == "system":
-                    continue
                 tool_calls_raw = None
                 if msg.tool_calls:
                     tool_calls_raw = [
@@ -360,15 +388,6 @@ class PigAgent:
         except Exception as e:
             logger.error(f"[PigAgent] persist_turns failed: {e}")
             return 0
-
-    def _build_roast_body(self, *, game_mode, prompt: str = "") -> str:
-        parts: list[str] = []
-        if prompt.strip():
-            parts.append(f"## News Context\n{prompt.strip()}")
-        ext = getattr(game_mode, "system_prompt_extension", "")
-        if ext:
-            parts.append(f"## Game Mode\n{ext}")
-        return "\n\n".join(parts)
 
     def _require_ctx(self) -> ContextManager:
         if self.ctx is None:

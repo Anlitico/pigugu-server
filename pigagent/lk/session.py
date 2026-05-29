@@ -13,7 +13,7 @@ from livekit.agents import AgentSession, JobContext
 from livekit.agents.types import NOT_GIVEN
 from livekit.agents.voice import room_io
 from config import get_config
-from personas import get_persona
+from system_prompts import get_persona
 from bootstrap.factory import create_agent_components, get_vad
 from lk.bridge import PigAgentVoiceBridge
 from metrics.turn import TelemetryCollector
@@ -74,7 +74,7 @@ async def run(ctx: JobContext) -> None:
     # ── Components ────────────────────────────────────────────────────
     stt, pig_agent, tts = create_agent_components(config, persona=persona)
     stt_plugin = stt.get_plugin()
-    tts_plugin = tts.get_plugin()
+    tts_plugin = tts
     vad = get_vad()
 
     logger.info(f"[DEBUG] STT: {type(stt_plugin).__name__}, TTS: {type(tts_plugin).__name__}")
@@ -97,8 +97,10 @@ async def run(ctx: JobContext) -> None:
         llm=pigllm,
         tts=tts_plugin,
         vad=vad if vad is not None else NOT_GIVEN,
+        turn_detection="vad",
+        min_endpointing_delay=config.ENDPOINTING_DELAY,
         turn_handling=TurnHandlingOptions(
-            preemptive_generation={"enabled": config.ENABLE_PREEMPTIVE_SYNTHESIS},
+            preemptive_generation={"enabled": config.ENABLE_PREEMPTIVE_SYNTHESIS, "preemptive_tts": True},
             interruption={"mode": "adaptive", "min_duration": 0.1},
         ),
     )
@@ -184,9 +186,10 @@ async def run(ctx: JobContext) -> None:
         if text and hasattr(item, "role"):
             if item.role == "assistant":
                 try:
+                    payload = json.dumps({"text": text.strip()})
                     asyncio.create_task(
                         ctx.room.local_participant.publish_data(
-                            text.strip().encode("utf-8"),
+                            payload.encode("utf-8"),
                             reliable=True, topic="agent_response",
                         )
                     )
@@ -224,11 +227,28 @@ async def run(ctx: JobContext) -> None:
             user_id = identity
             break
     if not user_id:
-        logger.error("No user_id available — refusing to run session without identity")
-        await session.aclose()
-        return
+        # Explicit dispatch — agent arrives before user. Wait for first participant.
+        logger.info("No user_id yet, waiting for participant to join...")
+        _user_joined = asyncio.Event()
+
+        @ctx.room.on("participant_connected")
+        def _resolve_user(participant: rtc.RemoteParticipant):
+            nonlocal user_id
+            user_id = participant.identity
+            _user_joined.set()
+
+        try:
+            await asyncio.wait_for(_user_joined.wait(), timeout=30)
+        except asyncio.TimeoutError:
+            logger.error("No participant joined within 30s — refusing to run session")
+            await session.aclose()
+            return
+        logger.info(f"User ID resolved from joined participant: {user_id}")
     bridge._user_id = user_id
     logger.info(f"User ID resolved: {user_id}")
+
+    # Seed session-info system message at conversation start
+    await pig_agent.seed_session_info(user_id)
 
     # Accept TrackSource.UNKNOWN (0) in addition to SOURCE_MICROPHONE (2).
     # LiveKit JS client's LocalAudioTrack may report source="unknown" instead
