@@ -324,7 +324,9 @@ class TestStartRoast:
 
         assert result == "Opening line!"
         assert ctx.add_turn.call_count >= 1
-        first_call_content = ctx.add_turn.call_args_list[0][1]["content"]
+        first_call_kwargs = ctx.add_turn.call_args_list[0][1]
+        assert first_call_kwargs["role"] == "system"
+        first_call_content = first_call_kwargs["content"]
         assert "News Context" in first_call_content
         assert "prompt" in first_call_content
         assert "Game Mode" in first_call_content
@@ -471,7 +473,77 @@ class TestModelProperty:
         assert agent.model == "qwen-plus-us"
 
 
-# ── Helpers ─────────────────────────────────────────────────────────────────
+# ── session info ───────────────────────────────────────────────────────────────
+
+
+class TestBuildSessionInfo:
+    def test_has_session_start_tag(self):
+        agent, ctx, redis, pg = _make_agent()
+        info = agent.build_session_info()
+        assert "[Session Start]" in info
+
+    def test_has_current_time(self):
+        agent, ctx, redis, pg = _make_agent()
+        info = agent.build_session_info()
+        assert "Current time:" in info
+
+    def test_includes_timezone(self):
+        agent, ctx, redis, pg = _make_agent()
+        info = agent.build_session_info()
+        # Pacific timezone (PDT or PST)
+        assert any(tz in info for tz in ("PDT", "PST", "-07", "-08"))
+
+
+class TestSeedSessionInfo:
+    def test_persists_system_message(self):
+        agent, ctx, redis, pg = _make_agent()
+        import asyncio
+        asyncio.run(agent.seed_session_info("u1"))
+        ctx.add_turn.assert_called_once()
+        call_kwargs = ctx.add_turn.call_args.kwargs
+        assert call_kwargs["user_id"] == "u1"
+        assert call_kwargs["role"] == "system"
+        assert "[Session Start]" in call_kwargs["content"]
+
+    def test_noop_when_no_ctx(self):
+        from agent import PigAgent
+        agent = PigAgent(pg_pool=MagicMock(), redis=MagicMock(), ctx=None, tools=[], tool_handlers={})
+        import asyncio
+        asyncio.run(agent.seed_session_info("u1"))
+        # Should not raise
+
+    def test_noop_when_empty_user(self):
+        agent, ctx, redis, pg = _make_agent()
+        import asyncio
+        asyncio.run(agent.seed_session_info(""))
+        ctx.add_turn.assert_not_called()
+
+
+# ── persistence ──────────────────────────────────────────────────────────────
+
+
+class TestPersistTurns:
+    def test_allows_system_messages_through(self):
+        agent, ctx, redis, pg = _make_agent()
+        from core.llm.types import Message
+        msgs = [
+            Message.system("session info"),
+            Message.user("hello"),
+        ]
+        import asyncio
+        asyncio.run(agent._persist_turns("u1", msgs))
+        assert ctx.add_turn.call_count == 2
+        roles = [c.kwargs["role"] for c in ctx.add_turn.call_args_list]
+        assert roles == ["system", "user"]
+
+    def test_empty_messages_returns_zero(self):
+        agent, ctx, redis, pg = _make_agent()
+        import asyncio
+        result = asyncio.run(agent._persist_turns("u1", []))
+        assert result == 0
+
+
+# ── helpers ─────────────────────────────────────────────────────────────────
 
 
 async def _run_collect(gen):

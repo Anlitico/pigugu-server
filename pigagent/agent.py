@@ -14,6 +14,8 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import AsyncIterator
+from datetime import datetime
+from zoneinfo import ZoneInfo
 from typing import Any
 
 from loguru import logger
@@ -193,6 +195,23 @@ class PigAgent:
                 turn_no = await self._persist_turns(user_id, runner_msgs)
                 if turn_no:
                     TelemetryCollector.set_meta("turn_number", turn_no)
+
+    # ── Session ────────────────────────────────────────────────────────
+
+    def build_session_info(self) -> str:
+        """Build a one-time system message injected at conversation start."""
+        now = datetime.now(ZoneInfo("America/Los_Angeles")).strftime("%Y-%m-%d %H:%M:%S %Z")
+        return f"[Session Start]\nCurrent time: {now}"
+
+    async def seed_session_info(self, user_id: str) -> None:
+        """Persist session-info system message at the start of a new conversation."""
+        if not self.ctx or not user_id:
+            return
+        msg = self.build_session_info()
+        try:
+            await self.ctx.add_turn(user_id=user_id, role="system", content=msg)
+        except Exception as e:
+            logger.warning(f"[PigAgent] Failed to seed session info: {e}")
 
     # ── Low-level stream (no side effects, used by tests) ──────────────
 

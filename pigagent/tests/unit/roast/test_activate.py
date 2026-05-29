@@ -87,5 +87,6 @@ class TestActivateRoast:
             )
 
         assert instance_id == "inst-123"
+        assert body.startswith("[Game Background]")
         assert "test prompt" in body
         mock_rs.start.assert_called_once()
