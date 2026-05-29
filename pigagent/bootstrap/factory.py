@@ -290,15 +290,16 @@ def create_agent_components(config=None, persona=None):
     if tts_emotion is None and config.CARTESIA_TTS_EMOTION:
         tts_emotion = [e.strip() for e in config.CARTESIA_TTS_EMOTION.split(",")]
 
-    tts_lang = config.CARTESIA_TTS_LANGUAGE or "en"
     tts = create_tts(
         model=config.CARTESIA_TTS_MODEL,
-        language=tts_lang,
+        language=config.CARTESIA_TTS_LANGUAGE,
+        encoding=config.CARTESIA_TTS_ENCODING,
         voice=tts_voice,
         speed=tts_speed,
         emotion=tts_emotion,
         volume=config.CARTESIA_TTS_VOLUME,
         sample_rate=config.CARTESIA_TTS_SAMPLE_RATE,
+        word_timestamps=config.CARTESIA_TTS_WORD_TIMESTAMPS,
         api_key=cartesia_api_key,
         base_url=config.CARTESIA_TTS_BASE_URL,
     )

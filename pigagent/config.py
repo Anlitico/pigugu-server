@@ -102,10 +102,9 @@ class AgentConfig(BaseSettings):
     CARTESIA_STT_BASE_URL: str = Field(default_factory=lambda: get_config_value("CARTESIA_STT_BASE_URL", "https://api.cartesia.ai"))
     
     # TTS Configuration (Cartesia)
-    CARTESIA_TTS_MODEL: str = Field(default_factory=lambda: get_config_value("CARTESIA_TTS_MODEL", "sonic-3.5"))
+    CARTESIA_TTS_MODEL: str = Field(default_factory=lambda: get_config_value("CARTESIA_TTS_MODEL", "sonic-2"))
     CARTESIA_TTS_VOICE: str = Field(default_factory=lambda: get_config_value("CARTESIA_TTS_VOICE", "9783574a-63f4-46bf-b56b-928eb52d3140"))
     CARTESIA_TTS_LANGUAGE: Optional[str] = Field(default_factory=lambda: get_config_value("CARTESIA_TTS_LANGUAGE", "en"))
-    CARTESIA_TTS_MAX_BUFFER_DELAY_MS: int = Field(default_factory=lambda: int(get_config_value("CARTESIA_TTS_MAX_BUFFER_DELAY_MS", 100)))
     CARTESIA_TTS_ENCODING: str = Field(default_factory=lambda: get_config_value("CARTESIA_TTS_ENCODING", "pcm_s16le"))
     CARTESIA_TTS_SAMPLE_RATE: int = Field(default_factory=lambda: int(get_config_value("CARTESIA_TTS_SAMPLE_RATE", 24000)))
     CARTESIA_TTS_SPEED: Optional[float] = Field(default_factory=lambda: float(get_config_value("CARTESIA_TTS_SPEED")) if get_config_value("CARTESIA_TTS_SPEED") else None)
@@ -207,7 +206,7 @@ def _log_config_summary(cfg: AgentConfig) -> None:
         ("STT_PROVIDER", cfg.STT_PROVIDER),
         ("DEEPGRAM", f"model={cfg.DEEPGRAM_STT_MODEL} lang={cfg.DEEPGRAM_STT_LANGUAGE} rate={cfg.DEEPGRAM_STT_SAMPLE_RATE} diarization={cfg.DEEPGRAM_ENABLE_DIARIZATION}"),
         ("CARTESIA_STT", f"model={cfg.CARTESIA_STT_MODEL} lang={cfg.CARTESIA_STT_LANGUAGE} encoding={cfg.CARTESIA_STT_ENCODING} rate={cfg.CARTESIA_STT_SAMPLE_RATE}"),
-        ("CARTESIA_TTS", f"model={cfg.CARTESIA_TTS_MODEL} voice={cfg.CARTESIA_TTS_VOICE} lang={cfg.CARTESIA_TTS_LANGUAGE} speed={cfg.CARTESIA_TTS_SPEED} emotion={cfg.CARTESIA_TTS_EMOTION} volume={cfg.CARTESIA_TTS_VOLUME} max_buffer_delay_ms={cfg.CARTESIA_TTS_MAX_BUFFER_DELAY_MS}"),
+        ("CARTESIA_TTS", f"model={cfg.CARTESIA_TTS_MODEL} voice={cfg.CARTESIA_TTS_VOICE} lang={cfg.CARTESIA_TTS_LANGUAGE} speed={cfg.CARTESIA_TTS_SPEED} emotion={cfg.CARTESIA_TTS_EMOTION} volume={cfg.CARTESIA_TTS_VOLUME}"),
         ("QWEN_MODEL", cfg.QWEN_MODEL),
         ("LLM_TEMPERATURE", cfg.LLM_TEMPERATURE),
         ("LLM_MAX_TOKENS", cfg.LLM_MAX_TOKENS),
