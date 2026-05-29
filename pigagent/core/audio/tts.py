@@ -58,7 +58,7 @@ class CartesiaTTS(TTSProvider):
     
     def __init__(
         self,
-        model: str = "sonic-2",
+        model: str = "sonic-3.5",
         language: Optional[str] = "en",
         encoding: str = "pcm_s16le",
         voice: Union[str, list[float]] = "9783574a-63f4-46bf-b56b-928eb52d3140",  # Default Cartesia voice
@@ -163,7 +163,7 @@ class CartesiaTTS(TTSProvider):
 
 
 def create_tts(
-    model: str = "sonic-2",
+    model: str = "sonic-3.5",
     language: Optional[str] = "en",
     encoding: str = "pcm_s16le",
     voice: Union[str, list[float]] = "9783574a-63f4-46bf-b56b-928eb52d3140",

@@ -102,7 +102,7 @@ class AgentConfig(BaseSettings):
     CARTESIA_STT_BASE_URL: str = Field(default_factory=lambda: get_config_value("CARTESIA_STT_BASE_URL", "https://api.cartesia.ai"))
     
     # TTS Configuration (Cartesia)
-    CARTESIA_TTS_MODEL: str = Field(default_factory=lambda: get_config_value("CARTESIA_TTS_MODEL", "sonic-2"))
+    CARTESIA_TTS_MODEL: str = Field(default_factory=lambda: get_config_value("CARTESIA_TTS_MODEL", "sonic-3.5"))
     CARTESIA_TTS_VOICE: str = Field(default_factory=lambda: get_config_value("CARTESIA_TTS_VOICE", "9783574a-63f4-46bf-b56b-928eb52d3140"))
     CARTESIA_TTS_LANGUAGE: Optional[str] = Field(default_factory=lambda: get_config_value("CARTESIA_TTS_LANGUAGE", "en"))
     CARTESIA_TTS_ENCODING: str = Field(default_factory=lambda: get_config_value("CARTESIA_TTS_ENCODING", "pcm_s16le"))
