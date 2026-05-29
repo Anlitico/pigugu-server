@@ -168,6 +168,9 @@ class AgentRunner:
                             name=tr.tool_name,
                             content=tr.content if tr.success else f"Error: {tr.error}",
                         ))
+                        if tr.inject:
+                            for inj in tr.inject:
+                                msgs.append(Message(role=inj["role"], content=inj["content"]))
                     continue
 
                 msgs.append(self._make_assistant_msg(
@@ -269,6 +272,9 @@ class AgentRunner:
                             name=tr.tool_name,
                             content=tr.content if tr.success else f"Error: {tr.error}",
                         ))
+                        if tr.inject:
+                            for inj in tr.inject:
+                                messages.append(Message(role=inj["role"], content=inj["content"]))
                     continue
 
                 messages.append(self._make_assistant_msg(result))

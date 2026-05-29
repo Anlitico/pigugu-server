@@ -28,6 +28,10 @@ class ToolResult:
     content: str = ""
     error: str | None = None
     duration_ms: float = 0.0
+    inject: list[dict] | None = None
+    """Messages to inject into the conversation after this tool result, e.g.
+    [{"role": "user", "content": "..."}]. Set when the handler returns a dict
+    with an '_inject' key."""
 
 
 @dataclass
@@ -163,6 +167,9 @@ class ToolExecutor:
                     self._call_handler(handler, args),
                     timeout=timeout,
                 )
+                inject: list[dict] | None = None
+                if isinstance(result, dict) and "_inject" in result:
+                    inject = result.pop("_inject")
                 content = result if isinstance(result, str) else json.dumps(result, ensure_ascii=False)
                 duration_ms = (time.monotonic() - t0) * 1000
                 logger.debug(f"[Executor] {tc.name} completed in {duration_ms:.0f}ms")
@@ -172,6 +179,7 @@ class ToolExecutor:
                     success=True,
                     content=content,
                     duration_ms=duration_ms,
+                    inject=inject,
                 )
             except asyncio.TimeoutError:
                 duration_ms = (time.monotonic() - t0) * 1000

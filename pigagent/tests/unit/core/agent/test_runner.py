@@ -39,9 +39,16 @@ class MockProvider:
 
 
 class _FakeExecutor:
+    def __init__(self, inject=None):
+        self._inject = inject
+
     async def run(self, tool_calls, timeout=None, concurrent=True):
         from core.agent.executor import ToolExecutionResult, ToolResult
-        fake = [ToolResult(tool_call_id=tc.id, tool_name=tc.name, success=True, content="ok") for tc in tool_calls]
+        fake = []
+        for tc in tool_calls:
+            tr = ToolResult(tool_call_id=tc.id, tool_name=tc.name, success=True,
+                            content="ok", inject=self._inject)
+            fake.append(tr)
         return ToolExecutionResult(results=fake)
 
 
@@ -252,6 +259,48 @@ class TestStreamInterrupt:
         last_msg = runner.last_messages[-1]
         assert last_msg.partial is True
         assert "Hello, " in last_msg.content
+
+    def test_injected_message_appended_after_tool_result(self, monkeypatch):
+        """When a tool result has inject, the injected message appears in last_messages."""
+        from core.llm.types import ToolCall, ChatDelta
+
+        inject_msg = {"role": "user", "content": "[System - Game Background]\ngame body"}
+        call_count = [0]
+
+        class StepProvider:
+            async def chat_stream(self, **kw):
+                call_count[0] += 1
+                if call_count[0] == 1:
+                    tc = ToolCall(id="c1", name="start_roast", arguments='{"roast_id":"r1"}')
+                    yield ChatDelta(tool_calls=[tc], finish_reason="tool_calls")
+                else:
+                    yield ChatDelta(content="opening line", finish_reason="stop")
+
+        monkeypatch.setattr("core.agent.runner.get_llm", lambda model: StepProvider())
+        monkeypatch.setattr(
+            "core.agent.runner.ToolExecutor",
+            lambda *a, **kw: _FakeExecutor(inject=[inject_msg]),
+        )
+
+        runner = AgentRunner(RunnerConfig(model="test", max_steps=5))
+        msgs = self._msgs("start the game")
+
+        async def _collect():
+            chunks = []
+            async for t in runner.stream(msgs):
+                chunks.append(t)
+            return chunks
+
+        result = asyncio.run(_collect())
+        assert "".join(result) == "opening line"
+
+        # The injected message is in last_messages after the tool result
+        roles = [m.role for m in runner.last_messages if hasattr(m, "role")]
+        assert "tool" in roles
+        # Injected user message should be present
+        user_contents = [m.content for m in runner.last_messages if m.role == "user"]
+        injected_found = any(inject_msg["content"] in c for c in user_contents)
+        assert injected_found
 
     def test_interrupt_before_any_output(self, monkeypatch):
         provider = SlowStreamProvider(["a", "b", "c"], delay=0.05)
