@@ -30,6 +30,9 @@ def create_tts(
     api_key = api_key or os.getenv("CARTESIA_API_KEY")
     if not api_key:
         raise ValueError("CARTESIA_API_KEY is required for Cartesia TTS")
+    # Normalize model name: inference path requires "cartesia/sonic-3" format
+    if "/" not in model:
+        model = f"cartesia/{model}"
 
     extra: dict[str, Any] = {"max_buffer_delay_ms": max_buffer_delay_ms}
     if speed is not None:

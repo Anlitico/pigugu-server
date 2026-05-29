@@ -60,3 +60,15 @@ class TestCreateTTS:
             create_tts(api_key="k", emotion=["happy", "sad"])
         extra = mock_tts.call_args.kwargs["extra_kwargs"]
         assert extra["emotion"] == "happy,sad"
+
+    def test_normalizes_legacy_model_name(self):
+        from core.audio.tts import create_tts
+        with patch("core.audio.tts.TTS") as mock_tts:
+            create_tts(api_key="k", model="sonic-2")
+        assert mock_tts.call_args.kwargs["model"] == "cartesia/sonic-2"
+
+    def test_preserves_full_model_name(self):
+        from core.audio.tts import create_tts
+        with patch("core.audio.tts.TTS") as mock_tts:
+            create_tts(api_key="k", model="cartesia/sonic-3.5")
+        assert mock_tts.call_args.kwargs["model"] == "cartesia/sonic-3.5"
