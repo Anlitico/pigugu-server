@@ -17,7 +17,7 @@ load_dotenv(dotenv_path=Path(__file__).parent.parent.parent / ".env", override=T
 def _make_test_agent():
     """Create a PigAgent with real LLM, mocked storage."""
     from agent import PigAgent
-    from personas import PersonaRegistry
+    from system_prompts import PersonaRegistry
 
     PersonaRegistry.register_defaults()
     prompts = PersonaRegistry.build_prompt_cache()
@@ -108,7 +108,7 @@ class TestStartRoast:
         game_modes = GameModeRegistry.build_cache()
 
         from agent import PigAgent
-        from personas import PersonaRegistry
+        from system_prompts import PersonaRegistry
         PersonaRegistry.register_defaults()
         prompts = PersonaRegistry.build_prompt_cache()
 

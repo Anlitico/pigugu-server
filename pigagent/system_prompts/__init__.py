@@ -63,10 +63,18 @@ class PersonaRegistry:
 
     @classmethod
     def build_prompt_cache(cls) -> dict[int, str]:
-        """Pre-build {persona_id: system_prompt} for all registered personas."""
+        """Pre-build {persona_id: system_prompt} for all registered personas.
+
+        Each entry is: global system prompt + persona-specific prompt.
+        """
         if not cls._initialized:
             cls.register_defaults()
-        return {pid: p.get_full_prompt() for pid, p in cls._personas.items()}
+        from system_prompts.global_prompt import get_global_prompt
+        global_prompt = get_global_prompt()
+        return {
+            pid: f"{global_prompt}\n\n{p.get_full_prompt()}"
+            for pid, p in cls._personas.items()
+        }
 
 
 def get_persona(persona_id: int = 1) -> Persona:

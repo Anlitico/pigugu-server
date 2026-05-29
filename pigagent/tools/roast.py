@@ -69,9 +69,8 @@ def create_list_roasts_tool(pg_pool: str, *, connect: ConnectFn | None = None) -
     return Tool(
         name="list_active_roasts",
         description=(
-            "List currently active roast game scenarios from the database. "
-            "Use this to browse available roasts for the user to play. "
-            "Returns roast_id, game_mode, headline, teaser, and created_at for each scenario."
+            "List currently active roast (吐槽) game scenarios. "
+            "Returns roast_id, game_mode, headline, teaser, and created_at for each."
         ),
         parameters={
             "type": "object",
@@ -172,8 +171,7 @@ def create_start_roast_tool(
         name="start_roast",
         description=(
             "Start a roast game by roast_id. "
-            "Call this when the user wants to start a specific roast game. "
-            "This will load the scenario, set up the game session, and the game begins immediately."
+            "Loads the full scenario and the game begins immediately."
         ),
         parameters={
             "type": "object",

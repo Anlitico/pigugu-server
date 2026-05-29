@@ -36,9 +36,7 @@ def create_web_search_tool(provider: SearchProvider) -> Tool:
     return Tool(
         name="web_search",
         description=(
-            "Search the web for current information. "
-            "Use this for questions about recent events, news, facts, or "
-            "anything that may have changed since the model's training data. "
+            "Search the web for information. "
             "Returns synthesized answers with source citations."
         ),
         parameters={
