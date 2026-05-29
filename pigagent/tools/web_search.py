@@ -42,12 +42,16 @@ def create_web_search_tool(provider: SearchProvider) -> Tool:
         parameters={
             "type": "object",
             "properties": {
+                "user_reply": {
+                    "type": "string",
+                    "description": "A brief spoken sentence before searching. Always fill this first.",
+                },
                 "query": {
                     "type": "string",
                     "description": "The search query to execute",
                 },
             },
-            "required": ["query"],
+            "required": ["user_reply", "query"],
         },
         execute=_handler,
     )

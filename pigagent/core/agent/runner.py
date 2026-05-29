@@ -131,6 +131,7 @@ class AgentRunner:
                 collected = []
                 tool_calls: list | None = None
                 finish = "stop"
+                _reply_yielded: set[int] = set()  # tool_call indices whose user_reply was already yielded
 
                 async for delta in provider.chat_stream(  # type: ignore[reportGeneralTypeIssues]
                     messages=msgs,
@@ -150,6 +151,11 @@ class AgentRunner:
 
                     if delta.tool_calls:
                         tool_calls = delta.tool_calls
+                        for tc in delta.tool_calls:
+                            text = _pull_user_reply(tc)
+                            if text and tc.index not in _reply_yielded:
+                                _reply_yielded.add(tc.index)
+                                yield text  # → TTS only, not added to context
 
                     if delta.finish_reason:
                         finish = delta.finish_reason
@@ -350,3 +356,30 @@ class AgentRunner:
             content=result.content,
             tool_calls=result.tool_calls,
         )
+
+
+# ── user_reply helpers ──────────────────────────────────────────────────────
+
+import re as _re
+
+_USER_REPLY_RE = _re.compile(r'"user_reply"\s*:\s*"((?:[^"\\]|\\.)*)"')
+
+
+def _pull_user_reply(tc) -> str | None:
+    """Extract user_reply text from a streaming tool_call's arguments.
+
+    user_reply is always the first JSON field. Once the closing quote is
+    found, return the content so the runner can yield it for TTS.
+    """
+    args = tc.arguments or ""
+    if not args:
+        return None
+    m = _USER_REPLY_RE.search(args)
+    if m is None:
+        return None
+    # Only yield once the field is complete (comma or closing brace follows)
+    end = m.end()
+    if end < len(args) and args[end] not in (",", "}"):
+        return None
+    text = m.group(1)
+    return _re.sub(r'\\(.)', r'\1', text)

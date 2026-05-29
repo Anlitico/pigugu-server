@@ -122,7 +122,7 @@ class TestStartRoastTool:
 
     def test_parameters_require_roast_id(self):
         tool, *_ = _make_start_tool()
-        assert tool.parameters["required"] == ["roast_id"]
+        assert tool.parameters["required"] == ["user_reply", "roast_id"]
 
     @pytest.mark.asyncio
     async def test_not_found_returns_message(self):

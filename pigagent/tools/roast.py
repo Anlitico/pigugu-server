@@ -69,12 +69,16 @@ def create_list_roasts_tool(pg_pool: str, *, connect: ConnectFn | None = None) -
     return Tool(
         name="list_active_roasts",
         description=(
-            "List currently active roast (吐槽) game scenarios. "
+            "List currently active roast game scenarios. "
             "Returns roast_id, game_mode, headline, teaser, and created_at for each."
         ),
         parameters={
             "type": "object",
             "properties": {
+                "user_reply": {
+                    "type": "string",
+                    "description": "A brief spoken sentence to say before showing the results. Always fill this first.",
+                },
                 "game_mode": {
                     "type": "string",
                     "enum": ["poison_opinion", "debate", "prediction", "breaking_bomb"],
@@ -89,7 +93,7 @@ def create_list_roasts_tool(pg_pool: str, *, connect: ConnectFn | None = None) -
                     "description": "Filter roasts created on or before this date (YYYY-MM-DD format).",
                 },
             },
-            "required": [],
+            "required": ["user_reply"],
         },
         execute=_handler,
     )
@@ -159,7 +163,7 @@ def create_start_roast_tool(
         # 3. Return with _inject — runner injects roast body after tool_result
         return {
             "message": (
-                f"roast 信息已经查询到，将会写入到下面的context里。"
+                f"Roast loaded. The game scenario will be added to the context. "
                 f"roast_instance_id: {instance_id}"
             ),
             "_inject": [
@@ -176,12 +180,16 @@ def create_start_roast_tool(
         parameters={
             "type": "object",
             "properties": {
+                "user_reply": {
+                    "type": "string",
+                    "description": "A brief spoken sentence before starting the game. Always fill this first.",
+                },
                 "roast_id": {
                     "type": "string",
                     "description": "The roast_id to start, e.g. debate_2026-05-19_001",
                 },
             },
-            "required": ["roast_id"],
+            "required": ["user_reply", "roast_id"],
         },
         execute=_handler,
     )
