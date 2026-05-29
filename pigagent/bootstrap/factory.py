@@ -299,7 +299,6 @@ def create_agent_components(config=None, persona=None):
         emotion=tts_emotion,
         volume=config.CARTESIA_TTS_VOLUME,
         sample_rate=config.CARTESIA_TTS_SAMPLE_RATE,
-        max_buffer_delay_ms=config.CARTESIA_TTS_MAX_BUFFER_DELAY_MS,
         api_key=cartesia_api_key,
         base_url=config.CARTESIA_TTS_BASE_URL,
     )
