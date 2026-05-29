@@ -155,7 +155,7 @@ def _build_pig_agent(config=None) -> PigAgent:
 
     model = config.resolve_model()
 
-    from personas import PersonaRegistry
+    from system_prompts import PersonaRegistry
     PersonaRegistry.register_defaults()
     prompts = PersonaRegistry.build_prompt_cache()
     logger.info(f"[Factory] Prompt cache built: {list(prompts.keys())}")

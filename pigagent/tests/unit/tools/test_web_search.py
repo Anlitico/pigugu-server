@@ -29,7 +29,7 @@ class TestCreateWebSearchTool:
     def test_description_is_hand_written(self):
         tool = create_web_search_tool(FakeProvider())
         assert "Search the web" in tool.description
-        assert len(tool.description) > 50
+        assert "synthesized answers" in tool.description
 
     def test_parameters_schema(self):
         tool = create_web_search_tool(FakeProvider())

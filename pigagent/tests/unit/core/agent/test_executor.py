@@ -145,6 +145,48 @@ class TestToolExecutor:
         assert result.success
         assert result.content == "ok"
 
+    def test_inject_extracted_from_handler_result(self):
+        """_inject key is popped from content and stored in ToolResult.inject."""
+        from core.llm.types import ToolCall
+
+        def handler(args: dict) -> dict:
+            return {
+                "message": "done",
+                "_inject": [{"role": "user", "content": "injected body"}],
+            }
+
+        executor = ToolExecutor(handlers={"t": handler})
+        tc = ToolCall(id="1", name="t", arguments="{}")
+        result = asyncio.run(executor.run_single(tc))
+
+        assert result.success
+        # _inject should NOT be in content
+        assert "_inject" not in result.content
+        assert '"message": "done"' in result.content
+        # _inject should be in the inject field
+        assert result.inject is not None
+        assert len(result.inject) == 1
+        assert result.inject[0]["role"] == "user"
+        assert result.inject[0]["content"] == "injected body"
+
+    def test_inject_none_when_not_present(self):
+        from core.llm.types import ToolCall
+
+        executor = ToolExecutor(handlers={"t": lambda a: "ok"})
+        tc = ToolCall(id="1", name="t", arguments="{}")
+        result = asyncio.run(executor.run_single(tc))
+
+        assert result.inject is None
+
+    def test_inject_not_extracted_for_string_result(self):
+        from core.llm.types import ToolCall
+
+        executor = ToolExecutor(handlers={"t": lambda a: "plain string"})
+        tc = ToolCall(id="1", name="t", arguments="{}")
+        result = asyncio.run(executor.run_single(tc))
+
+        assert result.inject is None
+
     def test_interrupt_cancels_pending(self):
         """Verify that CancelledError cleans up child tasks."""
         from core.llm.types import ToolCall
