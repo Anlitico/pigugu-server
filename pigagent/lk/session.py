@@ -100,7 +100,7 @@ async def run(ctx: JobContext) -> None:
         turn_detection="vad",
         min_endpointing_delay=config.ENDPOINTING_DELAY,
         turn_handling=TurnHandlingOptions(
-            preemptive_generation={"enabled": config.ENABLE_PREEMPTIVE_SYNTHESIS},
+            preemptive_generation={"enabled": config.ENABLE_PREEMPTIVE_SYNTHESIS, "preemptive_tts": True},
             interruption={"mode": "adaptive", "min_duration": 0.1},
         ),
     )
