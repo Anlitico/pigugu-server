@@ -58,6 +58,7 @@ class PigAgent:
         self._pg_pool = pg_pool
         self._prompts: dict[int, str] = prompts or {}
         self._game_modes: dict[str, Any] = game_modes or {}
+        self._session_seeded: bool = False
 
         if tools is None:
             default_registry = self._create_default_tools()
@@ -138,7 +139,14 @@ class PigAgent:
         if prompt:
             messages.insert(0, Message.system(prompt))
 
-        # 4. Check roast routing — auto-close if game phase is no longer ACTIVE
+        # 4. Seed session info on first turn — after history, before user message
+        if not self._session_seeded:
+            session_msg = Message.system(self.build_session_info())
+            messages.insert(-1, session_msg)  # before user message, after history
+            asyncio.create_task(self._persist_turns(user_id, [session_msg]))
+            self._session_seeded = True
+
+        # 5. Check roast routing — auto-close if game phase is no longer ACTIVE
         roast_state = await self.get_active_roast(user_id)
         game_mode = None
         if roast_state:

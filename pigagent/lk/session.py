@@ -251,9 +251,6 @@ async def run(ctx: JobContext) -> None:
     bridge._user_id = user_id
     logger.info(f"User ID resolved: {user_id}")
 
-    # Seed session-info system message at conversation start
-    await pig_agent.seed_session_info(user_id)
-
     # Accept TrackSource.UNKNOWN (0) in addition to SOURCE_MICROPHONE (2).
     # LiveKit JS client's LocalAudioTrack may report source="unknown" instead
     # of "microphone", causing _on_track_available to reject the audio track.
