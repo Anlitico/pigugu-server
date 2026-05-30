@@ -21,6 +21,8 @@ from ..llm.registry import ModelRegistry
 from ..llm.types import Message, ChatResponse
 from .stop import StepResult, step_count_is, no_tool_calls
 
+from livekit.agents.types import FlushSentinel
+
 from .state import AgentState, StateStatus
 from .executor import ToolExecutor
 from .interrupt import get_interrupt_manager, InterruptedException
@@ -100,8 +102,8 @@ class AgentRunner:
         *,
         search: dict | None = None,
         interrupt_event: asyncio.Event | None = None,
-    ) -> AsyncIterator[str]:
-        """Stream the ReAct loop, yielding text chunks for TTS.
+    ) -> AsyncIterator[str | FlushSentinel]:
+        """Stream the ReAct loop, yielding text chunks and FlushSentinel for TTS.
 
         All state is local  -  safe for concurrent calls on the same instance.
         """
@@ -156,6 +158,7 @@ class AgentRunner:
                             if text and tc.index not in _reply_yielded:
                                 _reply_yielded.add(tc.index)
                                 yield text  # → TTS only, not added to context
+                                yield FlushSentinel()  # commit TTS immediately, don't wait for tool exec
 
                     if delta.finish_reason:
                         finish = delta.finish_reason

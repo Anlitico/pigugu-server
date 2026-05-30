@@ -16,7 +16,10 @@ import asyncio
 from collections.abc import AsyncIterator
 from datetime import datetime
 from zoneinfo import ZoneInfo
-from typing import Any
+from typing import Any, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from livekit.agents.types import FlushSentinel
 
 from loguru import logger
 from metrics.turn import TelemetryCollector
@@ -102,7 +105,7 @@ class PigAgent:
         *,
         persona_id: int = 1,
         interrupt_event: asyncio.Event | None = None,
-    ) -> AsyncIterator[str]:
+    ) -> AsyncIterator[str | FlushSentinel]:
         """Complete reply pipeline: load context  ->  assemble  ->  stream  ->  persist.
 
         The single entry point for the voice bridge. Handles:
@@ -169,14 +172,16 @@ class PigAgent:
                     if first_yield:
                         TelemetryCollector.mark("llm_internal")
                         first_yield = False
-                    response_chunks.append(text)
+                    if isinstance(text, str):
+                        response_chunks.append(text)
                     yield text
             else:
                 async for text in self.runner.stream(messages, interrupt_event=interrupt_event):
                     if first_yield:
                         TelemetryCollector.mark("llm_internal")
                         first_yield = False
-                    response_chunks.append(text)
+                    if isinstance(text, str):
+                        response_chunks.append(text)
                     yield text
         finally:
             _current_user_id.reset(token_user)
@@ -222,7 +227,7 @@ class PigAgent:
         persona_id: int = 1,
         search: dict | None = None,
         interrupt_event: asyncio.Event | None = None,
-    ) -> AsyncIterator[str]:
+    ) -> AsyncIterator[str | FlushSentinel]:
         """Low-level ReAct loop. No context loading, no persistence."""
         prompt = self._prompts.get(persona_id, "")
         if prompt:
@@ -242,7 +247,7 @@ class PigAgent:
         roast_id: str,
         mode_id: str,
         prompt: str,
-    ) -> AsyncIterator[str]:
+    ) -> AsyncIterator[str | FlushSentinel]:
         """Start a roast game and stream the opening reply.
 
         Called by the API service after resolving the scenario from PG.
@@ -314,7 +319,7 @@ class PigAgent:
         game_mode,
         *,
         interrupt_event: asyncio.Event | None = None,
-    ) -> AsyncIterator[str]:
+    ) -> AsyncIterator[str | FlushSentinel]:
         """Roast pipeline: consume pending  ->  stream  ->  tick.
 
         Roast body (news + game rules) was already persisted to context
