@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import contextvars
 from collections.abc import Awaitable, Callable
+from datetime import date, datetime
 from typing import Any
 
 import asyncpg
@@ -12,6 +13,10 @@ from loguru import logger
 from core.agent.tool import Tool
 
 ConnectFn = Callable[[str], Awaitable[Any]]
+
+
+def _parse_date(val: str) -> date:
+    return datetime.strptime(val, "%Y-%m-%d").date()
 
 _current_user_id = contextvars.ContextVar("current_user_id", default="")
 _current_persona_id = contextvars.ContextVar("current_persona_id", default=1)
@@ -32,7 +37,7 @@ def create_list_roasts_tool(pg_pool: str, *, connect: ConnectFn | None = None) -
             FROM roast_scenarios
             WHERE status = 'active'
         """
-        params: list[str] = []
+        params: list[Any] = []
 
         if game_mode:
             idx = len(params) + 1
@@ -41,11 +46,11 @@ def create_list_roasts_tool(pg_pool: str, *, connect: ConnectFn | None = None) -
         if start_date:
             idx = len(params) + 1
             query += f" AND created_at >= ${idx}"
-            params.append(start_date)
+            params.append(_parse_date(start_date))
         if end_date:
             idx = len(params) + 1
             query += f" AND created_at <= ${idx}"
-            params.append(end_date)
+            params.append(_parse_date(end_date))
 
         query += " ORDER BY created_at DESC LIMIT 50"
 
