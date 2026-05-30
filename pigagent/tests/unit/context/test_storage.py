@@ -523,3 +523,79 @@ class TestPgPool:
                 mock_pool.acquire.assert_called_once()
 
         pg_mod._pool = None
+
+
+# -------------------------------------------------------------------------------
+# Redis TTL renewal
+# -------------------------------------------------------------------------------
+
+class TestRedisTtl:
+    """Tests for _refresh_user_ttl — keeps all user keys alive as a unit."""
+
+    @pytest.mark.asyncio
+    async def test_refresh_renews_all_keys(self):
+        """_refresh_user_ttl sets TTL on turns, summaries, and game_state keys."""
+        from context.storage.redis import _refresh_user_ttl, _USER_TTL, RedisKeys
+
+        redis = MagicMock()
+        redis.expire = AsyncMock()
+
+        await _refresh_user_ttl(redis, "u1")
+
+        assert redis.expire.call_count == 3
+        redis.expire.assert_any_call(RedisKeys.turns("u1"), _USER_TTL)
+        redis.expire.assert_any_call(RedisKeys.summaries("u1"), _USER_TTL)
+        redis.expire.assert_any_call(RedisKeys.game_state("u1"), _USER_TTL)
+
+    @pytest.mark.asyncio
+    async def test_refresh_none_redis_does_nothing(self):
+        """Passing None redis client is silently ignored."""
+        from context.storage.redis import _refresh_user_ttl
+        await _refresh_user_ttl(None, "u1")
+
+    @pytest.mark.asyncio
+    async def test_refresh_exception_does_not_raise(self):
+        """If expire fails (e.g. network), the error is swallowed."""
+        from context.storage.redis import _refresh_user_ttl
+
+        redis = MagicMock()
+        redis.expire = AsyncMock(side_effect=Exception("connection lost"))
+        await _refresh_user_ttl(redis, "u1")
+
+    @pytest.mark.asyncio
+    async def test_push_turn_calls_refresh(self):
+        """push_turn should refresh TTL after writing."""
+        from context.storage.redis import RedisStorage
+
+        redis = MagicMock()
+        redis.pipeline.return_value = redis
+        redis.rpush = MagicMock()
+        redis.ltrim = MagicMock()
+        redis.execute = AsyncMock()
+        redis.expire = AsyncMock()
+
+        store = RedisStorage("u1", redis)
+        await store.push_turn('{"turn": 1}')
+
+        assert redis.expire.call_count >= 3
+
+    @pytest.mark.asyncio
+    async def test_write_summaries_calls_refresh(self):
+        """write_summaries should refresh TTL on all keys after writing."""
+        from context.storage.redis import RedisStorage
+
+        redis = MagicMock()
+        redis.set = AsyncMock()
+        redis.expire = AsyncMock()
+
+        store = RedisStorage("u1", redis)
+        await store.write_summaries(5, l2_profile="profile")
+
+        assert redis.set.call_count >= 1
+        assert redis.expire.call_count >= 2
+
+    def test_ttl_is_seven_days(self):
+        """_USER_TTL should be exactly 604800 seconds (7 days)."""
+        from context.storage.redis import _USER_TTL
+        assert _USER_TTL == 604800
+        assert _USER_TTL == 7 * 24 * 3600

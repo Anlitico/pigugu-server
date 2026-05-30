@@ -20,7 +20,7 @@ from loguru import logger
 from config import get_config
 
 from .storage.memory import MemoryStore
-from .storage.redis import RedisStorage, RedisKeys
+from .storage.redis import RedisStorage, RedisKeys, _refresh_user_ttl, _USER_TTL
 from .storage.pg import PgStorage
 from .schema import UserMemory, RoastContext, WorkingContext, ConversationRecord, SummaryRecord
 from .snapshot import ContextSnapshot
@@ -62,14 +62,20 @@ class ContextManager:
         mem.write_game_state(state)
         if self._redis:
             try:
-                asyncio.create_task(
-                    self._redis.hset(
-                        RedisKeys.game_state(user_id),
-                        mapping={k: str(v) for k, v in state.items()},
-                    )
-                )
+                asyncio.create_task(self._write_game_state_redis(user_id, state))
             except Exception:
                 pass
+
+    async def _write_game_state_redis(self, user_id: str, state: dict) -> None:
+        redis = self._redis
+        if redis is None:
+            return
+        await redis.hset(
+            RedisKeys.game_state(user_id),
+            mapping={k: str(v) for k, v in state.items()},
+        )
+        await redis.expire(RedisKeys.game_state(user_id), _USER_TTL)
+        await _refresh_user_ttl(redis, user_id)
 
     # ── Turn Recording ────────────────────────────────────────────────
 

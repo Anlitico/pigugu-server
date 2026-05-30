@@ -13,6 +13,30 @@ _cfg = get_config()
 
 from context.schema import ConversationRecord
 
+_USER_TTL = 604800  # 7 days — all keys for a user share this TTL
+
+
+async def _refresh_user_ttl(redis, user_id: str) -> None:
+    """Reset TTL on all context keys for a user.
+
+    Keeps the full context (turns, summaries, game_state) alive as a unit.
+    Any write resets the TTL for ALL keys — prevents partial expiry where
+    turns survive but summaries are gone.
+    """
+    if redis is None:
+        return
+    try:
+        keys = [
+            RedisKeys.turns(user_id),
+            RedisKeys.summaries(user_id),
+            RedisKeys.game_state(user_id),
+        ]
+        for key in keys:
+            await redis.expire(key, _USER_TTL)
+    except Exception:
+        pass
+
+
 class RedisKeys:
     """Canonical Redis key patterns. All keyed by user_id."""
 
@@ -149,9 +173,11 @@ class RedisStorage:
                 "roast_prompt": roast_prompt,
                 "roast_prompt_turn": roast_prompt_turn,
             }, ensure_ascii=False)
-            await self._redis.set(RedisKeys.summaries(self._user_id), data)
+            await self._redis.set(RedisKeys.summaries(self._user_id), data, ex=_USER_TTL)
         except Exception:
             pass
+        else:
+            await _refresh_user_ttl(self._redis, self._user_id)
 
     # ── Game State ───────────────────────────────────────────────────
 
@@ -180,6 +206,7 @@ class RedisStorage:
                 pipe.rpush(RedisKeys.turns(self._user_id), turn_data)
                 pipe.ltrim(RedisKeys.turns(self._user_id), -_cfg.CONTEXT_HOT_WINDOW_SIZE, -1)
                 await pipe.execute()
+            await _refresh_user_ttl(self._redis, self._user_id)
         except Exception as e:
             logger.warning(f"Redis turn push failed: {e}")
 
