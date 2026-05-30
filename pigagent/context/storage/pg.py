@@ -3,7 +3,9 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
+import os
 from contextlib import asynccontextmanager
 from datetime import datetime
 from typing import AsyncIterator
@@ -14,14 +16,39 @@ from loguru import logger
 from core.llm.types import Message
 from context.schema import UserMemory, ConversationRecord, SummaryRow
 
+# ── Global PG connection pool (lazy singleton) ──────────────────────────────
+
+_pool: asyncpg.Pool | None = None
+_pool_lock = asyncio.Lock()
+
+
+async def _ensure_pg_pool() -> asyncpg.Pool:
+    """Lazily create and return the global asyncpg connection pool."""
+    global _pool
+    if _pool is not None:
+        return _pool
+
+    async with _pool_lock:
+        if _pool is not None:
+            return _pool
+
+        database_url = os.getenv("DATABASE_URL", "").replace("+asyncpg", "")
+        if not database_url:
+            raise RuntimeError(
+                "DATABASE_URL is required. Set it in .env, "
+                "e.g. postgresql://user:pass@localhost:5432/pigugu"
+            )
+
+        _pool = await asyncpg.create_pool(database_url, min_size=2, max_size=10)
+        logger.info(f"[PG] Connection pool created (min=2, max=10)")
+        return _pool
+
 
 @asynccontextmanager
-async def _connect(dsn: str) -> AsyncIterator[asyncpg.Connection]:
-    conn = await asyncpg.connect(dsn)
-    try:
+async def _connect(_dsn: str = "") -> AsyncIterator[asyncpg.pool.PoolConnectionProxy]:
+    pool = await _ensure_pg_pool()
+    async with pool.acquire() as conn:
         yield conn
-    finally:
-        await conn.close()
 
 
 def _serialize_tool_calls(tool_calls: list | None) -> str | None:
