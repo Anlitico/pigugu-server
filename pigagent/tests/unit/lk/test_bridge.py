@@ -136,14 +136,14 @@ class TestLlmNode:
         assert result == ""
 
     def test_passes_persona_id(self):
-        bridge, pig = _make_bridge(persona_id=2)
+        bridge, pig = _make_bridge(persona_id=1)
         ctx = _make_chat_ctx([("user", "hello")])
 
         import asyncio
         asyncio.run(_run_collect(bridge.llm_node(ctx, [], MagicMock())))
 
         _, kwargs = pig.generate_reply.call_args
-        assert kwargs["persona_id"] == 2
+        assert kwargs["persona_id"] == 1
 
 
 # ── Properties ──────────────────────────────────────────────────────────────

@@ -7,7 +7,6 @@ from collections.abc import Awaitable, Callable
 from datetime import date, datetime
 from typing import Any
 
-import asyncpg
 from loguru import logger
 
 from core.agent.tool import Tool
@@ -25,7 +24,12 @@ _current_persona_id = contextvars.ContextVar("current_persona_id", default=1)
 def create_list_roasts_tool(pg_pool: str, *, connect: ConnectFn | None = None) -> Tool:
     """Create a list_active_roasts Tool that queries the PG roast_scenarios table."""
 
-    _connect = connect or asyncpg.connect
+    async def _acquire():
+        if connect is not None:
+            return await connect(pg_pool)
+        from context.storage.pg import _ensure_pg_pool
+        pool = await _ensure_pg_pool()
+        return await pool.acquire()
 
     async def _handler(args: dict) -> dict[str, Any]:
         game_mode = args.get("game_mode")
@@ -54,7 +58,7 @@ def create_list_roasts_tool(pg_pool: str, *, connect: ConnectFn | None = None) -
 
         query += " ORDER BY created_at DESC LIMIT 50"
 
-        conn = await _connect(pg_pool)
+        conn = await _acquire()
         try:
             rows = await conn.fetch(query, *params)
             roasts = [
@@ -119,7 +123,12 @@ def create_start_roast_tool(
        so the context order is: tool_call → tool_result → user(roast body) → assistant(opening).
     """
 
-    _connect = connect or asyncpg.connect
+    async def _acquire():
+        if connect is not None:
+            return await connect(pg_pool)
+        from context.storage.pg import _ensure_pg_pool
+        pool = await _ensure_pg_pool()
+        return await pool.acquire()
 
     async def _handler(args: dict) -> dict[str, Any]:
         from roast.activate import activate_roast
@@ -131,7 +140,7 @@ def create_start_roast_tool(
         persona_id = _current_persona_id.get()
 
         # 1. Load roast from PG
-        conn = await _connect(pg_pool)
+        conn = await _acquire()
         try:
             row = await conn.fetchrow(
                 "SELECT roast_id, game_mode, prompt "

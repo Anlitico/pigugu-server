@@ -20,7 +20,6 @@ from agent import PigAgent
 
 _pig_agent: PigAgent | None = None
 _redis = None
-_pg_pool = None
 _vad = None
 _stt = None
 
@@ -88,40 +87,6 @@ def _init_redis():
     return _redis
 
 
-def _init_pg_pool():
-    """Initialize asyncpg pool. Fails fast if not configured."""
-    global _pg_pool
-    if _pg_pool is not None:
-        return _pg_pool
-
-    database_url = os.getenv("DATABASE_URL", "").replace("+asyncpg", "")
-    if not database_url:
-        raise RuntimeError(
-            "DATABASE_URL is required. Set it in .env, "
-            "e.g. postgresql://user:pass@localhost:5432/pigugu"
-        )
-
-    import asyncpg  # type: ignore[reportMissingImports]
-    import asyncio
-
-    async def _create():
-        return await asyncpg.create_pool(database_url, min_size=2, max_size=10)
-
-    try:
-        loop = asyncio.get_running_loop()
-    except RuntimeError:
-        _pg_pool = asyncio.run(_create())
-    else:
-        # Running loop exists  -  schedule but can't await here.
-        # Defer to first use via lazy init pattern.
-        _pg_pool = database_url  # store URL, create pool on first access
-        logger.info("[Factory] PG pool deferred (event loop already running)")
-
-    if not isinstance(_pg_pool, str):
-        logger.info(f"[Factory] PG pool created")
-    return _pg_pool
-
-
 def get_redis():
     """Return the global Redis client."""
     global _redis
@@ -131,13 +96,9 @@ def get_redis():
 
 
 def get_pg_pool():
-    """Return the global PG DSN string (not a pool — connections are created per-operation)."""
-    global _pg_pool
-    if _pg_pool is None:
-        _init_pg_pool()
-    if isinstance(_pg_pool, str):
-        _pg_pool = _pg_pool.replace("+asyncpg", "")
-    return _pg_pool
+    """Return the global PG DSN string for sync init. Pool is in context.storage.pg._ensure_pg_pool()."""
+    database_url = os.getenv("DATABASE_URL", "").replace("+asyncpg", "")
+    return database_url
 
 
 def get_pig_agent() -> PigAgent:

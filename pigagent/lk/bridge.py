@@ -13,6 +13,7 @@ from typing import Any
 
 from loguru import logger
 from livekit.agents import Agent
+from livekit.agents.types import FlushSentinel
 from livekit.agents.voice.agent import ModelSettings
 from livekit.agents.llm import ChatContext
 from metrics.turn import TelemetryCollector
@@ -44,7 +45,7 @@ class PigAgentVoiceBridge(Agent):
         chat_ctx: ChatContext,
         tools: list[Any],
         model_settings: ModelSettings,
-    ) -> AsyncIterator[str]:
+    ) -> AsyncIterator[str | FlushSentinel]:
         user_text = self._extract_user_text(chat_ctx)
         logger.info(f"[BRIDGE] llm_node: user_text='{user_text[:120]}' persona_id={self._persona_id}")
         if not user_text.strip():

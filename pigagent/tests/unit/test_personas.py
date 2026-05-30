@@ -10,8 +10,7 @@ class TestPersonaRegistry:
         PersonaRegistry.register_defaults()
         ids = PersonaRegistry.list_ids()
         assert 1 in ids
-        assert 2 in ids
-        assert 3 in ids
+        assert len(ids) == 1
 
     def test_get_returns_persona(self):
         from system_prompts import PersonaRegistry, Persona
@@ -39,7 +38,7 @@ class TestPersonaRegistry:
         PersonaRegistry.register_defaults()
         # Should not duplicate
         ids = PersonaRegistry.list_ids()
-        assert len(ids) == 3
+        assert len(ids) == 1
 
     def test_convenience_get_persona(self):
         from system_prompts import get_persona, Persona
@@ -62,7 +61,6 @@ class TestPersonaRegistry:
         PersonaRegistry.register_defaults()
         cache = PersonaRegistry.build_prompt_cache()
         assert "Trump" in cache[1]
-        assert "Musk" in cache[2]
 
 
 class TestTrumpPersona:
@@ -92,41 +90,6 @@ class TestTrumpPersona:
         from system_prompts import TrumpPersona
         p = TrumpPersona()
         assert p.tts_voice is not None
-
-
-class TestMuskPersona:
-    def test_basic_fields(self):
-        from system_prompts import MuskPersona
-        p = MuskPersona()
-        assert p.persona_id == 2
-        assert "Musk" in p.display_name
-
-    def test_get_full_prompt(self):
-        from system_prompts import MuskPersona
-        p = MuskPersona()
-        prompt = p.get_full_prompt()
-        assert isinstance(prompt, str)
-        assert len(prompt) > 100
-
-    def test_has_different_domain(self):
-        from system_prompts import MuskPersona, TrumpPersona
-        m = MuskPersona()
-        t = TrumpPersona()
-        assert m.domain != t.domain
-
-
-class TestJamesPersona:
-    def test_basic_fields(self):
-        from system_prompts import JamesPersona
-        p = JamesPersona()
-        assert p.persona_id == 3
-
-    def test_get_full_prompt(self):
-        from system_prompts import JamesPersona
-        p = JamesPersona()
-        prompt = p.get_full_prompt()
-        assert isinstance(prompt, str)
-        assert len(prompt) > 100
 
 
 class TestPersonaBaseClass:

@@ -24,35 +24,40 @@ _PG_DSN: str = os.getenv("DATABASE_URL", "").replace("+asyncpg", "")
 
 # ── Segment breakdown ──────────────────────────────────────────────
 #
-# E2E = vad_end → agent_spk (user stops → agent starts playing audio)
+# User perceived latency:
+#   stop_speaking (~0ms) + vad silence (~500ms) + E2E
 #
-#   Segment    |   Formula                | What it measures
-#   -----------+--------------------------+--------------------------------
-#   vad        | vad_end - vad_start      | User speech duration (not in E2E)
-#   stt        | stt_final - vad_end      | STT transcription
-#   ctx_load   | ctx_done - stt_final     | Context load + system prompt + roast
-#   llm_prep   | llm_req - ctx_done       | Roast body + misc prep
-#   llm_api    | llm_internal - llm_req   | LLM API request → first token
-#   llm_out    | llm_ttft - llm_internal  | First token → first visible text
-#   synth_gap  | agent_spk - llm_ttft     | First text → agent speaking
-#   llm_rest   | llm_end - llm_ttft       | Remaining LLM (parallel TTS, not in E2E)
-#   tts        | tts_end - tts_start      | TTS duration (not in E2E)
+#   E2E = vad_end → agent_spk
 #
-# E2E ≈ stt + ctx_load + llm_prep + llm_api + llm_out + synth_gap
+#   Segment      | Formula                  | What it measures
+#   -------------+--------------------------+--------------------------------
+#   vad          | vad_end - vad_start      | User speech + VAD silence (not in E2E)
+#   stt          | stt_final - vad_end      | Deepgram transcription
+#   lk_pipeline  | agent_req - stt_final    | LiveKit turn switch → bridge → generate_reply
+#   ctx_load     | ctx_done - agent_req     | Context load + system prompt + roast
+#   llm_prep     | llm_req - ctx_done       | Roast body + misc before LLM call
+#   llm_api      | llm_internal - llm_req   | LLM API request → first token (TTFT)
+#   llm_out      | llm_ttft - llm_internal  | First token → bridge yield
+#   synth_gap    | agent_spk - llm_ttft     | Bridge yield → TTS starts playing audio
+#   llm_rest     | llm_end - llm_ttft       | Remaining LLM (parallel TTS, not in E2E)
+#   tts          | tts_end - tts_start      | TTS duration (not in E2E)
+#
+# E2E ≈ stt + lk_pipeline + ctx_load + llm_prep + llm_api + llm_out + synth_gap
 #
 # Metadata: stt_model, llm_model, tts_model, prompt_tokens,
 #           completion_tokens, cached_tokens
 
 SEGMENTS: list[tuple[str, str, str]] = [
-    ("vad",       "vad_start",   "vad_end"),
-    ("stt",       "vad_end",     "stt_final"),
-    ("ctx_load",  "stt_final",   "ctx_done"),
-    ("llm_prep",  "ctx_done",    "llm_req"),
-    ("llm_api",   "llm_req",     "llm_internal"),
-    ("llm_out",   "llm_internal", "llm_ttft"),
-    ("synth_gap", "llm_ttft",    "agent_spk"),
-    ("llm_rest",  "llm_ttft",    "llm_end"),
-    ("tts",       "tts_start",   "tts_end"),
+    ("vad",         "vad_start",   "vad_end"),
+    ("stt",         "vad_end",     "stt_final"),
+    ("lk_pipeline", "stt_final",   "agent_req"),
+    ("ctx_load",    "agent_req",   "ctx_done"),
+    ("llm_prep",    "ctx_done",    "llm_req"),
+    ("llm_api",     "llm_req",     "llm_internal"),
+    ("llm_out",     "llm_internal", "llm_ttft"),
+    ("synth_gap",   "llm_ttft",    "agent_spk"),
+    ("llm_rest",    "llm_ttft",    "llm_end"),
+    ("tts",         "tts_start",   "tts_end"),
 ]
 
 META_KEYS = [

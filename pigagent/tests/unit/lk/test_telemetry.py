@@ -42,7 +42,7 @@ class TestTelemetryCollector:
         old_turn = mod._current
 
         # Starting a new turn should flush the previous one
-        TelemetryCollector.start_turn(user_id="u2", persona_id=2)
+        TelemetryCollector.start_turn(user_id="u2", persona_id=1)
         new_turn = mod._current
 
         # New turn is active, old turn was flushed

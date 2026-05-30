@@ -2,7 +2,8 @@
 """Unit tests for context storage  -  RedisKeys, RedisStorage, PgStorage."""
 
 import json
-from unittest.mock import patch
+import os
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -429,3 +430,172 @@ class TestPgStorage:
         data = json.loads(result)
         assert data[0]["id"] == "c1"
         assert data[0]["name"] == "f"
+
+
+# -------------------------------------------------------------------------------
+# PG connection pool — lazy singleton
+# -------------------------------------------------------------------------------
+
+class TestPgPool:
+    """Tests for _ensure_pg_pool — global lazy singleton pool."""
+
+    @pytest.mark.asyncio
+    async def test_creates_pool_on_first_call(self):
+        """First call creates a real pool with min_size=2, max_size=10."""
+        from context.storage import pg as pg_mod
+        import os
+
+        # Reset global state
+        pg_mod._pool = None
+
+        mock_pool = MagicMock()
+        with patch.dict(os.environ, {"DATABASE_URL": "postgresql://test/db"}):
+            with patch("context.storage.pg.asyncpg.create_pool", new_callable=AsyncMock) as mock_create:
+                mock_create.return_value = mock_pool
+
+                result = await pg_mod._ensure_pg_pool()
+
+                mock_create.assert_called_once_with(
+                    "postgresql://test/db", min_size=2, max_size=10,
+                )
+                assert result is mock_pool
+                assert pg_mod._pool is mock_pool
+
+        # Cleanup
+        pg_mod._pool = None
+
+    @pytest.mark.asyncio
+    async def test_returns_same_pool_on_second_call(self):
+        """Second call returns the already-created pool without re-creating."""
+        from context.storage import pg as pg_mod
+        import os
+
+        pg_mod._pool = None
+
+        mock_pool = MagicMock()
+        with patch.dict(os.environ, {"DATABASE_URL": "postgresql://test/db"}):
+            with patch("context.storage.pg.asyncpg.create_pool", new_callable=AsyncMock) as mock_create:
+                mock_create.return_value = mock_pool
+
+                pool1 = await pg_mod._ensure_pg_pool()
+                pool2 = await pg_mod._ensure_pg_pool()
+
+                assert pool1 is pool2
+                assert pool1 is mock_pool
+                mock_create.assert_called_once()  # Only created once
+
+        pg_mod._pool = None
+
+    @pytest.mark.asyncio
+    async def test_raises_when_no_database_url(self):
+        """Raises RuntimeError if DATABASE_URL is not set."""
+        from context.storage import pg as pg_mod
+
+        pg_mod._pool = None
+
+        with patch.dict(os.environ, {}, clear=True):
+            with patch("context.storage.pg.os.getenv", return_value=""):
+                with pytest.raises(RuntimeError, match="DATABASE_URL"):
+                    await pg_mod._ensure_pg_pool()
+
+        pg_mod._pool = None
+
+    @pytest.mark.asyncio
+    async def test_connect_uses_pool_acquire(self):
+        """_connect() acquires from the pool and yields a connection."""
+        from context.storage import pg as pg_mod
+        import os
+
+        pg_mod._pool = None
+
+        mock_pool = MagicMock()
+        mock_conn = MagicMock()
+        mock_pool.acquire.return_value.__aenter__ = AsyncMock(return_value=mock_conn)
+        mock_pool.acquire.return_value.__aexit__ = AsyncMock()
+
+        with patch.dict(os.environ, {"DATABASE_URL": "postgresql://test/db"}):
+            with patch("context.storage.pg.asyncpg.create_pool", new_callable=AsyncMock) as mock_create:
+                mock_create.return_value = mock_pool
+
+                async with pg_mod._connect() as conn:
+                    assert conn is mock_conn
+
+                mock_pool.acquire.assert_called_once()
+
+        pg_mod._pool = None
+
+
+# -------------------------------------------------------------------------------
+# Redis TTL renewal
+# -------------------------------------------------------------------------------
+
+class TestRedisTtl:
+    """Tests for _refresh_user_ttl — keeps all user keys alive as a unit."""
+
+    @pytest.mark.asyncio
+    async def test_refresh_renews_all_keys(self):
+        """_refresh_user_ttl sets TTL on turns, summaries, and game_state keys."""
+        from context.storage.redis import _refresh_user_ttl, _USER_TTL, RedisKeys
+
+        redis = MagicMock()
+        redis.expire = AsyncMock()
+
+        await _refresh_user_ttl(redis, "u1")
+
+        assert redis.expire.call_count == 3
+        redis.expire.assert_any_call(RedisKeys.turns("u1"), _USER_TTL)
+        redis.expire.assert_any_call(RedisKeys.summaries("u1"), _USER_TTL)
+        redis.expire.assert_any_call(RedisKeys.game_state("u1"), _USER_TTL)
+
+    @pytest.mark.asyncio
+    async def test_refresh_none_redis_does_nothing(self):
+        """Passing None redis client is silently ignored."""
+        from context.storage.redis import _refresh_user_ttl
+        await _refresh_user_ttl(None, "u1")
+
+    @pytest.mark.asyncio
+    async def test_refresh_exception_does_not_raise(self):
+        """If expire fails (e.g. network), the error is swallowed."""
+        from context.storage.redis import _refresh_user_ttl
+
+        redis = MagicMock()
+        redis.expire = AsyncMock(side_effect=Exception("connection lost"))
+        await _refresh_user_ttl(redis, "u1")
+
+    @pytest.mark.asyncio
+    async def test_push_turn_calls_refresh(self):
+        """push_turn should refresh TTL after writing."""
+        from context.storage.redis import RedisStorage
+
+        redis = MagicMock()
+        redis.pipeline.return_value = redis
+        redis.rpush = MagicMock()
+        redis.ltrim = MagicMock()
+        redis.execute = AsyncMock()
+        redis.expire = AsyncMock()
+
+        store = RedisStorage("u1", redis)
+        await store.push_turn('{"turn": 1}')
+
+        assert redis.expire.call_count >= 3
+
+    @pytest.mark.asyncio
+    async def test_write_summaries_calls_refresh(self):
+        """write_summaries should refresh TTL on all keys after writing."""
+        from context.storage.redis import RedisStorage
+
+        redis = MagicMock()
+        redis.set = AsyncMock()
+        redis.expire = AsyncMock()
+
+        store = RedisStorage("u1", redis)
+        await store.write_summaries(5, l2_profile="profile")
+
+        assert redis.set.call_count >= 1
+        assert redis.expire.call_count >= 2
+
+    def test_ttl_is_seven_days(self):
+        """_USER_TTL should be exactly 604800 seconds (7 days)."""
+        from context.storage.redis import _USER_TTL
+        assert _USER_TTL == 604800
+        assert _USER_TTL == 7 * 24 * 3600

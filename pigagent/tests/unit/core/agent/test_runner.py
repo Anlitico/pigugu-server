@@ -441,7 +441,7 @@ class TestUserReply:
             return chunks
 
         result = asyncio.run(_collect())
-        full = "".join(result)
+        full = "".join(r for r in result if isinstance(r, str))
         # user_reply text was yielded
         assert "Give me a moment" in full
         # Tool executor received user_reply in args (pass-through)

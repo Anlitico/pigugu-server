@@ -5,8 +5,6 @@ from loguru import logger
 
 from .base import Persona
 from .trump import TrumpPersona
-from .musk import MuskPersona
-from .james import JamesPersona
 
 
 class PersonaRegistry:
@@ -57,8 +55,6 @@ class PersonaRegistry:
         if cls._initialized:
             return
         cls.register(TrumpPersona())
-        cls.register(MuskPersona())
-        cls.register(JamesPersona())
         cls._initialized = True
 
     @classmethod
@@ -86,7 +82,5 @@ __all__ = [
     "Persona",
     "PersonaRegistry",
     "TrumpPersona",
-    "MuskPersona",
-    "JamesPersona",
     "get_persona",
 ]

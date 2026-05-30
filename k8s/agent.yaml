@@ -4,7 +4,8 @@ metadata:
   name: pigugu-agent-config
 data:
   STT_PROVIDER: "deepgram"
-  LLM_PROVIDER: "grok"
+  QWEN_MODEL: "qwen-flash-us"
+  CARTESIA_TTS_MODEL: "sonic-3.5"
   POLICY_SEARCH_BACKEND: "built_in"
   AGENT_MODE: "1"
   DEEPGRAM_ENABLE_DIARIZATION: "true"

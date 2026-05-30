@@ -140,13 +140,13 @@ class TestQwenPlus:
 
 
 # -------------------------------------------------------------------------------
-# Qwen 3.6 Flash
+# Qwen Flash (US)
 # -------------------------------------------------------------------------------
 
 @pytest.mark.asyncio
-class TestQwen36Flash:
+class TestQwenFlash:
     ENV = "DASHSCOPE_US_API_KEY"
-    MODEL = "qwen3.6-flash"
+    MODEL = "qwen-flash-us"
 
     async def test_connectivity(self):
         await _chat(self.MODEL, self.ENV)
@@ -163,13 +163,6 @@ class TestQwen36Flash:
             if d.content:
                 chunks.append(d.content)
         assert "".join(chunks), "Empty streaming response"
-
-    async def test_thinking(self):
-        _cap(self.MODEL, "thinking")
-        resp = await _chat(self.MODEL, self.ENV,
-                           thinking={"enabled": True, "budget": 2048},
-                           max_tokens=100)
-        assert len(resp.content) > 0
 
     async def test_json_mode(self):
         _need(self.ENV)
@@ -177,61 +170,6 @@ class TestQwen36Flash:
         resp = await p.chat(
             model=self.MODEL,
             messages=[Message.user("Return JSON: {\"city\": \"Shanghai\"}")],
-            response_format={"type": "json_object"},
-            max_tokens=100,
-        )
-        import json
-        try:
-            json.loads(resp.content)
-        except json.JSONDecodeError:
-            pytest.fail(f"Not valid JSON: {resp.content[:100]}")
-
-    async def test_search(self):
-        _cap(self.MODEL, "search")
-        resp = await _chat(self.MODEL, self.ENV,
-                           search={"enabled": True},
-                           max_tokens=200)
-        assert len(resp.content) > 0
-
-
-# -------------------------------------------------------------------------------
-# Qwen 3.6 Plus
-# -------------------------------------------------------------------------------
-
-@pytest.mark.asyncio
-class TestQwen36Plus:
-    ENV = "DASHSCOPE_US_API_KEY"
-    MODEL = "qwen3.6-plus"
-
-    async def test_connectivity(self):
-        await _chat(self.MODEL, self.ENV)
-
-    async def test_streaming(self):
-        _need(self.ENV)
-        p = get_llm(self.MODEL)
-        chunks = []
-        async for d in p.chat_stream(  # type: ignore[reportGeneralTypeIssues]
-            model=self.MODEL,
-            messages=[Message.user("Count from 1 to 5.")],
-            max_tokens=100,
-        ):
-            if d.content:
-                chunks.append(d.content)
-        assert "".join(chunks), "Empty streaming response"
-
-    async def test_thinking(self):
-        _cap(self.MODEL, "thinking")
-        resp = await _chat(self.MODEL, self.ENV,
-                           thinking={"enabled": True, "budget": 2048},
-                           max_tokens=100)
-        assert len(resp.content) > 0
-
-    async def test_json_mode(self):
-        _need(self.ENV)
-        p = get_llm(self.MODEL)
-        resp = await p.chat(
-            model=self.MODEL,
-            messages=[Message.user("Return JSON: {\"lang\": \"Python\"}")],
             response_format={"type": "json_object"},
             max_tokens=100,
         )
@@ -310,17 +248,17 @@ class TestModelSwitching:
 
     async def test_same_provider_different_models(self):
         _need(self.ENV)
-        p = get_llm("qwen3.6-flash")
+        p = get_llm("qwen-flash-us")
 
         r1 = await p.chat(
-            model="qwen3.6-flash",
+            model="qwen-flash-us",
             messages=[Message.user("Say hi in one word.")],
             max_tokens=20,
         )
         assert r1.content
 
         r2 = await p.chat(
-            model="qwen3.6-plus",
+            model="qwen-plus-us",
             messages=[Message.user("Say hi in one word.")],
             max_tokens=20,
         )
@@ -332,16 +270,16 @@ class TestModelSwitching:
 
     async def test_temperature_variation(self):
         _need(self.ENV)
-        p = get_llm("qwen3.6-flash")
+        p = get_llm("qwen-flash-us")
 
         resp_low = await p.chat(
-            model="qwen3.6-flash",
+            model="qwen-flash-us",
             messages=[Message.user("Say hello.")],
             temperature=0.0,
             max_tokens=20,
         )
         resp_high = await p.chat(
-            model="qwen3.6-flash",
+            model="qwen-flash-us",
             messages=[Message.user("Say hello.")],
             temperature=1.5,
             max_tokens=20,
