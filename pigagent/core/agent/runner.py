@@ -133,7 +133,8 @@ class AgentRunner:
                 collected = []
                 tool_calls: list | None = None
                 finish = "stop"
-                _reply_yielded: set[int] = set()  # tool_call indices whose user_reply was already yielded
+                _reply_yielded: set[int] = set()  # tool_call indices whose filler_text was already yielded
+                _stripped_reply: str = ""  # filler_text to strip from second LLM response
 
                 async for delta in provider.chat_stream(  # type: ignore[reportGeneralTypeIssues]
                     messages=msgs,
@@ -148,17 +149,22 @@ class AgentRunner:
                         raise InterruptedException()
 
                     if delta.content:
-                        collected.append(delta.content)
-                        yield delta.content
+                        text = delta.content
+                        if _stripped_reply and text.startswith(_stripped_reply):
+                            text = text[len(_stripped_reply):]
+                            _stripped_reply = ""  # only strip first chunk
+                        collected.append(text)
+                        yield text
 
                     if delta.tool_calls:
                         tool_calls = delta.tool_calls
                         for tc in delta.tool_calls:
-                            text = _pull_user_reply(tc)
+                            text = _pull_filler_text(tc)
                             if text and tc.index not in _reply_yielded:
                                 _reply_yielded.add(tc.index)
                                 yield text  # → TTS only, not added to context
-                                yield FlushSentinel()  # commit TTS immediately, don't wait for tool exec
+                                yield FlushSentinel()  # commit TTS immediately
+                                _stripped_reply = text  # strip from next LLM step
 
                     if delta.finish_reason:
                         finish = delta.finish_reason
@@ -361,23 +367,23 @@ class AgentRunner:
         )
 
 
-# ── user_reply helpers ──────────────────────────────────────────────────────
+# ── filler_text helpers ─────────────────────────────────────────────────────
 
 import re as _re
 
-_USER_REPLY_RE = _re.compile(r'"user_reply"\s*:\s*"((?:[^"\\]|\\.)*)"')
+_FILLER_TEXT_RE = _re.compile(r'"(?:filler_text|user_reply)"\s*:\s*"((?:[^"\\]|\\.)*)"')
 
 
-def _pull_user_reply(tc) -> str | None:
-    """Extract user_reply text from a streaming tool_call's arguments.
+def _pull_filler_text(tc) -> str | None:
+    """Extract filler_text from a streaming tool_call's arguments.
 
-    user_reply is always the first JSON field. Once the closing quote is
+    filler_text is always the first JSON field. Once the closing quote is
     found, return the content so the runner can yield it for TTS.
     """
     args = tc.arguments or ""
     if not args:
         return None
-    m = _USER_REPLY_RE.search(args)
+    m = _FILLER_TEXT_RE.search(args)
     if m is None:
         return None
     # Only yield once the field is complete (comma or closing brace follows)
