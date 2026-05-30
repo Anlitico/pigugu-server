@@ -143,7 +143,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         self.send_header('Access-Control-Allow-Headers', 'Content-Type')
         self.end_headers()
 
-    def log_message(self, fmt, *args):
+    def log_message(self, format, *args):  # noqa: A002
         pass  # suppress default logging
 
 

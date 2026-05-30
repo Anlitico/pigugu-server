@@ -16,6 +16,7 @@ import json
 import time
 
 from loguru import logger
+from metrics.turn import TelemetryCollector
 
 from config import get_config
 
@@ -145,6 +146,8 @@ class ContextManager:
         # L1: read from memory
         data = mem.read_summaries()
         raw_records = mem.get_hot_turns(_cfg.CONTEXT_HOT_WINDOW_SIZE)
+        source = "memory"
+        TelemetryCollector.mark("ctx_l1_done")
 
         # L2: cold start — load from Redis into memory (only if both are empty)
         if not data and not raw_records:
@@ -156,6 +159,8 @@ class ContextManager:
             raw_records = await store.get_hot_turns(_cfg.CONTEXT_HOT_WINDOW_SIZE, after_anchor=anchor)
             if raw_records:
                 mem.load_all(raw_records, data)
+                source = "redis"
+        TelemetryCollector.mark("ctx_l2_done")
 
         # L3: PG fallback when both memory and Redis are empty
         if not raw_records and pg._pg:
@@ -179,6 +184,12 @@ class ContextManager:
             if raw_records:
                 mem.load_all(raw_records, data)
                 asyncio.create_task(self._rewarm_redis(user_id, data, raw_records))
+                source = "pg"
+
+        logger.info(
+            f"[Context] assemble user={user_id} source={source} "
+            f"records={len(raw_records)} summary={'yes' if data else 'no'}"
+        )
 
         # Save summary text for compression trigger (before consuming)
         summary_for_compress = data.get("l3_session", "")
@@ -225,6 +236,8 @@ class ContextManager:
                 fallback_l4=l4_fallback, fallback_prompt=roast_prompt_fb,
                 prompt_turn=prompt_turn,
             )
+
+        TelemetryCollector.mark("ctx_roast_done")
 
         # Compression trigger — fire-and-forget with unified record list
         if not mem.is_compressing() and raw_records:

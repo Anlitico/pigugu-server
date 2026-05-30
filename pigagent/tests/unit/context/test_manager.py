@@ -52,11 +52,13 @@ class TestContextManagerExtended:
 
     @pytest.mark.asyncio
     async def test_write_game_state_with_redis(self):
+        import asyncio
         from unittest.mock import AsyncMock
         from context.manager import ContextManager
         redis_mock = AsyncMock()
         ctx = ContextManager(redis_client=redis_mock)
         await ctx.write_game_state(user_id="u1", state={"score": 10})
+        await asyncio.sleep(0)  # let the fire-and-forget _write_game_state_redis task run
         redis_mock.hset.assert_called_once()
 
     def test_end_roast(self):

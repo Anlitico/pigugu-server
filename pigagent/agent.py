@@ -29,6 +29,7 @@ from core.agent.runner import AgentRunner, RunnerConfig
 from core.agent.stop import no_tool_calls
 from context.manager import ContextManager
 from roast.pending import consume
+from roast.types import Phase
 from roast.state import RoastState
 from tools.roast import _current_user_id, _current_persona_id
 
@@ -137,12 +138,16 @@ class PigAgent:
         if prompt:
             messages.insert(0, Message.system(prompt))
 
-        # 4. Check roast routing
+        # 4. Check roast routing — auto-close if game phase is no longer ACTIVE
         roast_state = await self.get_active_roast(user_id)
         game_mode = None
         if roast_state:
-            mode_id = str(roast_state.mode) if hasattr(roast_state, "mode") else ""
-            game_mode = self._game_modes.get(mode_id)
+            if roast_state.phase != Phase.ACTIVE:
+                await self.close_roast(user_id)
+                roast_state = None
+            else:
+                mode_id = str(roast_state.mode) if hasattr(roast_state, "mode") else ""
+                game_mode = self._game_modes.get(mode_id)
 
         TelemetryCollector.mark("ctx_done")
 

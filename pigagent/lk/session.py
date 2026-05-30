@@ -142,8 +142,12 @@ async def run(ctx: JobContext) -> None:
                 logger.info("[Interrupt] Triggering")
                 bridge.current_interrupt_event.set()
         elif event.old_state == "speaking" and event.new_state != "speaking":
-            logger.info(f"[DEBUG] User stopped speaking ({event.new_state})")
-            TelemetryCollector.mark("vad_end")
+            # Only record the first silence transition per turn. Agent speech
+            # pauses also trigger speaking→non-speaking, which would overwrite
+            # the real user endpoint and corrupt stt/vad metrics.
+            if not TelemetryCollector.has_mark("vad_end"):
+                logger.info(f"[DEBUG] User stopped speaking ({event.new_state})")
+                TelemetryCollector.mark("vad_end")
 
     @session.on("user_input_transcribed")
     def on_user_input_transcribed(event):
