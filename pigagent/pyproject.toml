@@ -58,5 +58,7 @@ markers = [
 dev = [
     "pyright>=1.1",
     "alembic>=1.18",
+    "pytest>=9.0",
+    "pytest-asyncio>=1.4",
 ]
 

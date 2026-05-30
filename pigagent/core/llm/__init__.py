@@ -24,7 +24,7 @@ from .registry import ModelRegistry, get_provider_config, resolve_provider, load
 _pool: dict[str, LLMProvider] = {}
 
 
-def _load_class(path: str):
+def load_class(path: str):
     """Reflectively load a class from a dotted path like 'pkg.mod.Cls'."""
     import importlib
     mod_name, cls_name = path.rsplit(".", 1)
@@ -50,7 +50,7 @@ def _build_pool() -> None:
             continue
 
         _, api_key, _ = resolve_provider(pid)
-        cls = _load_class(cfg.backend)
+        cls = load_class(cfg.backend)
         _pool[pid] = cls(base_url=cfg.base_url, api_key=api_key)
 
 
@@ -84,6 +84,7 @@ __all__ = [
     "LLMProvider",
     "ModelRegistry", "get_provider_config", "resolve_provider", "load_models", "list_providers",
     "get_llm", "create_llm",
+    "load_class",
 ]
 
 # ── Load on first import ────────────────────────────────────────────────────

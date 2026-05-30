@@ -78,6 +78,40 @@ class TestTelemetryCollector:
         # _current should be cleared even for incomplete turns
         assert mod._current is None
 
+    def test_has_mark_true(self):
+        TelemetryCollector.start_turn(user_id="u1", persona_id=1)
+        TelemetryCollector.mark("vad_start")
+        assert TelemetryCollector.has_mark("vad_start") is True
+        TelemetryCollector.finish_turn()
+
+    def test_has_mark_false(self):
+        TelemetryCollector.start_turn(user_id="u1", persona_id=1)
+        assert TelemetryCollector.has_mark("vad_end") is False
+        TelemetryCollector.finish_turn()
+
+    def test_has_mark_no_turn(self):
+        import metrics.turn as mod
+        mod._current = None
+        assert TelemetryCollector.has_mark("vad_end") is False
+
+    def test_vad_end_not_overwritten(self):
+        """Simulate agent speech gap: vad_end is only recorded once."""
+        import metrics.turn as mod
+        import time
+
+        TelemetryCollector.start_turn(user_id="u1", persona_id=1)
+        TelemetryCollector.mark("vad_start")
+        TelemetryCollector.mark("vad_end")
+        time.sleep(0.01)
+        assert mod._current is not None
+        first = mod._current["marks"]["vad_end"]
+        time.sleep(0.01)
+        if not TelemetryCollector.has_mark("vad_end"):
+            TelemetryCollector.mark("vad_end")
+        second = mod._current["marks"].get("vad_end")
+        assert second == first
+        TelemetryCollector.finish_turn()
+
 
 class TestDiff:
     def test_positive(self):

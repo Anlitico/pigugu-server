@@ -104,10 +104,11 @@ class TestGetRedis:
 
 
 class TestGetPgPool:
-    def test_requires_env_var(self, monkeypatch):
+    @pytest.mark.asyncio
+    async def test_requires_env_var(self, monkeypatch):
         monkeypatch.delenv("DATABASE_URL", raising=False)
-        import bootstrap.factory as f
-        f._pg_pool = None
+        import context.storage.pg as pg_mod
+        pg_mod._pool = None
 
         with pytest.raises(RuntimeError, match="DATABASE_URL"):
-            f._init_pg_pool()
+            await pg_mod._ensure_pg_pool()

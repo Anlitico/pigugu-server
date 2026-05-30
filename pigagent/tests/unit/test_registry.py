@@ -97,8 +97,7 @@ class TestProviderConfig:
     def test_provider_config_has_backend(self):
         for pid in ("qwen-us", "qwen-cn", "volcengine"):
             cfg = get_provider_config(pid)
-            if cfg is None:
-                pytest.fail(f"Provider {pid} not found")
+            assert cfg is not None, f"Provider {pid} not found"
             assert cfg.backend, f"Missing backend for {pid}"
 
     def test_qwen_backend_uses_qwen_provider_class(self):
@@ -112,14 +111,14 @@ class TestProviderConfig:
         assert "VolcengineProvider" in cfg.backend
 
     def test_load_class_reflection(self):
-        from core.llm import _load_class
-        cls = _load_class("core.llm.providers.qwen.QwenProvider")
+        import core.llm as llm_mod
+        cls = llm_mod.load_class("core.llm.providers.qwen.QwenProvider")  # type: ignore[reportAttributeAccessIssue]
         assert cls.__name__ == "QwenProvider"
 
     def test_load_class_bad_path_raises(self):
-        from core.llm import _load_class
+        import core.llm as llm_mod
         with pytest.raises((ImportError, AttributeError, ModuleNotFoundError)):
-            _load_class("nonexistent.module.FakeClass")
+            llm_mod.load_class("nonexistent.module.FakeClass")  # type: ignore[reportAttributeAccessIssue]
 
 
 # -- TOML model loading tests -------------------------------------------------

@@ -52,6 +52,11 @@ SEGMENTS: list[tuple[str, str, str]] = [
     ("stt",         "vad_end",     "stt_final"),
     ("lk_pipeline", "stt_final",   "agent_req"),
     ("ctx_load",    "agent_req",   "ctx_done"),
+    # ── ctx_load sub-segments (diagnostic) ──
+    ("ctx_l1",      "agent_req",   "ctx_l1_done"),
+    ("ctx_l2",      "ctx_l1_done", "ctx_l2_done"),
+    ("ctx_roast",   "ctx_l2_done", "ctx_roast_done"),
+    # ── LLM pipeline ──
     ("llm_prep",    "ctx_done",    "llm_req"),
     ("llm_api",     "llm_req",     "llm_internal"),
     ("llm_out",     "llm_internal", "llm_ttft"),
@@ -95,6 +100,12 @@ class TurnMetrics:
         if _current is not None:
             cls.finish_turn()
         _current = _make_turn(user_id, persona_id)
+
+    @classmethod
+    def has_mark(cls, key: str) -> bool:
+        if _current is None:
+            return False
+        return key in _current["marks"]
 
     @classmethod
     def mark(cls, key: str) -> None:
