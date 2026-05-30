@@ -144,9 +144,9 @@ class PigAgent:
 
         TelemetryCollector.mark("ctx_done")
 
-        # 5. Persist user message before streaming — so it's in context even if interrupted
+        # 5. Persist user message before streaming — fire-and-forget so it doesn't block LLM
         if self.ctx and user_id:
-            await self._persist_turns(user_id, [new_msg])
+            asyncio.create_task(self._persist_turns(user_id, [new_msg]))
 
         # 6. Stream and collect response
         response_chunks: list[str] = []
