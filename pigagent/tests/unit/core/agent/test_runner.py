@@ -361,7 +361,7 @@ class TestStreamInterrupt:
         assert runner.last_step_count >= 1
 
 
-# ── user_reply helpers ──────────────────────────────────────────────────────
+# ── filler_text helpers ──────────────────────────────────────────────────────
 
 
 class TestUserReply:
@@ -370,35 +370,35 @@ class TestUserReply:
         return ToolCall(id="1", name="test", arguments=arguments, index=0)
 
     def test_pull_complete_field(self):
-        from core.agent.runner import _pull_user_reply
-        tc = self._make_tc('{"user_reply": "Let me check that for you", "q": "x"}')
-        text = _pull_user_reply(tc)
+        from core.agent.runner import _pull_filler_text
+        tc = self._make_tc('{"filler_text": "Let me check that for you", "q": "x"}')
+        text = _pull_filler_text(tc)
         assert text == "Let me check that for you"
 
     def test_pull_streaming_partial_not_yet(self):
-        from core.agent.runner import _pull_user_reply
-        tc = self._make_tc('{"user_reply": "Let me check')  # no closing quote yet
-        text = _pull_user_reply(tc)
+        from core.agent.runner import _pull_filler_text
+        tc = self._make_tc('{"filler_text": "Let me check')  # no closing quote yet
+        text = _pull_filler_text(tc)
         assert text is None
 
-    def test_pull_no_user_reply(self):
-        from core.agent.runner import _pull_user_reply
+    def test_pull_no_filler_text(self):
+        from core.agent.runner import _pull_filler_text
         tc = self._make_tc('{"q": "x"}')
-        assert _pull_user_reply(tc) is None
+        assert _pull_filler_text(tc) is None
 
     def test_pull_empty_args(self):
-        from core.agent.runner import _pull_user_reply
+        from core.agent.runner import _pull_filler_text
         tc = self._make_tc("")
-        assert _pull_user_reply(tc) is None
+        assert _pull_filler_text(tc) is None
 
     def test_pull_escaped_quotes(self):
-        from core.agent.runner import _pull_user_reply
-        tc = self._make_tc('{"user_reply": "he said \\"hello\\"", "q": "x"}')
-        text = _pull_user_reply(tc)
+        from core.agent.runner import _pull_filler_text
+        tc = self._make_tc('{"filler_text": "he said \\"hello\\"", "q": "x"}')
+        text = _pull_filler_text(tc)
         assert text == 'he said "hello"'
 
-    def test_user_reply_passed_through_to_handler(self, monkeypatch):
-        """user_reply is yielded, tool handler receives user_reply in args (pass-through)."""
+    def test_filler_text_passed_through_to_handler(self, monkeypatch):
+        """filler_text is yielded, tool handler receives filler_text in args (pass-through)."""
         from core.llm.types import ToolCall, ChatDelta
         from core.agent.runner import AgentRunner, RunnerConfig
 
@@ -421,7 +421,7 @@ class TestUserReply:
                 call_count[0] += 1
                 if call_count[0] == 1:
                     tc = ToolCall(id="c1", name="start_roast",
-                                  arguments='{"user_reply": "Give me a moment, starting the game...", "roast_id": "r1"}',
+                                  arguments='{"filler_text": "Give me a moment, starting the game...", "roast_id": "r1"}',
                                   index=0)
                     yield ChatDelta(tool_calls=[tc], finish_reason="tool_calls")
                 else:
@@ -442,12 +442,12 @@ class TestUserReply:
 
         result = asyncio.run(_collect())
         full = "".join(r for r in result if isinstance(r, str))
-        # user_reply text was yielded
+        # filler_text text was yielded
         assert "Give me a moment" in full
-        # Tool executor received user_reply in args (pass-through)
+        # Tool executor received filler_text in args (pass-through)
         assert len(handler_calls) == 1
         assert handler_calls[0]["roast_id"] == "r1"
-        assert "starting the game" in handler_calls[0]["user_reply"]
+        assert "starting the game" in handler_calls[0]["filler_text"]
 
     @staticmethod
     def _msgs(*contents: str) -> list:

@@ -84,9 +84,9 @@ def create_list_roasts_tool(pg_pool: str, *, connect: ConnectFn | None = None) -
         parameters={
             "type": "object",
             "properties": {
-                "user_reply": {
+                "filler_text": {
                     "type": "string",
-                    "description": "A brief spoken sentence to say before showing the results. Always fill this first.",
+                    "description": "A brief spoken sentence to fill silence while the tool runs. Already spoken — do NOT repeat in your response.",
                 },
                 "game_mode": {
                     "type": "string",
@@ -102,7 +102,7 @@ def create_list_roasts_tool(pg_pool: str, *, connect: ConnectFn | None = None) -
                     "description": "Filter roasts created on or before this date (YYYY-MM-DD format).",
                 },
             },
-            "required": ["user_reply"],
+            "required": ["filler_text"],
         },
         execute=_handler,
     )
@@ -194,16 +194,16 @@ def create_start_roast_tool(
         parameters={
             "type": "object",
             "properties": {
-                "user_reply": {
+                "filler_text": {
                     "type": "string",
-                    "description": "A brief spoken sentence before starting the game. Always fill this first.",
+                    "description": "A brief spoken sentence to fill silence while the game loads. Already spoken — do NOT repeat in your response.",
                 },
                 "roast_id": {
                     "type": "string",
                     "description": "The roast_id to start, e.g. debate_2026-05-19_001",
                 },
             },
-            "required": ["user_reply", "roast_id"],
+            "required": ["filler_text", "roast_id"],
         },
         execute=_handler,
     )

@@ -37,7 +37,7 @@ class TestCreateWebSearchTool:
         assert params["type"] == "object"
         assert "query" in params["properties"]
         assert params["properties"]["query"]["type"] == "string"
-        assert "user_reply" in params.get("required", [])
+        assert "filler_text" in params.get("required", [])
         assert "query" in params.get("required", [])
 
     def test_spec_is_tool_spec(self):
