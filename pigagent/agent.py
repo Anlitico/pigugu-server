@@ -117,6 +117,8 @@ class PigAgent:
         if not user_text.strip():
             return
 
+        TelemetryCollector.mark("agent_req")
+
         # 1. Build new user message
         new_msg = Message.user(user_text.strip())
 
