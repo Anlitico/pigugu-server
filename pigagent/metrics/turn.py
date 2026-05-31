@@ -56,6 +56,8 @@ SEGMENTS: list[tuple[str, str, str]] = [
     ("ctx_l1",      "agent_req",   "ctx_l1_done"),
     ("ctx_l2",      "ctx_l1_done", "ctx_l2_done"),
     ("ctx_roast",   "ctx_l2_done", "ctx_roast_done"),
+    ("ctx_serialize", "ctx_roast_done", "ctx_pre_roast"),
+    ("ctx_get_roast", "ctx_pre_roast", "ctx_roast_end"),
     # ── LLM pipeline ──
     ("llm_prep",    "ctx_done",    "llm_req"),
     ("llm_api",     "llm_req",     "llm_internal"),

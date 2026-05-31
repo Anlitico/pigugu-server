@@ -147,7 +147,9 @@ class PigAgent:
             self._session_seeded = True
 
         # 5. Check roast routing — auto-close if game phase is no longer ACTIVE
+        TelemetryCollector.mark("ctx_pre_roast")
         roast_state = await self.get_active_roast(user_id)
+        TelemetryCollector.mark("ctx_roast_end")
         game_mode = None
         if roast_state:
             if roast_state.phase != Phase.ACTIVE:
