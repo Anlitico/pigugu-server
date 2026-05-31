@@ -1,5 +1,5 @@
 # Pigugu Agent — Model configuration
-# [id]       model ID used in code (e.g., QWEN_MODEL env var)
+# [id]       model ID used in code (e.g., LLM_MODEL env var)
 # provider   must match a [name] in providers.toml
 # api_model  actual model name sent to the API (defaults to id)
 # display    human-readable name for logs
@@ -63,3 +63,13 @@ output = 16384
 capabilities = ["text", "streaming", "tool_use"]
 thinking = true
 search = false
+
+[grok-4.3]
+provider = "xai"
+api_model = "grok-4.3"
+display = "Grok 4.3 (xAI)"
+context = 1000000
+output = 16384
+capabilities = ["text", "streaming", "tool_use"]
+thinking = true
+search = true
