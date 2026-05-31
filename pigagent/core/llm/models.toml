@@ -64,7 +64,7 @@ capabilities = ["text", "streaming", "tool_use"]
 thinking = true
 search = false
 
-[grok-4.3]
+[grok-4-3]
 provider = "xai"
 api_model = "grok-4.3"
 display = "Grok 4.3 (xAI)"
