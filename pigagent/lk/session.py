@@ -50,7 +50,7 @@ async def run(ctx: JobContext) -> None:
     logger.info(f"Agent starting for room: {ctx.room.name}")
     logger.info(f"Job ID: {ctx.job.id}")
     logger.info(f"STT: {stt_info}")
-    logger.info(f"LLM: {config.QWEN_MODEL}")
+    logger.info(f"LLM: {config.LLM_MODEL}")
     logger.info(f"TTS: {config.CARTESIA_TTS_MODEL} (voice: {config.CARTESIA_TTS_VOICE})")
     if metadata:
         logger.info(f"Metadata: {metadata}")

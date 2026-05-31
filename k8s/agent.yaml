@@ -4,7 +4,7 @@ metadata:
   name: pigugu-agent-config
 data:
   STT_PROVIDER: "deepgram"
-  QWEN_MODEL: "qwen-flash-us"
+  LLM_MODEL: "grok-4.3"
   CARTESIA_TTS_MODEL: "sonic-3.5"
   POLICY_SEARCH_BACKEND: "built_in"
   AGENT_MODE: "1"
@@ -82,6 +82,11 @@ spec:
             secretKeyRef:
               name: pigugu-secrets
               key: OPENROUTER_API_KEY
+        - name: XAI_API_KEY
+          valueFrom:
+            secretKeyRef:
+              name: pigugu-secrets
+              key: XAI_API_KEY
         - name: ARK_API_KEY
           valueFrom:
             secretKeyRef:

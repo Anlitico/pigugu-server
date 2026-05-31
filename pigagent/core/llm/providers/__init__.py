@@ -3,5 +3,6 @@
 
 from .qwen import QwenProvider
 from .volcengine import VolcengineProvider
+from .xai import XaiProvider
 
-__all__ = ["QwenProvider", "VolcengineProvider"]
+__all__ = ["QwenProvider", "VolcengineProvider", "XaiProvider"]

@@ -23,3 +23,9 @@ env = "ARK_API_KEY"
 backend = "core.llm.providers.volcengine.VolcengineProvider"
 default = "doubao-seed-1-6-251015"
 
+[xai]
+base_url = "https://api.x.ai/v1"
+env = "XAI_API_KEY"
+backend = "core.llm.providers.xai.XaiProvider"
+default = "grok-4.3"
+

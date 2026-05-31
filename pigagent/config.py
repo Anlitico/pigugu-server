@@ -115,7 +115,7 @@ class AgentConfig(BaseSettings):
     
     # LLM Configuration
 
-    QWEN_MODEL: str = Field(default_factory=lambda: get_config_value("QWEN_MODEL", "qwen-flash-us"))
+    LLM_MODEL: str = Field(default_factory=lambda: get_config_value("LLM_MODEL", "grok-4.3"))
 
     # LLM Settings
     LLM_TEMPERATURE: float = Field(default_factory=lambda: float(get_config_value("LLM_TEMPERATURE", 0.6)))
@@ -123,7 +123,7 @@ class AgentConfig(BaseSettings):
 
     def resolve_model(self) -> str:
         """Resolve the effective model name."""
-        return self.QWEN_MODEL
+        return self.LLM_MODEL
 
     def create_provider(self):
         """Return a pre-built LLMProvider from the pool.
@@ -207,7 +207,7 @@ def _log_config_summary(cfg: AgentConfig) -> None:
         ("DEEPGRAM", f"model={cfg.DEEPGRAM_STT_MODEL} lang={cfg.DEEPGRAM_STT_LANGUAGE} rate={cfg.DEEPGRAM_STT_SAMPLE_RATE} diarization={cfg.DEEPGRAM_ENABLE_DIARIZATION}"),
         ("CARTESIA_STT", f"model={cfg.CARTESIA_STT_MODEL} lang={cfg.CARTESIA_STT_LANGUAGE} encoding={cfg.CARTESIA_STT_ENCODING} rate={cfg.CARTESIA_STT_SAMPLE_RATE}"),
         ("CARTESIA_TTS", f"model={cfg.CARTESIA_TTS_MODEL} voice={cfg.CARTESIA_TTS_VOICE} lang={cfg.CARTESIA_TTS_LANGUAGE} speed={cfg.CARTESIA_TTS_SPEED} emotion={cfg.CARTESIA_TTS_EMOTION} volume={cfg.CARTESIA_TTS_VOLUME}"),
-        ("QWEN_MODEL", cfg.QWEN_MODEL),
+        ("LLM_MODEL", cfg.LLM_MODEL),
         ("LLM_TEMPERATURE", cfg.LLM_TEMPERATURE),
         ("LLM_MAX_TOKENS", cfg.LLM_MAX_TOKENS),
         ("AGENT_WORKERS", cfg.AGENT_WORKERS),
