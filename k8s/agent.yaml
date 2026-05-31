@@ -4,7 +4,7 @@ metadata:
   name: pigugu-agent-config
 data:
   STT_PROVIDER: "deepgram"
-  LLM_MODEL: "grok-4.3"
+  LLM_MODEL: "grok-4-3"
   CARTESIA_TTS_MODEL: "sonic-3.5"
   POLICY_SEARCH_BACKEND: "built_in"
   AGENT_MODE: "1"
