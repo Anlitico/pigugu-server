@@ -27,5 +27,5 @@ default = "doubao-seed-1-6-251015"
 base_url = "https://api.x.ai/v1"
 env = "XAI_API_KEY"
 backend = "core.llm.providers.xai.XaiProvider"
-default = "grok-4.3"
+default = "grok-4-3"
 

@@ -115,7 +115,7 @@ class AgentConfig(BaseSettings):
     
     # LLM Configuration
 
-    LLM_MODEL: str = Field(default_factory=lambda: get_config_value("LLM_MODEL", "grok-4.3"))
+    LLM_MODEL: str = Field(default_factory=lambda: get_config_value("LLM_MODEL", "grok-4-3"))
 
     # LLM Settings
     LLM_TEMPERATURE: float = Field(default_factory=lambda: float(get_config_value("LLM_TEMPERATURE", 0.6)))

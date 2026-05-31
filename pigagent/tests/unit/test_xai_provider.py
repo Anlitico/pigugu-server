@@ -10,7 +10,7 @@ from core.llm.types import Message, ModelInfo, ModelCapability
 
 # -- Helpers ------------------------------------------------------------------
 
-def _register_model(model_id="grok-4.3", *, thinking=True, search=True,
+def _register_model(model_id="grok-4-3", *, thinking=True, search=True,
                     caps=None):
     ModelRegistry.register(ModelInfo(
         model_id=model_id,
@@ -48,9 +48,9 @@ class TestXaiBuildParams:
             [Message.user("hello")], None, None, True,
             None, None, None, None, None,
             None, None, None,
-            model="grok-4.3", stream=False,
+            model="grok-4-3", stream=False,
         )
-        assert params["model"] == "grok-4.3"
+        assert params["model"] == "grok-4-3"
         assert params["temperature"] == 0.6
         assert params["stream"] is False
 
@@ -59,7 +59,7 @@ class TestXaiBuildParams:
             [Message.user("hello")], None, None, True,
             None, None, None, None, None,
             None, None, None,
-            model="grok-4.3", stream=True,
+            model="grok-4-3", stream=True,
         )
         assert params["stream"] is True
         assert params["stream_options"] == {"include_usage": True}
@@ -70,7 +70,7 @@ class TestXaiBuildParams:
             [Message.user("hello")], tools, None, True,
             None, None, None, None, None,
             None, None, None,
-            model="grok-4.3", stream=False,
+            model="grok-4-3", stream=False,
         )
         assert params["tools"] == tools
         assert params["parallel_tool_calls"] is True
@@ -81,7 +81,7 @@ class TestXaiBuildParams:
             [Message.user("hello")], tools, "required", True,
             None, None, None, None, None,
             None, None, None,
-            model="grok-4.3", stream=False,
+            model="grok-4-3", stream=False,
         )
         assert params["tool_choice"] == "required"
 
@@ -91,7 +91,7 @@ class TestXaiBuildParams:
             [Message.user("hello")], tools, "auto", True,
             None, None, None, None, None,
             None, None, None,
-            model="grok-4.3", stream=False,
+            model="grok-4-3", stream=False,
         )
         assert "tool_choice" not in params
 
@@ -100,7 +100,7 @@ class TestXaiBuildParams:
             [Message.user("hello")], None, None, True,
             None, None, 200, None, None,
             None, None, None,
-            model="grok-4.3", stream=False,
+            model="grok-4-3", stream=False,
         )
         assert params["max_tokens"] == 200
 
@@ -109,7 +109,7 @@ class TestXaiBuildParams:
             [Message.user("hello")], None, None, True,
             None, None, None, ["STOP"], 42,
             None, None, None,
-            model="grok-4.3", stream=False,
+            model="grok-4-3", stream=False,
         )
         assert params["stop"] == ["STOP"]
         assert params["seed"] == 42
@@ -121,7 +121,7 @@ class TestXaiBuildParams:
             [Message.user("hello")], None, None, True,
             None, None, None, None, None,
             {"enabled": False}, None, None,
-            model="grok-4.3", stream=False,
+            model="grok-4-3", stream=False,
         )
         assert "reasoning_effort" not in params
 
@@ -130,7 +130,7 @@ class TestXaiBuildParams:
             [Message.user("hello")], None, None, True,
             None, None, None, None, None,
             {"enabled": True}, None, None,
-            model="grok-4.3", stream=False,
+            model="grok-4-3", stream=False,
         )
         assert params["reasoning_effort"] == "low"
 
@@ -139,7 +139,7 @@ class TestXaiBuildParams:
             [Message.user("hello")], None, None, True,
             None, None, None, None, None,
             {"enabled": True, "budget": 32000}, None, None,
-            model="grok-4.3", stream=False,
+            model="grok-4-3", stream=False,
         )
         assert params["reasoning_effort"] == "high"
 
@@ -148,7 +148,7 @@ class TestXaiBuildParams:
             [Message.user("hello")], None, None, True,
             None, None, None, None, None,
             {"enabled": True, "budget": 16000}, None, None,
-            model="grok-4.3", stream=False,
+            model="grok-4-3", stream=False,
         )
         assert params["reasoning_effort"] == "medium"
 
@@ -157,7 +157,7 @@ class TestXaiBuildParams:
             [Message.user("hello")], None, None, True,
             None, None, None, None, None,
             {"enabled": True, "budget": 4000}, None, None,
-            model="grok-4.3", stream=False,
+            model="grok-4-3", stream=False,
         )
         assert params["reasoning_effort"] == "low"
 
@@ -167,7 +167,7 @@ class TestXaiBuildParams:
             [Message.user("hello")], None, None, True,
             None, None, None, None, None,
             {"enabled": True, "budget": "maximum"}, None, None,
-            model="grok-4.3", stream=False,
+            model="grok-4-3", stream=False,
         )
         assert params["reasoning_effort"] == "low"
 
@@ -178,7 +178,7 @@ class TestXaiBuildParams:
             [Message.user("hello")], None, None, True,
             None, None, None, None, None,
             None, {"enabled": True}, None,
-            model="grok-4.3", stream=False,
+            model="grok-4-3", stream=False,
         )
         assert "web_search_options" in params
         assert params["web_search_options"] == {"search_context_size": "medium"}
@@ -188,7 +188,7 @@ class TestXaiBuildParams:
             [Message.user("hello")], None, None, True,
             None, None, None, None, None,
             None, {"enabled": False}, None,
-            model="grok-4.3", stream=False,
+            model="grok-4-3", stream=False,
         )
         assert "web_search_options" not in params
 
@@ -199,7 +199,7 @@ class TestXaiBuildParams:
             [Message.user("hello")], None, None, True,
             None, None, None, None, None,
             None, None, {"type": "json_object"},
-            model="grok-4.3", stream=False,
+            model="grok-4-3", stream=False,
         )
         assert params["response_format"] == {"type": "json_object"}
 
@@ -210,7 +210,7 @@ class TestXaiBuildParams:
             [Message.user("hello")], None, None, True,
             None, None, None, None, None,
             None, None, None,
-            model="grok-4.3", stream=False,
+            model="grok-4-3", stream=False,
             custom_param=42,
         )
         assert params["custom_param"] == 42
@@ -250,9 +250,9 @@ class TestXaiUsage:
 
 class TestXaiRegistry:
     def test_grok_4_3_is_registered(self):
-        """grok-4.3 should be in ModelRegistry after load_models()."""
+        """grok-4-3 should be in ModelRegistry after load_models()."""
         load_models()
-        info = ModelRegistry.get("grok-4.3")
+        info = ModelRegistry.get("grok-4-3")
         assert info.provider == "xai"
         assert info.context_window == 1000000
         assert ModelCapability.TOOL_USE in info.capabilities
