@@ -180,8 +180,11 @@ class XaiProvider(LLMProvider):
         stream: bool,
         **kwargs,
     ) -> dict:
+        from ..registry import ModelRegistry
+        api_model = ModelRegistry.get(model).api_model or model
+
         body: dict = {
-            "model": model,
+            "model": api_model,
             "messages": [m.to_openai_dict() for m in messages],
             "temperature": temperature if temperature is not None else 0.6,
             "stream": stream,

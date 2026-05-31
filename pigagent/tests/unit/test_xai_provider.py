@@ -15,6 +15,7 @@ def _register_model(model_id="grok-4-3", *, thinking=True, search=True,
     ModelRegistry.register(ModelInfo(
         model_id=model_id,
         provider="xai",
+        api_model="grok-4.3",
         display_name=model_id,
         capabilities=caps or {ModelCapability.TEXT, ModelCapability.STREAMING,
                               ModelCapability.TOOL_USE},
@@ -50,7 +51,7 @@ class TestXaiBuildParams:
             None, None, None,
             model="grok-4-3", stream=False,
         )
-        assert params["model"] == "grok-4-3"
+        assert params["model"] == "grok-4.3"
         assert params["temperature"] == 0.6
         assert params["stream"] is False
 
