@@ -18,6 +18,7 @@ from modules.gameplay.router import router as gameplay_router
 from modules.news.router import router as news_router
 from modules.push.router import router as push_router
 from modules.push.service import init_firebase
+from modules.agent.router import router as agent_router
 from modules.ws.manager import ws_manager
 from modules.ws.router import router as ws_router
 
@@ -76,6 +77,7 @@ app.include_router(gameplay_router, prefix="/v1")
 app.include_router(leaderboard_router, prefix="/v1")
 app.include_router(push_router, prefix="/v1")
 app.include_router(ws_router)
+app.include_router(agent_router)
 
 
 @app.get("/health")

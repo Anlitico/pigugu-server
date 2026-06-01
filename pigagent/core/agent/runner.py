@@ -90,11 +90,12 @@ class AgentRunner:
         *,
         on_before_step: BeforeStepHook,
         on_after_step: AfterStepHook,
+        session_id: str | None = None,
     ) -> StepResult:
         """Run the agent loop. Flushes results in finally."""
         if self._interrupt_key:
-            return await self._run_guarded(on_before_step, on_after_step)
-        return await self._run_loop(on_before_step, on_after_step)
+            return await self._run_guarded(on_before_step, on_after_step, session_id=session_id)
+        return await self._run_loop(on_before_step, on_after_step, session_id=session_id)
 
     async def stream(
         self,
@@ -102,11 +103,18 @@ class AgentRunner:
         *,
         search: dict | None = None,
         interrupt_event: asyncio.Event | None = None,
+        session_id: str | None = None,
     ) -> AsyncIterator[str | FlushSentinel]:
         """Stream the ReAct loop, yielding text chunks and FlushSentinel for TTS.
 
         All state is local  -  safe for concurrent calls on the same instance.
-        """
+
+        ``session_id`` is passed to the provider as the KV cache routing key
+        (sticky session affinity)."""
+
+        extra: dict[str, object] = {}
+        if session_id:
+            extra["session_id"] = session_id
         msgs = list(messages)
         state = AgentState(status=StateStatus.RUNNING.value)
 
@@ -143,6 +151,7 @@ class AgentRunner:
                     temperature=self._temperature,
                     max_tokens=self._max_tokens,
                     search=search,
+                    **extra,  # pyright: ignore[reportArgumentType]
                 ):
                     # Check interrupt during streaming (between chunks)
                     if event and event.is_set():
@@ -216,6 +225,8 @@ class AgentRunner:
 
     async def _run_guarded(
         self, on_before_step: BeforeStepHook, on_after_step: AfterStepHook,
+        *,
+        session_id: str | None = None,
     ) -> StepResult:
         """Race the main loop against an interrupt event."""
         key = self._interrupt_key
@@ -226,7 +237,7 @@ class AgentRunner:
             event = manager.create(key)
 
         loop_task = asyncio.create_task(
-            self._run_loop(on_before_step, on_after_step)
+            self._run_loop(on_before_step, on_after_step, session_id=session_id)
         )
         int_task = asyncio.create_task(event.wait())
 
@@ -261,6 +272,8 @@ class AgentRunner:
 
     async def _run_loop(
         self, on_before_step: BeforeStepHook, on_after_step: AfterStepHook,
+        *,
+        session_id: str | None = None,
     ) -> StepResult:
         """Load context once, loop in memory, flush in finally."""
         messages: list = []
@@ -274,7 +287,7 @@ class AgentRunner:
                 state.current_step += 1
                 logger.debug(f"[Runner] Step {state.current_step}")
 
-                result = await self._run_step(messages)
+                result = await self._run_step(messages, session_id=session_id)
                 last_result = result
                 state.last_had_tool_calls = bool(result.tool_calls)
 
@@ -316,12 +329,16 @@ class AgentRunner:
 
     # ── Internal: single step (non-streaming) ───────────────────────────
 
-    async def _run_step(self, messages: list[Message]) -> StepResult:
+    async def _run_step(self, messages: list[Message], *, session_id: str | None = None) -> StepResult:
         """Execute a single LLM call and parse the response."""
         provider = get_llm(self._model)
         openai_tools = (
             [t.to_openai_schema() for t in self._tools] if self._tools else None
         )
+
+        extra: dict[str, object] = {}
+        if session_id:
+            extra["session_id"] = session_id
 
         response: ChatResponse = await provider.chat(
             messages=messages,
@@ -329,6 +346,7 @@ class AgentRunner:
             tools=openai_tools,
             temperature=self._temperature,
             max_tokens=self._max_tokens,
+            **extra,  # pyright: ignore[reportArgumentType]
         )
 
         tool_calls = response.tool_calls if response.tool_calls else None

@@ -270,9 +270,17 @@ class VolcengineProvider(LLMProvider):
             body["stream_options"] = {"include_usage": True}
 
         # ── Extra kwargs ──
-        remaining = {k: v for k, v in kwargs.items() if k != "extra_body"}
+        remaining = {k: v for k, v in kwargs.items()
+                     if k not in ("extra_body", "session_id")}
         if remaining:
             body.setdefault("extra_body", {}).update(remaining)
+
+        # ── Sticky session / routing affinity ──
+        # session_id (LiveKit session) is injected into the caching config
+        # for per-session KV cache routing.
+        sid = kwargs.get("session_id")
+        if sid:
+            body.setdefault("extra_body", {}).setdefault("caching", {})["session_id"] = sid
 
         return body
 

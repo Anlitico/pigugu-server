@@ -107,6 +107,7 @@ class PigAgent:
         *,
         persona_id: int = 1,
         interrupt_event: asyncio.Event | None = None,
+        session_id: str | None = None,
     ) -> AsyncIterator[str | FlushSentinel]:
         """Complete reply pipeline: load context  ->  assemble  ->  stream  ->  persist.
 
@@ -115,6 +116,9 @@ class PigAgent:
         - System prompt injection
         - Roast game routing (consume pending, inject body, tick)
         - Turn persistence after stream completes
+
+        ``session_id`` is the LiveKit session ID, used as the KV cache
+        routing key for sticky session affinity.
         """
         if not user_text.strip():
             return
@@ -183,6 +187,7 @@ class PigAgent:
                 async for text in self._stream_roast(
                     messages, roast_state, game_mode,
                     interrupt_event=interrupt_event,
+                    session_id=session_id,
                 ):
                     if first_yield:
                         TelemetryCollector.mark("llm_internal")
@@ -191,7 +196,7 @@ class PigAgent:
                         response_chunks.append(text)
                     yield text
             else:
-                async for text in self.runner.stream(messages, interrupt_event=interrupt_event):
+                async for text in self.runner.stream(messages, interrupt_event=interrupt_event, session_id=session_id):
                     if first_yield:
                         TelemetryCollector.mark("llm_internal")
                         first_yield = False
@@ -334,6 +339,7 @@ class PigAgent:
         game_mode,
         *,
         interrupt_event: asyncio.Event | None = None,
+        session_id: str | None = None,
     ) -> AsyncIterator[str | FlushSentinel]:
         """Roast pipeline: consume pending  ->  stream  ->  tick.
 
@@ -353,7 +359,7 @@ class PigAgent:
 
         # 2. Stream LLM
         try:
-            async for text in self.runner.stream(messages, interrupt_event=interrupt_event):
+            async for text in self.runner.stream(messages, interrupt_event=interrupt_event, session_id=session_id):
                 yield text
 
             # 3. Tick  -  fire-and-forget, don't block the reply

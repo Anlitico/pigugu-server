@@ -28,6 +28,7 @@ class PigAgentVoiceBridge(Agent):
         pig_agent: Any,
         persona_id: int = 1,
         user_id: str = "",
+        session_id: str | None = None,
     ) -> None:
         super().__init__(
             instructions="",
@@ -36,6 +37,7 @@ class PigAgentVoiceBridge(Agent):
         self._pig = pig_agent
         self._persona_id = persona_id
         self._user_id = user_id
+        self._session_id = session_id
         self.current_interrupt_event: asyncio.Event | None = None
 
     # ── LLM node ──────────────────────────────────────────────────────
@@ -58,6 +60,7 @@ class PigAgentVoiceBridge(Agent):
             self._user_id, user_text,
             persona_id=self._persona_id,
             interrupt_event=self.current_interrupt_event,
+            session_id=self._session_id,
         ):
             if first:
                 TelemetryCollector.mark("llm_ttft")
