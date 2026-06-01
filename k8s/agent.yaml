@@ -35,6 +35,9 @@ spec:
         envFrom:
         - configMapRef:
             name: pigugu-agent-config
+        ports:
+        - containerPort: 8080
+          name: http
         imagePullPolicy: Always
         env:
         - name: LIVEKIT_URL
@@ -107,3 +110,16 @@ spec:
             secretKeyRef:
               name: pigugu-secrets
               key: DATABASE_URL
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: pigugu-agent
+spec:
+  type: ClusterIP
+  selector:
+    app: pigugu-agent
+  ports:
+  - port: 8080
+    targetPort: 8080
+    name: http
