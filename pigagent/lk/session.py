@@ -96,6 +96,7 @@ async def run(ctx: JobContext) -> None:
     bridge = PigAgentVoiceBridge(
         pig_agent=pig_agent,
         persona_id=persona_id,
+        session_id=ctx.job.id,
     )
 
     from livekit.agents.voice.turn import TurnHandlingOptions

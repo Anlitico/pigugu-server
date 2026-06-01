@@ -231,9 +231,17 @@ class XaiProvider(LLMProvider):
         if stream:
             body["stream_options"] = {"include_usage": True}
 
-        extra = {k: v for k, v in kwargs.items() if k not in ("extra_body",)}
+        extra = {k: v for k, v in kwargs.items() if k not in ("extra_body", "session_id")}
         if extra:
             body.update(extra)
+
+        # ── Sticky session / routing affinity ──
+        # session_id (LiveKit session) → x-grok-conv-id header for routing
+        # to the same engine, enabling KV cache reuse across turns (reduces TTFT).
+        # prompt_cache_key in Responses API maps to this header.
+        sid = kwargs.get("session_id")
+        if sid:
+            body.setdefault("extra_headers", {})["x-grok-conv-id"] = sid
 
         return body
 
