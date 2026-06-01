@@ -69,8 +69,8 @@ async def roast_ws_proxy(
         import uuid
 
         payload = decode_access_token(token)
-        user_id_str: str = payload.get("sub")
-        if not user_id_str:
+        user_id_str = payload.get("sub")
+        if not user_id_str or not isinstance(user_id_str, str):
             await websocket.accept()
             await websocket.send_json({
                 "type": "error",
@@ -127,6 +127,8 @@ async def roast_ws_proxy(
                 while True:
                     try:
                         data = await agent_ws.recv()
+                        if isinstance(data, bytes):
+                            data = data.decode()
                         await websocket.send_text(data)
                     except websockets.exceptions.ConnectionClosed:
                         break
