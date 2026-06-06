@@ -267,7 +267,7 @@ async def _handle_register(hw_id: str, msg: dict) -> None:
         await _push_ws(hw_id, {"event": "error", "error_msg": "绑定设备失败"})
 
 
-@router.post("/webhook")
+@router.api_route("/webhook", methods=["POST", "GET"])
 async def aws_iot_webhook(
     request: Request,
     payload: dict | None = None,
