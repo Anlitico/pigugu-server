@@ -80,7 +80,18 @@ async def issue_mqtt_creds(
 
     await check_mqtt_creds_limit(session_id)
     try:
-        return await service.issue_mqtt_credentials(db, s_id, current_user.id, body.hardware_id)
+        result = await service.issue_mqtt_credentials(db, s_id, current_user.id, body.hardware_id)
+        # Push WS so app knows firmware has fetched its credentials
+        try:
+            from modules.ws.manager import ws_manager
+            import json
+            await ws_manager.broadcast(
+                body.hardware_id.strip().lower(),
+                json.dumps({"event": "credentials_ready", "hardware_id": body.hardware_id.strip().lower()}),
+            )
+        except Exception:
+            pass  # best-effort
+        return result
     except ValueError as e:
         error_msg = str(e)
         if error_msg == "PROVISION_SESSION_NOT_FOUND":
