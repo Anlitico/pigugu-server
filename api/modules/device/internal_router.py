@@ -82,7 +82,7 @@ async def aws_iot_webhook(
         from fastapi.responses import PlainTextResponse
         return PlainTextResponse(confirmation_token)
 
-    # Alternative: SNS-style SubscriptionConfirmation body
+    # SNS-style SubscriptionConfirmation body (V2 Destination)
     if payload and payload.get("messageType") == "DestinationConfirmation":
         token = payload.get("confirmationToken", "")
         dest_arn = payload.get("arn", "")
@@ -92,6 +92,14 @@ async def aws_iot_webhook(
             )
             from fastapi.responses import PlainTextResponse
             return PlainTextResponse(token)
+
+    # V1 HTTP Action confirmation (legacy inline HTTP action)
+    # When the rule's URL changes, AWS IoT sends a POST with
+    # {"confirmationToken":"..."} in the body — no x-aws-secret header.
+    # Must respond with token as plain text BEFORE the secret check.
+    if payload and "confirmationToken" in payload and "messageType" not in payload:
+        from fastapi.responses import PlainTextResponse
+        return PlainTextResponse(str(payload["confirmationToken"]))
 
     # Verify Secret for regular D2C message processing
     if x_aws_secret != settings.aws_iot_webhook_secret:
