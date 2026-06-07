@@ -120,7 +120,7 @@ async def _handle_online(hw_id: str, msg: dict) -> None:
       Path B (post-reboot): no session_id → simple ping, just confirm.
     """
     hw_id = hw_id.strip().lower()
-    await redis_set(f"device:online:hw:{hw_id}", "1", ex=90)
+    await redis_set(f"device:online:hw:{hw_id}", "1", ex=600)
     await redis_set(f"device:last_seen:hw:{hw_id}", str(datetime.now().isoformat()), ex=86400)
     await _push_ws(hw_id, {"event": "online", "hardware_id": hw_id})
 
@@ -432,7 +432,7 @@ async def aws_iot_webhook(
         await _handle_register(hw_id, msg)
 
     elif msg_type == "device.heartbeat":
-        await redis_set(f"device:online:hw:{hw_id}", "1", ex=90)
+        await redis_set(f"device:online:hw:{hw_id}", "1", ex=600)
         await redis_set(f"device:last_seen:hw:{hw_id}", str(datetime.now().isoformat()), ex=86400)
 
     return {"status": "ok"}
