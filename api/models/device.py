@@ -10,6 +10,7 @@ from core.database import Base
 
 class Device(Base):
     __tablename__ = "devices"
+    __allow_unmapped__ = True
     __table_args__ = (
         Index("uq_devices_one_active_per_user", "user_id", unique=True, postgresql_where=(text("active_state = 'active'"))),
         Index("uq_devices_hardware_id_ci", text("lower(trim(hardware_id))"), unique=True),
@@ -34,7 +35,7 @@ class Device(Base):
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False
     )
 
-    # Transient attributes (set by service layer, not persisted)
+    # Transient attribute (set by service layer, not persisted)
     is_online: bool
 
     user: Mapped["User"] = relationship("User", back_populates="devices")
