@@ -1,174 +1,143 @@
 ---
 name: cicd
-description: Code management, CI/CD pipeline, and deployment workflow for pigugu-server
+description: CI/CD pipeline for pigugu-server — build, database migration, and deploy to EKS
 ---
 
-# pigugu-server Code Management & CI/CD
+# pigugu-server CI/CD Workflow
 
-## Project Structure (Monorepo)
-
-```
-pigugu-server/
-├── api/                    # FastAPI backend (port 8000)
-├── pigagent/               # LiveKit voice agent worker
-├── .cicd/                  # Dockerfiles
-│   ├── Dockerfile.api      #   → pigugu-api ECR image (includes alembic + migrations)
-│   └── Dockerfile.agent    #   → pigugu-agent ECR image
-├── k8s/                    # Kubernetes manifests
-│   ├── api.yaml            #   Deployment + LoadBalancer Service (SSL on 443)
-│   ├── agent.yaml          #   Deployment + ConfigMap
-│   ├── secrets.yaml        #   Secret (placeholders injected by CI)
-│   ├── migration-job.yaml  #   Job (runs alembic upgrade head in EKS)
-│   └── crawler-cronjob.yaml #  CronJob (Trump social crawler, daily 10am)
-├── alembic/                # Database migrations (asyncpg)
-│   └── versions/           #   9 migration scripts
-├── .github/workflows/
-│   └── deploy.yml          #   Single workflow: build + deploy
-└── alembic.ini             #   Migration config (DATABASE_URL overridden at runtime)
-```
-
-## Infrastructure (AWS us-west-1)
-
-| Resource | Identifier |
-|----------|------------|
-| EKS Cluster | `pigugu-cluster` |
-| RDS (PostgreSQL) | `pigugu-db.c1esma68egsk.us-west-1.rds.amazonaws.com:5432` |
-| ElastiCache (Redis) | `pigugu-redis.feoudk.ng.0001.usw1.cache.amazonaws.com:6379` |
-| ECR (API) | `pigugu-api` |
-| ECR (Agent) | `pigugu-agent` |
-
-- RDS is **not publicly accessible** — only reachable from within VPC (EKS, etc.)
-- RDS SG (`sg-08f83ca426bf3b252`) only allows inbound 5432 from EKS node group SG (`sg-008101e1f1509c0b2`)
-- K8s namespace: `default`
-- K8s ServiceAccount: `pigugu-server-sa`
-
-## Git Workflow
-
-1. **Create feature branch** from `main`:
-   ```
-   git checkout -b feat/<feature-name>
-   ```
-
-2. **Make changes**, commit, push:
-   ```
-   git add <files>
-   git commit -m "type: description"
-   git push -u origin feat/<feature-name>
-   ```
-
-3. **Create PR** on GitHub: `feat/<feature-name>` → `main`
-   - Merge triggers CI build automatically
-
-4. **After merge to main**: CI builds Docker images, CD is **manual only**
-
-## CI/CD Pipeline (`.github/workflows/deploy.yml`)
-
-### Build Job (`build`) — Automatic on push to main
-
-Triggered by: `git push` to `main` (PR merge)
-
-1. Checkout → AWS login → ECR login
-2. `docker build -f .cicd/Dockerfile.api .` → push to ECR (`pigugu-api:latest` + `:git-sha`)
-3. `docker build -f .cicd/Dockerfile.agent .` → push to ECR (`pigugu-agent:latest` + `:git-sha`)
-
-### Deploy Job (`deploy`) — Manual only (`workflow_dispatch`)
-
-Triggered by: Manual dispatch with `image_tag` input (default: `latest`)
-
-1. Checkout → AWS login → ECR login → `aws eks update-kubeconfig`
-2. **Run database migrations** (K8s Job):
-   - Delete old `pigugu-db-migration` job if exists
-   - Replace `__IMAGE__` in `k8s/migration-job.yaml` with actual ECR image tag
-   - `kubectl apply -f` → `kubectl wait --for=condition=complete --timeout=120s`
-   - On failure: print pod logs, delete job, exit 1
-   - On success: print logs, delete job
-3. **Deploy to EKS**:
-   - Inject secrets from GitHub Secrets into `k8s/secrets.yaml` placeholders (`__KEY__`)
-   - `kubectl apply -f k8s/secrets.yaml`
-   - `kubectl apply -f k8s/api.yaml`
-   - `kubectl apply -f k8s/agent.yaml`
-   - `kubectl apply -f k8s/crawler-cronjob.yaml`
-   - `kubectl set image` for both deployments (uses `image_tag` input)
-   - `kubectl rollout restart` + `kubectl rollout status` for both deployments
-
-### How to Deploy
+## Quick Reference
 
 ```bash
-# Via GitHub CLI
-gh workflow run ".github/workflows/deploy.yml" --repo Anlitico/pigugu-server -f image_tag=latest
+# All GitHub CLI commands MUST use proxy
+export HTTP_PROXY=http://127.0.0.1:7897 HTTPS_PROXY=http://127.0.0.1:7897
 
-# Or go to GitHub → Actions → Deploy to Amazon EKS → Run workflow
+# Check CI status
+gh run list --repo Anlitico/pigugu-server --branch main --limit 5
+
+# Trigger deploy (manual only)
+gh workflow run "Deploy to Amazon EKS" --repo Anlitico/pigugu-server --ref main
 ```
 
-**Important notes:**
-- Deploy is **always manual** — no automatic deploy on push
-- Build must succeed first (images in ECR) before deploy can work
-- The `image_tag` input should match an existing ECR image tag (use `latest` for most recent build, or a specific git SHA)
-- Database migrations run before pod restarts — if migration fails, old pods keep running
-- The migration job runs inside EKS, which has VPC access to the private RDS
-- After migration succeeds, `rollout restart` triggers new pods pulling the new image
+## Workflow Phases
 
-## Adding New Secrets
+```
+PR Merge → CI (auto) → User Confirmation → CD (manual)
+                         ↑
+                    ASK before deploying
+```
 
-When a new API key or secret is needed in production:
+### Phase 1: CI (Build) — Automatic
 
-1. **Add to GitHub Secrets**: Repo Settings → Secrets and variables → Actions → New repository secret
-2. **Add to `deploy.yml`** `env:` block in the deploy job (line ~97-108):
-   ```yaml
-   NEW_KEY: ${{ secrets.NEW_KEY }}
-   ```
-3. **Add to Python injection list** in deploy step (the `for key in (...)` tuple):
-   ```python
-   "NEW_KEY",
-   ```
-4. **Add placeholder to `k8s/secrets.yaml`**:
-   ```yaml
-   NEW_KEY: "__NEW_KEY__"
-   ```
-5. **Reference in the relevant K8s Deployment** if needed:
-   ```yaml
-   - name: NEW_KEY
-     valueFrom:
-       secretKeyRef:
-         name: pigugu-secrets
-         key: NEW_KEY
-   ```
+**Trigger**: Automatically on push/merge to `main`.
+
+**What it does**:
+1. Checkout → AWS login → ECR login
+2. Build `pigugu-api` Docker image → push to ECR
+3. Build `pigugu-agent` Docker image → push to ECR
+
+**How to check**:
+```bash
+export HTTP_PROXY=http://127.0.0.1:7897 HTTPS_PROXY=http://127.0.0.1:7897
+for i in $(seq 1 30); do
+  result=$(gh run list --repo Anlitico/pigugu-server --branch main --limit 1 --json status,conclusion --jq '.[0] | "\(.status) \(.conclusion // \"\")"')
+  st=$(echo "$result" | awk '{print $1}')
+  echo "[$i] CI status=$st"
+  if [ "$st" = "completed" ]; then break; fi
+  sleep 20
+done
+```
+
+**On failure**: Read the error from the failed run's logs, fix the issue, push a new commit.
+
+### Phase 2: User Confirmation
+
+**IMPORTANT**: After CI succeeds, you MUST ask the user for confirmation before triggering CD. Use the `AskUserQuestion` tool:
+
+> CI build succeeded. Deploy to EKS? This will:
+> - Run database migrations (if any)
+> - Restart API and Agent pods
+> - ~2-3 minutes of downtime
+
+**Never deploy without explicit user approval.**
+
+### Phase 3: CD (Deploy) — Manual
+
+**Trigger**: Manual only via `workflow_dispatch`.
+
+**What it does**:
+1. **Run database migrations** (K8s Job):
+   - Delete old `pigugu-db-migration` job
+   - Build migration job from `k8s/migration-job.yaml` with current ECR image
+   - `kubectl apply -f` → `kubectl wait --for=condition=complete --timeout=120s`
+   - On success: print logs, delete job
+   - **On failure**: print logs, delete job, **exit 1 — old pods keep running (safe)**
+2. **Deploy to EKS**:
+   - `kubectl apply -f` for secrets, api, agent, crawler-cronjob
+   - `kubectl set image` for both deployments
+   - `kubectl rollout restart` + `kubectl rollout status`
+
+**How to deploy**:
+```bash
+export HTTP_PROXY=http://127.0.0.1:7897 HTTPS_PROXY=http://127.0.0.1:7897
+
+# 1. Trigger deploy
+gh workflow run "Deploy to Amazon EKS" --repo Anlitico/pigugu-server --ref main
+sleep 5
+
+# 2. Poll until complete
+for i in $(seq 1 40); do
+  result=$(gh run list --repo Anlitico/pigugu-server --workflow "Deploy to Amazon EKS" --branch main --limit 1 --json status,conclusion --jq '.[0] | "\(.status) \(.conclusion // \"\")"')
+  st=$(echo "$result" | awk '{print $1}')
+  conc=$(echo "$result" | awk '{print $2}')
+  echo "[$i] CD status=$st conclusion=$conc"
+  if [ "$st" = "completed" ]; then
+    echo "DEPLOY: $conc"
+    break
+  fi
+  sleep 15
+done
+```
+
+**On failure**: Read the failed run's logs on GitHub Actions. Common issues:
+- Migration failure: fix migration script, push commit, rebuild CI, redeploy
+- Image pull failure: ECR permissions or image tag mismatch
+- Pod crash: check `kubectl logs` for the new pod
 
 ## Database Migrations
 
-- Tool: Alembic with asyncpg
-- Migration files: `alembic/versions/` (9 migrations as of 2026-05)
-- Run automatically during deploy via K8s Job
-- To create a new migration:
-  ```bash
-  cd d:\projects\pigugu-server
-  alembic revision --autogenerate -m "description_of_change"
-  ```
-- The migration is included in the Docker image (`.cicd/Dockerfile.api` copies `alembic/` and `alembic.ini`)
-- Never run `alembic upgrade head` locally against production RDS — RDS is private, only reachable from EKS
+Migrations run as part of CD (before pod restart). If a migration fails:
+- Old pods **continue running** with the old code (safe rollback)
+- The CD run fails — fix the migration and redeploy
 
-## Docker Image Builds
+**Migration files are in** `alembic/versions/`.
 
-- Images are built **from repo root** context (not from the subdirectory):
-  ```bash
-  docker build -t pigugu-api -f .cicd/Dockerfile.api .
-  ```
-- This gives Dockerfiles access to both `api/` and `alembic/` directories
-- API image entrypoint: `alembic upgrade head && uvicorn main:app --host 0.0.0.0 --port 8000`
-- Agent image: runs LiveKit worker that connects to LiveKit server
+**Adding a new model** (like `FCMToken`):
+1. Create the SQLAlchemy model file in `api/models/`
+2. Register it in `api/models/__init__.py`
+3. Generate migration: `alembic revision --autogenerate -m "add fcm_tokens table"`
+4. The migration is included in the Docker image (`.cicd/Dockerfile.api` copies `alembic/`)
 
-## Troubleshooting
+## Full End-to-End Flow
 
-### Deploy fails at migration step
-- Check migration job logs: the CI step already prints them on failure
-- If job can't pull image: check ECR permissions / image tag exists
-- If migration fails: check the Alembic error in logs, fix migration script, rebuild, redeploy
-- Pods continue running old version if migration fails (safe rollback)
+```
+1. git checkout -b feature/xxx
+2. Make changes, commit, test
+3. git push → create PR → merge to main
+4. CI auto-builds → poll until complete
+5. ASK USER: "Deploy?"
+6. If yes → trigger CD → poll until complete
+7. Report result to user
+```
 
-### Build fails
-- Check Dockerfile paths: must use `-f .cicd/Dockerfile.*` from repo root
-- Common issue: new dependencies not in `pyproject.toml`
+## Infrastructure
 
-### RDS connection issues from local
-- RDS is private — use a VPN or SSH tunnel through a bastion host to connect
-- Never make RDS publicly accessible just for local debugging
+| Resource | Identifier |
+|----------|------------|
+| GitHub Repo | `Anlitico/pigugu-server` |
+| EKS Cluster | `pigugu-cluster` (us-west-1) |
+| RDS (PostgreSQL) | `pigugu-db.c1esma68egsk.us-west-1.rds.amazonaws.com:5432` |
+| ElastiCache (Redis) | `pigugu-redis.feoudk.ng.0001.usw1.cache.amazonaws.com:6379` |
+| ECR API | `pigugu-api` |
+| ECR Agent | `pigugu-agent` |
+| K8s Namespace | `default` |
+| Proxy | Clash HTTP 127.0.0.1:7897 |

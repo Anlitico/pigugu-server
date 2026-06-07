@@ -272,6 +272,7 @@ async def _handle_register(hw_id: str, msg: dict) -> None:
     hw_id = hw_id.strip().lower()
     session_id = msg.get("session_id")
     if not session_id:
+        logger.info("_handle_register: %s no session_id in message", hw_id)
         return
 
     try:
@@ -286,7 +287,11 @@ async def _handle_register(hw_id: str, msg: dict) -> None:
                 select(DeviceProvisioningSession).where(DeviceProvisioningSession.id == sid)
             )
             session = result.scalar_one_or_none()
-            if not session or session.status != "verifying":
+            if not session:
+                logger.info("_handle_register: %s session %s not found", hw_id, session_id)
+                return
+            if session.status != "verifying":
+                logger.info("_handle_register: %s session %s status=%s (expected verifying)", hw_id, session_id, session.status)
                 return
 
             # Check existing device
@@ -331,6 +336,8 @@ async def _handle_register(hw_id: str, msg: dict) -> None:
 
             session.status = "bound"
             await db.commit()
+
+            logger.info("_handle_register: %s bound successfully (session=%s)", hw_id, session_id)
 
             await _push_ws(hw_id, {
                 "event": "bound",
