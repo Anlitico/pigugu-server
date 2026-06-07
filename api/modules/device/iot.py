@@ -145,7 +145,7 @@ async def _handle_online(hw_id: str, msg: dict) -> None:
             # Look up device binding status
             async with AsyncSessionLocal() as db:
                 result = await db.execute(
-                    select(Device).where(Device.hardware_id == hw_id)
+                    select(Device).where(Device.hardware_id.ilike(hw_id))
                 )
                 device = result.scalar_one_or_none()
 
@@ -257,7 +257,7 @@ async def _handle_pong(hw_id: str, msg: dict, session_id: str | None, request_id
             rtt_ms = int((datetime.now().timestamp() - msg.get("ts", 0)) * 1000)
             await db.execute(
                 update(Device)
-                .where(Device.hardware_id == hw_id)
+                .where(Device.hardware_id.ilike(hw_id))
                 .values(last_rtt_ms=rtt_ms, last_seen_at=datetime.now(timezone.utc))
             )
             await db.commit()
