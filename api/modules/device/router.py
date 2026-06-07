@@ -238,5 +238,5 @@ async def register_fcm_token(
 ):
     """Register or refresh an FCM push token for the current user."""
     from modules.device.fcm import register_token
-    await register_token(str(current_user.id), body.token, body.platform)
+    await register_token(current_user.id, body.token, body.platform)
     return {"status": "ok"}

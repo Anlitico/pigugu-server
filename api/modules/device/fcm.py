@@ -1,11 +1,10 @@
-import json
 import logging
+import uuid
 from pathlib import Path
 
 import firebase_admin
 from firebase_admin import credentials, messaging
 from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession
 
 from core.database import AsyncSessionLocal
 from models.fcm_token import FCMToken
@@ -27,7 +26,7 @@ def _get_app() -> firebase_admin.App:
     return _app
 
 
-async def get_user_tokens(user_id: str) -> list[str]:
+async def get_user_tokens(user_id: uuid.UUID) -> list[str]:
     """Return all FCM tokens for a user."""
     async with AsyncSessionLocal() as db:
         result = await db.execute(
@@ -36,16 +35,15 @@ async def get_user_tokens(user_id: str) -> list[str]:
         return [row[0] for row in result.all()]
 
 
-async def register_token(user_id: str, token: str, platform: str | None = None) -> None:
+async def register_token(user_id: uuid.UUID, token: str, platform: str | None = None) -> None:
     """Upsert an FCM token for a user."""
     async with AsyncSessionLocal() as db:
-        # Check if token already exists (update platform if so)
         result = await db.execute(
             select(FCMToken).where(FCMToken.token == token)
         )
         existing = result.scalar_one_or_none()
         if existing:
-            if existing.user_id.hex != user_id:
+            if existing.user_id != user_id:
                 existing.user_id = user_id
             if platform:
                 existing.platform = platform
@@ -55,7 +53,7 @@ async def register_token(user_id: str, token: str, platform: str | None = None) 
             await db.commit()
 
 
-async def send_push(user_id: str, title: str, body: str,
+async def send_push(user_id: uuid.UUID, title: str, body: str,
                     data: dict | None = None) -> int:
     """Send push notification to all of a user's devices.
 

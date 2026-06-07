@@ -73,8 +73,6 @@ async def test_wait_for_pong_redis_error_no_crash(mock_sleep, mock_exists):
 # ═══════════════════════════════════════════════════════════════
 
 @pytest.mark.asyncio
-@patch("modules.device.iot.redis_set", new_callable=AsyncMock)
-@pytest.mark.asyncio
 async def test_handle_online_no_session_id(*_):
     """Post-reboot path: no session → ping-pong, no WS beyond 'online'."""
     from modules.device.iot import _handle_online

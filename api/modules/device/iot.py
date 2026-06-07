@@ -176,6 +176,10 @@ async def _handle_online(hw_id: str, msg: dict) -> None:
             ping["deadline_ms"] = 6000
             ping["payload"] = {}
 
+        # Publish the ping (must happen outside the DB session block)
+        from core.aws import publish_mqtt_message
+        await publish_mqtt_message(f"pgg/dev/{hw_id}/c2d", ping)
+
         await _push_ws(hw_id, {"event": "verifying"})
 
         # Fire-and-forget watchdog: waits for pong or pushes timeout error
