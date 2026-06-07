@@ -40,4 +40,3 @@ class Device(Base):
 
     user: Mapped["User"] = relationship("User", back_populates="devices")
     conversations: Mapped[list["Conversation"]] = relationship("Conversation", back_populates="device")
-    fcm_tokens: Mapped[list["FCMToken"]] = relationship("FCMToken", back_populates="device")
