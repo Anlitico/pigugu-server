@@ -74,13 +74,25 @@ async def test_wait_for_pong_redis_error_no_crash(mock_sleep, mock_exists):
 
 @pytest.mark.asyncio
 @patch("modules.device.iot.redis_set", new_callable=AsyncMock)
-async def test_handle_online_no_session_id(mock_redis):
+@pytest.mark.asyncio
+async def test_handle_online_no_session_id(*_):
+    """Post-reboot path: no session → ping-pong, no WS beyond 'online'."""
     from modules.device.iot import _handle_online
-    with patch("modules.device.iot._push_ws") as mock_push:
+    with patch("modules.device.iot.redis_set", new_callable=AsyncMock) as mock_set, \
+         patch("modules.device.iot.redis_get", new_callable=AsyncMock) as mock_get, \
+         patch("modules.device.iot._push_ws") as mock_push, \
+         patch("core.aws.publish_mqtt_message", new_callable=AsyncMock) as mock_pub:
+        mock_get.return_value = '{"rtt_ms": 42}'  # simulate pong
         await _handle_online(" Test-HW ", {})
-    assert mock_redis.call_count >= 2
+    assert mock_set.call_count >= 2  # online + last_seen
+    # Only "online" WS event — no booted/error (app may not be listening)
     mock_push.assert_called_once()
     assert mock_push.call_args[0][1]["event"] == "online"
+    # Ping-pong: simple ping (no session_id)
+    mock_pub.assert_called_once()
+    ping = mock_pub.call_args[0][1]
+    assert ping["msg_type"] == "connectivity.ping"
+    assert "session_id" not in ping
 
 
 @pytest.mark.asyncio
@@ -99,7 +111,8 @@ async def test_handle_online_invalid_uuid_pushes_error(mock_redis):
 async def test_handle_online_hw_id_normalized(mock_redis):
     """Whitespace and case are stripped."""
     from modules.device.iot import _handle_online
-    with patch("modules.device.iot._push_ws"):
+    with patch("modules.device.iot._push_ws"), \
+         patch("core.aws.publish_mqtt_message", new_callable=AsyncMock):
         await _handle_online("  AbCdEf  ", {})
     # hw_id should be lowercased+stripped in the Redis key
     keys = [c[0][0] for c in mock_redis.call_args_list]

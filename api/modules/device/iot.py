@@ -8,7 +8,7 @@ import boto3
 from fastapi import APIRouter, Header, HTTPException, Request
 
 from core.config import settings
-from core.redis import redis_set, redis_exists
+from core.redis import redis_get, redis_set, redis_exists
 
 logger = logging.getLogger(__name__)
 
@@ -71,8 +71,31 @@ async def _push_ws(hw_id: str, event: dict) -> None:
         logger.warning("WS push failed for %s: %s", hw_id, e)
 
 
+# ── Ping-pong (pure function — reusable by provisioning & reboot) ─
+
+async def ping_pong(hw_id: str, ping: dict, pong_key: str,
+                    timeout_s: float = 10.0) -> dict | None:
+    """Publish a connectivity.ping and block until pong appears in Redis.
+
+    Returns the pong dict on success, None on timeout.
+    Does NOT know about sessions, provisioning, or WS — pure transport.
+    """
+    from core.aws import publish_mqtt_message
+
+    await publish_mqtt_message(f"pgg/dev/{hw_id}/c2d", ping)
+
+    deadline = datetime.now().timestamp() + timeout_s
+    while datetime.now().timestamp() < deadline:
+        pong_raw = await redis_get(pong_key)
+        if pong_raw:
+            return json.loads(pong_raw)
+        await asyncio.sleep(0.5)
+
+    return None
+
+
 async def _wait_for_pong(hw_id: str, request_id: str, session_id: str) -> None:
-    """Wait for pong from device, push error if timeout."""
+    """Provisioning: fire-and-forget watchdog that pushes WS error on timeout."""
     await asyncio.sleep(10)
     try:
         key = f"provision:verify:{session_id}:{request_id}"
@@ -89,18 +112,36 @@ async def _wait_for_pong(hw_id: str, request_id: str, session_id: str) -> None:
 # ── Message handlers ────────────────────────────────────────
 
 async def _handle_online(hw_id: str, msg: dict) -> None:
-    """device.online → Redis + WS 'online', then publish ping for verify."""
+    """device.online → Redis + WS, then ping-pong to confirm connectivity.
+
+    Two callers:
+      Path A (provisioning): session_id present → use nonce, WS 'verifying',
+          wait for pong via background watchdog.
+      Path B (post-reboot): no session_id → simple ping, just confirm.
+    """
     hw_id = hw_id.strip().lower()
     await redis_set(f"device:online:hw:{hw_id}", "1", ex=90)
     await redis_set(f"device:last_seen:hw:{hw_id}", str(datetime.now().isoformat()), ex=86400)
     await _push_ws(hw_id, {"event": "online", "hardware_id": hw_id})
 
-    # Publish connectivity.ping so the firmware can reply with pong.
     session_id = msg.get("session_id")
+    request_id = uuid.uuid4()
+    ping = {
+        "msg_type": "connectivity.ping",
+        "request_id": str(request_id),
+        "ts": int(datetime.now().timestamp()),
+    }
+
+    # ── Path B: post-reboot ──────────────────────────────────
     if not session_id:
+        try:
+            await ping_pong(hw_id, ping,
+                             f"device:connectivity:hw:{hw_id}:{request_id}")
+        except Exception:
+            logger.exception("_handle_online ping-pong failed for %s", hw_id)
         return
 
-    # Look up session to get the challenge nonce
+    # ── Path A: provisioning ─────────────────────────────────
     try:
         from sqlalchemy import select
         from core.database import AsyncSessionLocal
@@ -108,12 +149,12 @@ async def _handle_online(hw_id: str, msg: dict) -> None:
 
         sid = uuid.UUID(session_id)
         async with AsyncSessionLocal() as db:
-            result = await db.execute(
+            session_result = await db.execute(
                 select(DeviceProvisioningSession).where(DeviceProvisioningSession.id == sid)
             )
-            session = result.scalar_one_or_none()
+            session = session_result.scalar_one_or_none()
             if not session or session.status != "created":
-                return  # already in progress or completed — skip
+                return
 
             if session.expires_at < datetime.now(timezone.utc):
                 session.status = "expired"
@@ -127,25 +168,17 @@ async def _handle_online(hw_id: str, msg: dict) -> None:
 
             session.status = "verifying"
             session.hardware_id = hw_id
-            request_id = uuid.uuid4()
             session.request_id = request_id
             await db.commit()
 
-            ping = {
-                "msg_type": "connectivity.ping",
-                "request_id": str(request_id),
-                "session_id": session_id,
-                "nonce": session.challenge_nonce,
-                "ts": int(datetime.now().timestamp()),
-                "deadline_ms": 6000,
-                "payload": {},
-            }
+            ping["session_id"] = session_id
+            ping["nonce"] = session.challenge_nonce
+            ping["deadline_ms"] = 6000
+            ping["payload"] = {}
 
-        from core.aws import publish_mqtt_message
-        await publish_mqtt_message(f"pgg/dev/{hw_id}/c2d", ping)
         await _push_ws(hw_id, {"event": "verifying"})
 
-        # Fire-and-forget: wait for pong or timeout
+        # Fire-and-forget watchdog: waits for pong or pushes timeout error
         asyncio.create_task(_wait_for_pong(hw_id, str(request_id), session_id))
 
     except Exception as e:

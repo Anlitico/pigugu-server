@@ -161,7 +161,9 @@ async def verify_connectivity(
     session.status = "verifying"
     await db.flush()
 
-    ping_payload = {
+    from modules.device.iot import ping_pong
+
+    ping = {
         "msg_type": "connectivity.ping",
         "request_id": str(request_id),
         "session_id": str(session_id),
@@ -171,25 +173,15 @@ async def verify_connectivity(
         "payload": {},
     }
 
-    from core.aws import publish_mqtt_message
-
-    # App already waited for MQTT online before calling us, so pong should
-    # arrive in < 1s. Short poll keeps user-facing latency low.
+    # App already waited for MQTT online, so pong should arrive quickly.
     for retry in range(2):  # 2 × 3s = ~6s total worst case
-        try:
-            await publish_mqtt_message(f"pgg/dev/{hw_id}/c2d", ping_payload)
-        except Exception as e:
-            logger.error("MQTT publish failed (retry=%d): %s", retry, e)
-        start_time = datetime.now()
-        while (datetime.now() - start_time).total_seconds() < 3:
-            pong_data = await redis_get(f"provision:verify:{session_id}:{request_id}")
-            if pong_data:
-                pong = json.loads(pong_data)
-                if pong.get("nonce") == session.challenge_nonce:
-                    session.status = "verified"
-                    rtt = pong.get("rtt_ms")
-                    return VerifyConnectivityResponse(verified=True, rtt_ms=rtt)
-            await asyncio.sleep(0.5)
+        pong = await ping_pong(hw_id, ping,
+                               f"provision:verify:{session_id}:{request_id}",
+                               timeout_s=3.0)
+        if pong and pong.get("nonce") == session.challenge_nonce:
+            session.status = "verified"
+            rtt = pong.get("rtt_ms")
+            return VerifyConnectivityResponse(verified=True, rtt_ms=rtt)
 
     session.status = "failed"
     session.failure_code = "PROVISION_VERIFY_TIMEOUT"
@@ -209,10 +201,11 @@ async def connectivity_check(
         
     hw_id = device.hardware_id.strip().lower()
     
-    # 2. Publish ping and wait for pong
-    request_id = uuid.uuid4()
+    # 2. Ping-pong connectivity check
+    from modules.device.iot import ping_pong
 
-    ping_payload = {
+    request_id = uuid.uuid4()
+    ping = {
         "msg_type": "connectivity.ping",
         "request_id": str(request_id),
         "ts": int(datetime.now().timestamp()),
@@ -220,23 +213,11 @@ async def connectivity_check(
         "payload": {},
     }
 
-    from core.aws import publish_mqtt_message
-
-    # Single retry, short poll — this is a quick "are you there?" check
-    for retry in range(1):  # 1 × 3s = ~3s total
-        try:
-            await publish_mqtt_message(f"pgg/dev/{hw_id}/c2d", ping_payload)
-        except Exception as e:
-            logger.error("MQTT publish failed in connectivity_check (retry=%d): %s", retry, e)
-        start_time = datetime.now()
-        while (datetime.now() - start_time).total_seconds() < 3:
-            pong_data = await redis_get(f"device:connectivity:hw:{hw_id}:{request_id}")
-            if pong_data:
-                pong = json.loads(pong_data)
-                rtt = pong.get("rtt_ms")
-                return VerifyConnectivityResponse(verified=True, rtt_ms=rtt)
-            await asyncio.sleep(0.5)
-
+    pong = await ping_pong(hw_id, ping,
+                           f"device:connectivity:hw:{hw_id}:{request_id}",
+                           timeout_s=3.0)
+    if pong:
+        return VerifyConnectivityResponse(verified=True, rtt_ms=pong.get("rtt_ms"))
     return VerifyConnectivityResponse(verified=False, error_code="DEVICE_UNREACHABLE")
 
 

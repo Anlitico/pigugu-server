@@ -3,6 +3,9 @@ localDocs/
 temp/
 CLAUDE.md
 
+# Secrets (service account keys, etc.)
+config/
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[codz]
