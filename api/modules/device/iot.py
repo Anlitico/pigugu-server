@@ -135,10 +135,50 @@ async def _handle_online(hw_id: str, msg: dict) -> None:
     # ── Path B: post-reboot ──────────────────────────────────
     if not session_id:
         try:
-            await ping_pong(hw_id, ping,
-                             f"device:connectivity:hw:{hw_id}:{request_id}")
+            from sqlalchemy import select
+            from core.database import AsyncSessionLocal
+            from models.device import Device
+
+            pong = await ping_pong(hw_id, ping,
+                                   f"device:connectivity:hw:{hw_id}:{request_id}")
+
+            # Look up device binding status
+            async with AsyncSessionLocal() as db:
+                result = await db.execute(
+                    select(Device).where(Device.hardware_id == hw_id)
+                )
+                device = result.scalar_one_or_none()
+                is_bound = device is not None and device.binding_status == "bound"
+
+            if pong and is_bound:
+                # Device is healthy and bound → push success notification
+                from modules.device.fcm import send_push
+                await send_push(
+                    device.user_id,
+                    "设备已就绪",
+                    f"设备 {hw_id[-4:].upper()} 已重新连接",
+                    {"event": "device_ready", "hardware_id": hw_id},
+                )
+            elif device:
+                # Ping-pong failed or device not bound → tell user to re-provision
+                from modules.device.fcm import send_push
+                if not pong:
+                    await send_push(
+                        device.user_id,
+                        "设备连接失败",
+                        f"设备 {hw_id[-4:].upper()} 无法连接，请检查网络后重新配网",
+                        {"event": "device_error", "error_code": "DEVICE_UNREACHABLE", "hardware_id": hw_id},
+                    )
+                else:
+                    await send_push(
+                        device.user_id,
+                        "设备未绑定",
+                        f"设备 {hw_id[-4:].upper()} 未绑定，请重新配网",
+                        {"event": "device_error", "error_code": "DEVICE_NOT_BOUND", "hardware_id": hw_id},
+                    )
+
         except Exception:
-            logger.exception("_handle_online ping-pong failed for %s", hw_id)
+            logger.exception("_handle_online (post-reboot) failed for %s", hw_id)
         return
 
     # ── Path A: provisioning ─────────────────────────────────
