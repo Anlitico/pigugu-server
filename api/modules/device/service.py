@@ -356,6 +356,22 @@ async def unbind_device(db: AsyncSession, user_id: uuid.UUID, device_id: uuid.UU
         raise ValueError("DEVICE_NOT_FOUND")
         
     is_active = device.active_state == "active"
+
+    # Try to send factory.reset before deactivating the certificate
+    # so the device clears NVS and reboots into BLE advertising mode.
+    is_online = await get_device_online_status(device.hardware_id)
+    if is_online:
+        try:
+            from core.aws import publish_mqtt_message
+            await publish_mqtt_message(
+                f"pgg/dev/{device.hardware_id.strip().lower()}/c2d",
+                {"msg_type": "factory.reset"},
+            )
+            await asyncio.sleep(2)  # brief window for delivery
+            logger.info("Sent factory.reset to %s", device.hardware_id)
+        except Exception as e:
+            logger.warning("Failed to send factory.reset to %s: %s", device_id, e)
+
     device.binding_status = "unbound"
     device.active_state = "standby"
 
