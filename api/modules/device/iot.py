@@ -148,9 +148,8 @@ async def _handle_online(hw_id: str, msg: dict) -> None:
                     select(Device).where(Device.hardware_id == hw_id)
                 )
                 device = result.scalar_one_or_none()
-                is_bound = device is not None and device.binding_status == "bound"
 
-            if pong and is_bound:
+            if pong and device is not None and device.binding_status == "bound":
                 # Device is healthy and bound → push success notification
                 from modules.device.fcm import send_push
                 await send_push(
@@ -159,7 +158,7 @@ async def _handle_online(hw_id: str, msg: dict) -> None:
                     f"设备 {hw_id[-4:].upper()} 已重新连接",
                     {"event": "device_ready", "hardware_id": hw_id},
                 )
-            elif device:
+            elif device is not None:
                 # Ping-pong failed or device not bound → tell user to re-provision
                 from modules.device.fcm import send_push
                 if not pong:
