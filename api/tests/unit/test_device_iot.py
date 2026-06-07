@@ -73,14 +73,133 @@ async def test_wait_for_pong_redis_error_no_crash(mock_sleep, mock_exists):
 # ═══════════════════════════════════════════════════════════════
 
 @pytest.mark.asyncio
-@patch("modules.device.iot.redis_set", new_callable=AsyncMock)
-async def test_handle_online_no_session_id(mock_redis):
+async def test_handle_online_no_session_id(*_):
+    """Post-reboot path: ping-pong + device bound → push 'device_ready'."""
     from modules.device.iot import _handle_online
-    with patch("modules.device.iot._push_ws") as mock_push:
+    # Mock a bound device
+    mock_device = MagicMock()
+    mock_device.binding_status = "bound"
+    mock_db = AsyncMock()
+    mock_db_result = MagicMock()
+    mock_db_result.scalar_one_or_none.return_value = mock_device
+    mock_db.execute.return_value = mock_db_result
+    mock_db_session = AsyncMock()
+    mock_db_session.__aenter__.return_value = mock_db
+
+    with patch("modules.device.iot.redis_set", new_callable=AsyncMock) as mock_set, \
+         patch("modules.device.iot.redis_get", new_callable=AsyncMock) as mock_get, \
+         patch("modules.device.iot._push_ws") as mock_push, \
+         patch("core.aws.publish_mqtt_message", new_callable=AsyncMock) as mock_pub, \
+         patch("core.database.AsyncSessionLocal", return_value=mock_db_session), \
+         patch("modules.device.fcm.send_push", new_callable=AsyncMock) as mock_send:
+        mock_get.return_value = '{"rtt_ms": 42}'  # simulate pong
         await _handle_online(" Test-HW ", {})
-    assert mock_redis.call_count >= 2
+
+    # Online event still pushed via WS
     mock_push.assert_called_once()
     assert mock_push.call_args[0][1]["event"] == "online"
+    # Ping published
+    mock_pub.assert_called_once()
+    assert "session_id" not in mock_pub.call_args[0][1]
+    # FCM push: device ready (title + body + data)
+    mock_send.assert_called_once()
+    assert mock_send.call_args[0][1] == "设备已就绪"  # title
+    assert mock_send.call_args[0][3]["event"] == "device_ready"  # data
+
+
+@pytest.mark.asyncio
+async def test_handle_online_post_reboot_unreachable(*_):
+    """Post-reboot path: ping-pong timeout → push 'DEVICE_UNREACHABLE'."""
+    from modules.device.iot import _handle_online
+    mock_device = MagicMock()
+    mock_device.binding_status = "bound"
+    mock_db = AsyncMock()
+    mock_db_result = MagicMock()
+    mock_db_result.scalar_one_or_none.return_value = mock_device
+    mock_db.execute.return_value = mock_db_result
+    mock_db_session = AsyncMock()
+    mock_db_session.__aenter__.return_value = mock_db
+
+    with patch("modules.device.iot.redis_set", new_callable=AsyncMock), \
+         patch("modules.device.iot.redis_get", new_callable=AsyncMock) as mock_get, \
+         patch("modules.device.iot._push_ws"), \
+         patch("core.aws.publish_mqtt_message", new_callable=AsyncMock), \
+         patch("core.database.AsyncSessionLocal", return_value=mock_db_session), \
+         patch("modules.device.fcm.send_push", new_callable=AsyncMock) as mock_send:
+        mock_get.return_value = None  # simulate pong timeout
+        await _handle_online(" test-hw ", {})
+
+    # FCM push: device unreachable
+    mock_send.assert_called_once()
+    assert mock_send.call_args[0][1] == "设备连接失败"
+    assert mock_send.call_args[0][3]["error_code"] == "DEVICE_UNREACHABLE"
+
+
+@pytest.mark.asyncio
+async def test_handle_online_post_reboot_device_not_bound(*_):
+    """Post-reboot path: ping-pong ok but device is unbound → push DEVICE_NOT_BOUND."""
+    from modules.device.iot import _handle_online
+    mock_device = MagicMock()
+    mock_device.binding_status = "unbound"
+    mock_db = AsyncMock()
+    mock_db_result = MagicMock()
+    mock_db_result.scalar_one_or_none.return_value = mock_device
+    mock_db.execute.return_value = mock_db_result
+    mock_db_session = AsyncMock()
+    mock_db_session.__aenter__.return_value = mock_db
+
+    with patch("modules.device.iot.redis_set", new_callable=AsyncMock), \
+         patch("modules.device.iot.redis_get", new_callable=AsyncMock) as mock_get, \
+         patch("modules.device.iot._push_ws"), \
+         patch("core.aws.publish_mqtt_message", new_callable=AsyncMock), \
+         patch("core.database.AsyncSessionLocal", return_value=mock_db_session), \
+         patch("modules.device.fcm.send_push", new_callable=AsyncMock) as mock_send:
+        mock_get.return_value = '{"rtt_ms": 42}'  # pong ok
+        await _handle_online(" test-hw ", {})
+
+    # FCM push: device not bound
+    mock_send.assert_called_once()
+    assert mock_send.call_args[0][1] == "设备未绑定"
+    assert mock_send.call_args[0][3]["error_code"] == "DEVICE_NOT_BOUND"
+
+
+@pytest.mark.asyncio
+async def test_handle_online_post_reboot_no_db_record(*_):
+    """Post-reboot path: device not in DB → no FCM push, no crash."""
+    from modules.device.iot import _handle_online
+    mock_db = AsyncMock()
+    mock_db_result = MagicMock()
+    mock_db_result.scalar_one_or_none.return_value = None  # no device
+    mock_db.execute.return_value = mock_db_result
+    mock_db_session = AsyncMock()
+    mock_db_session.__aenter__.return_value = mock_db
+
+    with patch("modules.device.iot.redis_set", new_callable=AsyncMock), \
+         patch("modules.device.iot.redis_get", new_callable=AsyncMock) as mock_get, \
+         patch("modules.device.iot._push_ws"), \
+         patch("core.aws.publish_mqtt_message", new_callable=AsyncMock), \
+         patch("core.database.AsyncSessionLocal", return_value=mock_db_session), \
+         patch("modules.device.fcm.send_push", new_callable=AsyncMock) as mock_send:
+        mock_get.return_value = '{"rtt_ms": 42}'  # pong ok
+        await _handle_online(" test-hw ", {})
+
+    # No device in DB → no push (no user_id to send to)
+    mock_send.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_handle_online_post_reboot_exception_is_caught(*_):
+    """Post-reboot path: exception during ping-pong → caught, no crash."""
+    from modules.device.iot import _handle_online
+
+    with patch("modules.device.iot.redis_set", new_callable=AsyncMock), \
+         patch("modules.device.iot.redis_get", side_effect=Exception("boom")), \
+         patch("modules.device.iot._push_ws"), \
+         patch("core.aws.publish_mqtt_message", new_callable=AsyncMock):
+        # Should not raise — exception is caught and logged
+        await _handle_online(" test-hw ", {})
+
+    # Test passes if no exception escapes
 
 
 @pytest.mark.asyncio
@@ -99,7 +218,8 @@ async def test_handle_online_invalid_uuid_pushes_error(mock_redis):
 async def test_handle_online_hw_id_normalized(mock_redis):
     """Whitespace and case are stripped."""
     from modules.device.iot import _handle_online
-    with patch("modules.device.iot._push_ws"):
+    with patch("modules.device.iot._push_ws"), \
+         patch("core.aws.publish_mqtt_message", new_callable=AsyncMock):
         await _handle_online("  AbCdEf  ", {})
     # hw_id should be lowercased+stripped in the Redis key
     keys = [c[0][0] for c in mock_redis.call_args_list]

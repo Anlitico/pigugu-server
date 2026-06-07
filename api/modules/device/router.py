@@ -221,3 +221,22 @@ async def unbind_device(
         await service.unbind_device(db, current_user.id, d_id)
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
+
+
+# ── FCM Push Token ───────────────────────────────────────────────
+
+from pydantic import BaseModel
+
+class FcmTokenRequest(BaseModel):
+    token: str
+    platform: str | None = None
+
+@router.post("/fcm-token", status_code=201)
+async def register_fcm_token(
+    body: FcmTokenRequest,
+    current_user: User = Depends(get_current_user),
+):
+    """Register or refresh an FCM push token for the current user."""
+    from modules.device.fcm import register_token
+    await register_token(current_user.id, body.token, body.platform)
+    return {"status": "ok"}

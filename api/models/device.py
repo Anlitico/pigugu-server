@@ -34,6 +34,9 @@ class Device(Base):
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False
     )
 
+    # Transient attributes (set by service layer, not persisted)
+    is_online: bool
+
     user: Mapped["User"] = relationship("User", back_populates="devices")
     conversations: Mapped[list["Conversation"]] = relationship("Conversation", back_populates="device")
     fcm_tokens: Mapped[list["FCMToken"]] = relationship("FCMToken", back_populates="device")
