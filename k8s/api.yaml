@@ -54,6 +54,14 @@ spec:
             secretKeyRef:
               name: pigugu-secrets
               key: AWS_IOT_WEBHOOK_SECRET
+        volumeMounts:
+        - name: firebase-config
+          mountPath: /api/config
+          readOnly: true
+      volumes:
+      - name: firebase-config
+        secret:
+          secretName: firebase-service-account
 
 ---
 apiVersion: v1
