@@ -115,7 +115,7 @@ class GameMode(ABC):
         await pending.write(state.roast_instance_id, prompt, redis)
 
         if trigger.affects_phase:
-            state.phase = Phase.REVIEW
+            state.phase = Phase.CLOSING
 
         logger.info(
             f"[{self.mode}] Triggered: {trigger.name} "

@@ -96,12 +96,12 @@ class TestGameModeTick:
         import asyncio
 
         redis = MagicMock()
-        state = self._state(turn_count=4)
+        state = self._state(turn_count=7)
         mode = RoastTogetherMode()
 
         result = asyncio.run(mode.tick(state, records=[], redis=redis))
         assert result is not None
-        assert state.turn_count == 5
+        assert state.turn_count == 8
 
     def test_no_transition_mid_game(self):
         from unittest.mock import MagicMock
@@ -123,7 +123,7 @@ class TestGameModeTick:
         import asyncio
 
         redis = MagicMock()
-        state = self._state(phase=Phase.REVIEW, turn_count=5)
+        state = self._state(phase=Phase.CLOSING, turn_count=5)
         mode = RoastTogetherMode()
 
         result = asyncio.run(mode.tick(state, records=[], redis=redis))

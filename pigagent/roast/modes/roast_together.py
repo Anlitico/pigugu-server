@@ -58,9 +58,22 @@ def _user_disengaged(state, records: list) -> bool:
     return avg_len < 20
 
 
+def _saturated(state, records: list) -> bool:
+    """Topic exhausted: enough turns have passed AND user energy has been
+    consistently low, indicating the conversation naturally ran its course."""
+    if state.turn_count < 3 or len(records) < 3:
+        return False
+    user_msgs = [r for r in records[-3:] if getattr(r, "role", "") == "user"]
+    if len(user_msgs) < 2:
+        return False
+    energies = [_compute_energy(getattr(r, "content", "")) for r in user_msgs]
+    # Last 2+ user turns all below 0.50 energy
+    return all(e < 0.50 for e in energies)
+
+
 class RoastTogetherMode(GameMode):
     mode = Mode.ROAST_TOGETHER
-    max_turns = 5
+    max_turns = 8
 
     @property
     def system_prompt_extension(self) -> str:
@@ -86,6 +99,9 @@ class RoastTogetherMode(GameMode):
             "best_take": "",
             "best_take_energy": 0.0,
             "best_take_turn": 0,
+            "has_best_take": False,
+            "score_breakdown": {},
+            "settled": False,
         }
 
     # ── Advance ────────────────────────────────────────────────────────
@@ -130,6 +146,15 @@ class RoastTogetherMode(GameMode):
     @property
     def triggers(self) -> list[Trigger]:
         return [
+            Trigger(
+                name="roast_saturated",
+                check=lambda s, r: _saturated(s, r),
+                prompt=lambda s: render(
+                    "roast_together_ending",
+                    best_take=s.extra.get("best_take", ""),
+                ),
+                affects_phase=True,
+            ),
             Trigger(
                 name="ending_max_turns",
                 check=lambda s, r: s.turn_count >= self.max_turns,

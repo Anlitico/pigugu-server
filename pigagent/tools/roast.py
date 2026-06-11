@@ -207,3 +207,69 @@ def create_start_roast_tool(
         },
         execute=_handler,
     )
+
+
+def create_roast_complete_tool(
+    *,
+    redis=None,
+    pg_pool=None,
+) -> Tool:
+    """Create a mark_roast_complete Tool that the agent calls after its closing statement.
+
+    The handler:
+    1. Loads the active roast state from Redis.
+    2. Transitions phase from CLOSING to SETTLED.
+    3. Computes has_best_take from best_take_energy.
+    4. Publishes a roast_settled event for App consumption.
+    """
+
+    async def _handler(args: dict) -> dict[str, Any]:
+        from roast.state import RoastState
+        from roast.types import Phase
+        from roast.event_bus import event_bus
+
+        user_id = _current_user_id.get()
+        if not user_id:
+            return {"settled": False, "reason": "no active user"}
+
+        state = await RoastState._load_active(user_id, redis)
+        if not state:
+            return {"settled": False, "reason": "no active roast"}
+        if state.phase not in (Phase.ACTIVE, Phase.CLOSING):
+            return {"settled": False, "reason": f"roast already settled or closed: {state.phase}"}
+
+        state.phase = Phase.SETTLED
+        state.extra["settled"] = True
+        state.extra["has_best_take"] = (
+            state.extra.get("best_take_energy", 0) > 0.70
+        )
+        await state.save(redis, pg_pool)
+
+        # Fire-and-forget: notify App, don't block the conversation
+        await event_bus.publish(user_id, {
+            "type": "roast_settled",
+            "has_best_take": state.extra["has_best_take"],
+            "best_take": state.extra.get("best_take", ""),
+            "best_take_energy": state.extra.get("best_take_energy", 0),
+        })
+
+        logger.info(
+            f"[mark_roast_complete] Roast settled: {state.roast_instance_id} "
+            f"has_best_take={state.extra['has_best_take']} user={user_id}"
+        )
+
+        return {"settled": True, "has_best_take": state.extra["has_best_take"]}
+
+    return Tool(
+        name="mark_roast_complete",
+        description=(
+            "Call this tool after you finish your closing statement in a roast game. "
+            "Marks the roast as settled so the user can continue free chat."
+        ),
+        parameters={
+            "type": "object",
+            "properties": {},
+            "required": [],
+        },
+        execute=_handler,
+    )

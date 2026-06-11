@@ -233,3 +233,5 @@ temp/
 # Project tooling (machine-specific, not for version control)
 pyrightconfig.json
 uv.lock
+diagrams/
+tmp/
