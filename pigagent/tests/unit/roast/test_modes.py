@@ -29,147 +29,44 @@ class _FakeTurn:
 # RoastTogetherMode
 # -------------------------------------------------------------------
 
-class TestRoastTogetherEnergy:
-    def test_empty(self):
-        from roast.modes.roast_together import _compute_energy
-        assert _compute_energy("") == 0.0
-
-    def test_low_energy(self):
-        from roast.modes.roast_together import _compute_energy
-        e = _compute_energy("yeah whatever")
-        assert e < 0.3
-
-    def test_high_energy(self):
-        from roast.modes.roast_together import _compute_energy
-        e = _compute_energy("This is ABSOLUTELY INSANE!!! I cannot believe this ridiculous take on the situation!!!")
-        assert e > 0.5
-
-    def test_spicy_words(self):
-        from roast.modes.roast_together import _compute_energy
-        e = _compute_energy("absolutely totally completely insane ridiculous outrageous")
-        assert e >= 0.2  # spicy words contribute
-
-
 class TestRoastTogetherState:
     def test_init_extra(self):
         from roast.modes.roast_together import RoastTogetherMode
         extra = RoastTogetherMode.init_extra()
-        assert extra["user_energy"] == 0.0
-        assert extra["best_take"] == ""
-        assert extra["best_take_energy"] == 0.0
-        assert extra["has_best_take"] is False
-        assert extra["score_breakdown"] == {}
-        assert extra["settled"] is False
-
-    def test_update_state_tracks_energy(self):
-        from roast.modes.roast_together import RoastTogetherMode
-        mode = RoastTogetherMode()
-        state = _state(turn_count=1, extra={"user_energy": 0.0, "best_take": "", "best_take_energy": 0.0, "best_take_turn": 0})
-        records = [_FakeTurn("user", "This is TOTALLY ridiculous!!! I can't even.")]
-        mode._update_state(state, records)
-        assert state.extra["user_energy"] > 0.3
-
-    def test_update_state_captures_best_take(self):
-        from roast.modes.roast_together import RoastTogetherMode
-        mode = RoastTogetherMode()
-        state = _state(turn_count=1, extra={"user_energy": 0.0, "best_take": "", "best_take_energy": 0.0, "best_take_turn": 0})
-        records = [_FakeTurn("user", "This is the most ridiculous thing I have ever seen in my entire life!! Absolutely insane!!!")]
-        mode._update_state(state, records)
-        assert state.extra["best_take"] != ""
-        assert state.extra["best_take_energy"] > 0.5
-
-    def test_skips_weak_take(self):
-        from roast.modes.roast_together import RoastTogetherMode
-        mode = RoastTogetherMode()
-        state = _state(turn_count=1)
-        state.extra = {"user_energy": 0.0, "best_take": "", "best_take_energy": 0.0, "best_take_turn": 0}
-        records = [_FakeTurn("user", "yeah")]
-        mode._update_state(state, records)
-        assert state.extra["best_take"] == ""  # too short, low energy
-
-
-class TestRoastTogetherSaturated:
-    def test_not_enough_turns(self):
-        from roast.modes.roast_together import _saturated
-        state = _state(turn_count=2)
-        records = [_FakeTurn("user", "ok"), _FakeTurn("user", "yeah")]
-        assert not _saturated(state, records)
-
-    def test_not_enough_user_msgs(self):
-        from roast.modes.roast_together import _saturated
-        state = _state(turn_count=3)
-        records = [_FakeTurn("assistant", "long reply"), _FakeTurn("user", "ok")]
-        assert not _saturated(state, records)
-
-    def test_high_energy_not_saturated(self):
-        from roast.modes.roast_together import _saturated
-        state = _state(turn_count=3)
-        records = [
-            _FakeTurn("assistant", "..."),
-            _FakeTurn("user", "This is ABSOLUTELY RIDICULOUS!!! I cannot believe this!!"),
-            _FakeTurn("user", "And another thing — this is totally insane!!"),
-        ]
-        assert not _saturated(state, records)
-
-    def test_low_energy_saturated(self):
-        from roast.modes.roast_together import _saturated
-        state = _state(turn_count=3)
-        records = [
-            _FakeTurn("assistant", "..."),
-            _FakeTurn("user", "yeah ok"),
-            _FakeTurn("user", "i guess so"),
-            _FakeTurn("user", "whatever"),
-        ]
-        assert _saturated(state, records)
+        assert extra == {"settled": False}
 
 
 class TestRoastTogetherTriggers:
-    def test_all_triggers_registered(self):
+    def test_single_trigger_only(self):
         from roast.modes.roast_together import RoastTogetherMode
         mode = RoastTogetherMode()
         names = [t.name for t in mode.triggers]
-        assert "roast_saturated" in names
-        assert "ending_max_turns" in names
-        assert "user_spicy" in names
-        assert "user_disengaged" in names
+        assert names == ["ending_max_turns"]
 
     def test_max_turns_is_8(self):
         from roast.modes.roast_together import RoastTogetherMode
         mode = RoastTogetherMode()
         assert mode.max_turns == 8
 
-    def test_saturated_affects_phase(self):
+    def test_ending_fires_at_max_turns(self):
         from roast.modes.roast_together import RoastTogetherMode
         mode = RoastTogetherMode()
-        trigger = [t for t in mode.triggers if t.name == "roast_saturated"][0]
-        assert trigger.affects_phase is True
-
-    def test_saturated_fires(self):
-        from roast.modes.roast_together import RoastTogetherMode
-        mode = RoastTogetherMode()
-        state = _state(turn_count=3)
-        records = [
-            _FakeTurn("user", "yeah"),
-            _FakeTurn("user", "ok"),
-            _FakeTurn("user", "whatever"),
-        ]
-        trigger = [t for t in mode.triggers if t.name == "roast_saturated"][0]
-        assert trigger.check(state, records)
-
-    def test_spicy_fires(self):
-        from roast.modes.roast_together import RoastTogetherMode
-        mode = RoastTogetherMode()
-        state = _state(turn_count=2, extra={"user_energy": 0.9})
-        trigger = [t for t in mode.triggers if t.name == "user_spicy"][0]
+        state = _state(turn_count=8)
+        trigger = [t for t in mode.triggers if t.name == "ending_max_turns"][0]
         assert trigger.check(state, [])
 
-    def test_disengaged_fires(self):
+    def test_ending_not_fires_early(self):
         from roast.modes.roast_together import RoastTogetherMode
         mode = RoastTogetherMode()
-        state = _state(turn_count=3)
-        records = [_FakeTurn("user", "ok"), _FakeTurn("user", "no"), _FakeTurn("user", "yeah")]
-        trigger = [t for t in mode.triggers if t.name == "user_disengaged"][0]
-        assert trigger.check(state, records)
+        state = _state(turn_count=5)
+        trigger = [t for t in mode.triggers if t.name == "ending_max_turns"][0]
+        assert not trigger.check(state, [])
+
+    def test_ending_affects_phase(self):
+        from roast.modes.roast_together import RoastTogetherMode
+        mode = RoastTogetherMode()
+        trigger = [t for t in mode.triggers if t.name == "ending_max_turns"][0]
+        assert trigger.affects_phase is True
 
 
 # -------------------------------------------------------------------
@@ -213,7 +110,7 @@ class TestMarkRoastComplete:
         from unittest.mock import MagicMock, AsyncMock
         from tools.roast import create_roast_complete_tool, _current_user_id
         from roast.types import Phase
-        import json, contextvars
+        import json
 
         state_data = json.dumps({
             "roast_instance_id": "test-1",
@@ -223,7 +120,7 @@ class TestMarkRoastComplete:
             "mode": "roast_together",
             "phase": Phase.CLOSED,
             "turn_count": 5,
-            "extra": {"best_take_energy": 0.8},
+            "extra": {},
         })
 
         redis = MagicMock()
@@ -242,7 +139,7 @@ class TestMarkRoastComplete:
         from unittest.mock import MagicMock, AsyncMock
         from tools.roast import create_roast_complete_tool, _current_user_id
         from roast.types import Phase
-        import json, contextvars
+        import json
 
         state_data = json.dumps({
             "roast_instance_id": "test-1",
@@ -252,7 +149,7 @@ class TestMarkRoastComplete:
             "mode": "roast_together",
             "phase": Phase.ACTIVE,
             "turn_count": 3,
-            "extra": {"best_take_energy": 0.85, "best_take": "great roast"},
+            "extra": {},
         })
 
         redis = MagicMock()
@@ -264,15 +161,14 @@ class TestMarkRoastComplete:
             tool = create_roast_complete_tool(redis=redis)
             import asyncio; result = asyncio.run(tool.execute({}))
             assert result["settled"] is True
-            assert result["has_best_take"] is True  # 0.85 > 0.70
         finally:
             _current_user_id.reset(token)
 
-    def test_has_best_take_false_below_threshold(self):
+    def test_settles_from_closing(self):
         from unittest.mock import MagicMock, AsyncMock
         from tools.roast import create_roast_complete_tool, _current_user_id
         from roast.types import Phase
-        import json, contextvars
+        import json
 
         state_data = json.dumps({
             "roast_instance_id": "test-2",
@@ -282,7 +178,7 @@ class TestMarkRoastComplete:
             "mode": "roast_together",
             "phase": Phase.CLOSING,
             "turn_count": 6,
-            "extra": {"best_take_energy": 0.55, "best_take": "ok roast"},
+            "extra": {},
         })
 
         redis = MagicMock()
@@ -294,7 +190,6 @@ class TestMarkRoastComplete:
             tool = create_roast_complete_tool(redis=redis)
             import asyncio; result = asyncio.run(tool.execute({}))
             assert result["settled"] is True
-            assert result["has_best_take"] is False  # 0.55 < 0.70
         finally:
             _current_user_id.reset(token)
 

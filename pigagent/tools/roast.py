@@ -240,25 +240,21 @@ def create_roast_complete_tool(
 
         state.phase = Phase.SETTLED
         state.extra["settled"] = True
-        state.extra["has_best_take"] = (
-            state.extra.get("best_take_energy", 0) > 0.70
-        )
         await state.save(redis, pg_pool)
 
-        # Fire-and-forget: notify App, don't block the conversation
+        # Notify App asynchronously — settlement card trigger
         await event_bus.publish(user_id, {
             "type": "roast_settled",
-            "has_best_take": state.extra["has_best_take"],
-            "best_take": state.extra.get("best_take", ""),
-            "best_take_energy": state.extra.get("best_take_energy", 0),
+            "roast_instance_id": state.roast_instance_id,
+            "turn_count": state.turn_count,
         })
 
         logger.info(
             f"[mark_roast_complete] Roast settled: {state.roast_instance_id} "
-            f"has_best_take={state.extra['has_best_take']} user={user_id}"
+            f"turns={state.turn_count} user={user_id}"
         )
 
-        return {"settled": True, "has_best_take": state.extra["has_best_take"]}
+        return {"settled": True}
 
     return Tool(
         name="mark_roast_complete",
