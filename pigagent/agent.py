@@ -29,6 +29,7 @@ from core.agent.runner import AgentRunner, RunnerConfig
 from core.agent.stop import no_tool_calls
 from context.manager import ContextManager
 from roast.pending import consume
+from roast.constants import GAME_EVENT_PREFIX
 from roast.types import Phase
 from roast.state import RoastState
 from tools.roast import _current_user_id, _current_persona_id
@@ -363,7 +364,7 @@ class PigAgent:
         try:
             pending_prompt = await consume(roast_state.roast_instance_id, self._redis)
             if pending_prompt:
-                messages.append(Message.system(f"[Game Event]\n{pending_prompt}"))
+                messages.append(Message.system(f"{GAME_EVENT_PREFIX}\n{pending_prompt}"))
         except Exception as e:
             logger.warning(f"[PigAgent] consume_pending failed: {e}")
 

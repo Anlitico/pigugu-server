@@ -1,7 +1,8 @@
 """RoastTogether — roast a hot topic together with the user.
 
-The LLM handles all behavioral decisions (energy, escalation, best-take, ending)
-via the system prompt. This module only provides the safety-net trigger.
+Uses a director LLM to evaluate the conversation every turn and inject
+guidance to the actor LLM when needed. The actor focuses on natural
+banter; the director handles pacing, escalation, and closing.
 """
 
 from __future__ import annotations
@@ -24,9 +25,13 @@ class RoastTogetherMode(GameMode):
     def system_prompt_extension(self) -> str:
         return render("roast_together_system")
 
+    @property
+    def director_prompt(self) -> str:
+        return render("roast_together_director")
+
     @staticmethod
     def init_extra() -> dict:
-        return {"settled": False}
+        return {"settled": False, "best_take": ""}
 
     # ── Triggers ───────────────────────────────────────────────────────
 
@@ -36,7 +41,10 @@ class RoastTogetherMode(GameMode):
             Trigger(
                 name="ending_max_turns",
                 check=lambda s, r: s.turn_count >= self.max_turns,
-                prompt=render("roast_together_ending"),
+                prompt=lambda s: render(
+                    "roast_together_ending",
+                    best_take=s.extra.get("best_take", ""),
+                ),
                 affects_phase=True,
             ),
         ]
@@ -46,4 +54,5 @@ class RoastTogetherMode(GameMode):
             "mode": str(self.mode),
             "turns": state.turn_count,
             "settled": state.extra.get("settled", False),
+            "best_take": state.extra.get("best_take", ""),
         }

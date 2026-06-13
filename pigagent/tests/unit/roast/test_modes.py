@@ -33,7 +33,7 @@ class TestRoastTogetherState:
     def test_init_extra(self):
         from roast.modes.roast_together import RoastTogetherMode
         extra = RoastTogetherMode.init_extra()
-        assert extra == {"settled": False}
+        assert extra == {"settled": False, "best_take": ""}
 
 
 class TestRoastTogetherTriggers:
@@ -265,7 +265,7 @@ class TestBreakingBombState:
     def test_init_extra(self):
         from roast.modes.breaking_bomb import BreakingBombMode
         extra = BreakingBombMode.init_extra()
-        assert extra == {"reactions": []}
+        assert extra == {"reactions": [], "best_take": ""}
 
     def test_update_state_records_reaction(self):
         from roast.modes.breaking_bomb import BreakingBombMode

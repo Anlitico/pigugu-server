@@ -10,6 +10,7 @@ from typing import Any
 from loguru import logger
 
 from core.agent.tool import Tool
+from roast.constants import TOOL_MARK_ROAST_COMPLETE
 
 ConnectFn = Callable[[str], Awaitable[Any]]
 
@@ -214,13 +215,15 @@ def create_roast_complete_tool(
     redis=None,
     pg_pool=None,
 ) -> Tool:
-    """Create a mark_roast_complete Tool that the agent calls after its closing statement.
+    """Create a mark_roast_complete Tool to end the current roast game.
 
-    The handler:
+    Called by the agent when: (1) the closing statement is complete, or
+    (2) the user wants to quit mid-game.
+
+    Handler:
     1. Loads the active roast state from Redis.
-    2. Transitions phase from CLOSING to SETTLED.
-    3. Computes has_best_take from best_take_energy.
-    4. Publishes a roast_settled event for App consumption.
+    2. Transitions phase from ACTIVE/CLOSING to SETTLED.
+    3. Publishes a roast_settled event for App consumption.
     """
 
     async def _handler(args: dict) -> dict[str, Any]:
@@ -254,18 +257,46 @@ def create_roast_complete_tool(
             f"turns={state.turn_count} user={user_id}"
         )
 
-        return {"settled": True}
+        # Store best_take in extra if the LLM provided it
+        best_take = args.get("best_take", "")
+        if best_take:
+            state.extra["best_take"] = best_take
+
+        await event_bus.publish(user_id, {
+            "type": "roast_settled",
+            "roast_instance_id": state.roast_instance_id,
+            "turn_count": state.turn_count,
+            "best_take": best_take or None,
+        })
+
+        logger.info(
+            f"[mark_roast_complete] Roast settled: {state.roast_instance_id} "
+            f"turns={state.turn_count} has_best_take={bool(best_take)} user={user_id}"
+        )
+
+        return {"settled": True, "best_take": best_take or None}
 
     return Tool(
-        name="mark_roast_complete",
+        name=TOOL_MARK_ROAST_COMPLETE,
         description=(
-            "Call this tool after you finish your closing statement in a roast game. "
-            "Marks the roast as settled so the user can continue free chat."
+            "End the current roast game. Call this when: "
+            "(1) you have finished your closing statement, or "
+            "(2) the user wants to quit. "
+            "Marks the roast as settled and lets the user continue free chat."
         ),
         parameters={
             "type": "object",
-            "properties": {},
-            "required": [],
+            "properties": {
+                "filler_text": {
+                    "type": "string",
+                    "description": "A brief spoken sentence to fill silence while the tool runs. Already spoken — do NOT repeat in your response.",
+                },
+                "best_take": {
+                    "type": "string",
+                    "description": "The user's best roast line from this session. Omit if no standout line emerged.",
+                },
+            },
+            "required": ["filler_text"],
         },
         execute=_handler,
     )

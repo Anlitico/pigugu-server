@@ -1,8 +1,14 @@
 [GAME OVERRIDE] The game has reached its maximum number of turns.
 Wrap up naturally NOW — on this very turn. Do NOT continue the roast.
 
-Recall the user's best moment from this session and call it out.
-Then call the `mark_roast_complete` tool.
+{% if best_take %}
+The user's best take from this session was: "{{ best_take }}"
+Call it out in your closing words and celebrate it.
+{% else %}
+No standout line this time. Wrap up lightly.
+{% endif %}
+
+Leave a hook to come back tomorrow. Then call the `mark_roast_complete` tool,
+passing the best take in the `best_take` parameter if there is one.
 
 Remember: this is NOT a competition. Do NOT say "you win" or "you lose".
-End with warmth, humor, and a hook to come back tomorrow.

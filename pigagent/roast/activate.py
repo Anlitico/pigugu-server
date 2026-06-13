@@ -11,6 +11,7 @@ from typing import Any
 
 from loguru import logger
 
+from roast.constants import ROAST_BODY_PREFIX
 from roast.state import RoastState
 from roast.registry import GameModeRegistry
 
@@ -76,7 +77,7 @@ async def activate_roast(
         pg_pool=pg_pool,
     )
 
-    body = f"[Game Background]\n{_build_roast_body(game_mode_obj=mode, prompt=prompt)}"
+    body = f"{ROAST_BODY_PREFIX}\n{_build_roast_body(game_mode_obj=mode, prompt=prompt)}"
 
     logger.info(
         f"[activate_roast] Started: {state.roast_instance_id} "

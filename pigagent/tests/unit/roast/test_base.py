@@ -50,6 +50,10 @@ class _MinimalMode(GameMode):
     def system_prompt_extension(self) -> str:
         return "minimal rules"
 
+    @property
+    def director_prompt(self) -> str:
+        return "You are a test director. Default to action:none."
+
 
 class TestGameModeBase:
     def test_default_triggers_has_ending(self):

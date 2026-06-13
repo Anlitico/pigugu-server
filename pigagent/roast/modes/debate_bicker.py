@@ -44,6 +44,10 @@ class DebateBickerMode(GameMode):
     def system_prompt_extension(self) -> str:
         return render("debate_bicker_system")
 
+    @property
+    def director_prompt(self) -> str:
+        return render("debate_bicker_director")
+
     # ── State helpers ──────────────────────────────────────────────────
 
     @staticmethod
@@ -52,6 +56,7 @@ class DebateBickerMode(GameMode):
             "strong_points": 0,
             "fart_type": "",
             "debate_history": [],
+            "best_take": "",
         }
 
     # ── Advance ────────────────────────────────────────────────────────
