@@ -39,12 +39,24 @@ async def websocket_app(
 
     user_id = str(user.id)
     await ws_manager.connect(user_id, app_device_id, websocket)
+    # NOTE: ws_manager.connect() accepts the WS internally
+    import logging
+    logging.getLogger(__name__).info("WS message loop started for user=%s", user_id)
 
     try:
         while True:
             raw = await websocket.receive_text()
             await _handle_message(websocket, user, raw)
     except WebSocketDisconnect:
+        pass
+    except Exception as e:
+        import logging
+        logging.getLogger(__name__).exception("WS handler crashed for %s", user_id)
+        try:
+            await websocket.send_json({"type": "error", "code": "INTERNAL", "message": str(e)})
+        except Exception:
+            pass
+    finally:
         ws_manager.disconnect(user_id, app_device_id)
 
 
