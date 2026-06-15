@@ -104,55 +104,7 @@ class TestLiveKitTokenProxy:
         assert call_kwargs[1]["params"]["user_id"] == "u1"
 
 
-class TestRoastWsProxyAuth:
-    def test_invalid_jwt_token_returns_auth_error(self):
-        app = _make_app()
-
-        # decode_access_token is imported from core.security inside the WS handler
-        with patch("core.security.decode_access_token",
-                   side_effect=ValueError("bad token")):
-            client = TestClient(app)
-            with client.websocket_connect("/roast/ws?token=bad") as ws:
-                data = ws.receive_json()
-                assert data["type"] == "error"
-                assert data["code"] == "AUTH_FAILED"
-
-    def test_valid_jwt_accepts_connection(self):
-        app = _make_app()
-        mock_user = MagicMock()
-
-        # get_user_by_id is imported inside the WS handler via
-        #   from modules.auth.service import get_user_by_id
-        with patch("core.security.decode_access_token",
-                   return_value={"sub": "mock-uuid"}), \
-             patch("modules.auth.service.get_user_by_id",
-                   new_callable=AsyncMock) as mock_get_user, \
-             patch("core.database.AsyncSessionLocal") as mock_session_cls, \
-             patch("modules.agent.router.websockets.connect") as mock_ws:
-            mock_get_user.return_value = mock_user
-            mock_session = AsyncMock()
-            mock_session.__aenter__ = AsyncMock(return_value=mock_session)
-            mock_session.__aexit__ = AsyncMock(return_value=None)
-            mock_session_cls.return_value = mock_session
-
-            # Agent WS raises to stop the forwarder loop quickly
-            mock_agent_ws = AsyncMock()
-            mock_agent_ws.recv = AsyncMock(side_effect=Exception("done"))
-            mock_agent_ws.send = AsyncMock()
-            mock_agent_ws.__aenter__ = AsyncMock(return_value=mock_agent_ws)
-            mock_agent_ws.__aexit__ = AsyncMock(return_value=None)
-            mock_ws.return_value = mock_agent_ws
-
-            client = TestClient(app)
-            with client.websocket_connect(
-                "/roast/ws?token=valid.jwt.token"
-            ) as ws:
-                # Connection accepted — no auth error raised
-                pass
-
-
 class TestAgentRouterRegistration:
     def test_routes_are_registered(self):
         route_paths = [getattr(r, "path", "") for r in router.routes]
         assert "/livekit/token" in route_paths
-        assert "/roast/ws" in route_paths
