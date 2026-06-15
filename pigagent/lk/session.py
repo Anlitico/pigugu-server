@@ -78,6 +78,25 @@ async def run(ctx: JobContext) -> None:
     def on_track_subscribed(track: rtc.Track, publication: rtc.RemoteTrackPublication, participant: rtc.RemoteParticipant):
         logger.info(f"[AUDIO] Track subscribed: kind={track.kind} source={participant.identity}")
 
+    # ── Injected commands via LiveKit data channel (roast_ws.py → agent) ──
+    @ctx.room.on("data_received")
+    def on_data_received(
+        payload: bytes,
+        participant: rtc.RemoteParticipant | None,
+        kind: rtc.DataPacketKind,
+        topic: str,
+    ) -> None:
+        if topic != "roast_inject":
+            return
+        try:
+            msg = json.loads(payload)
+            if msg.get("type") == "start_roast":
+                asyncio.create_task(
+                    _handle_inject_start_roast(msg)
+                )
+        except Exception as exc:
+            logger.error(f"[Inject] Failed to parse data_received: {exc}")
+
     # ── Components ────────────────────────────────────────────────────
     stt, pig_agent, tts = create_agent_components(config, persona=persona)
     stt_plugin = stt.get_plugin()
@@ -294,6 +313,43 @@ async def run(ctx: JobContext) -> None:
     bridge._user_id = user_id
     logger.info(f"User ID resolved: {user_id}")
 
+    # ── Handle injected start_roast from App via LiveKit data channel ────
+    async def _handle_inject_start_roast(msg: dict) -> None:
+        """Called when roast_ws.py sends a start_roast command through the
+        LiveKit room data channel (topic="roast_inject").
+
+        Runs the full pig_agent.start_roast() pipeline: activate roast,
+        persist context, generate opening lines, then speak via TTS.
+        """
+        try:
+            logger.info(
+                f"[Inject] start_roast: roast_id={msg.get('roast_id')} "
+                f"mode={msg.get('mode_id')}"
+            )
+            full_text: str = ""
+            async for text in pig_agent.start_roast(
+                user_id=user_id,
+                persona_id=msg.get("persona_id", persona_id),
+                roast_id=msg["roast_id"],
+                mode_id=msg["mode_id"],
+                prompt=msg["prompt"],
+                headline=msg.get("headline", ""),
+                source=msg.get("source", ""),
+            ):
+                if isinstance(text, str):
+                    full_text += text
+
+            if full_text.strip():
+                await session.say(
+                    full_text.strip(),
+                    add_to_chat_ctx=False,
+                )
+                logger.info(
+                    f"[Inject] start_roast spoken: {len(full_text)} chars"
+                )
+        except Exception as exc:
+            logger.error(f"[Inject] start_roast failed: {exc}")
+
     # Accept TrackSource.UNKNOWN (0) in addition to SOURCE_MICROPHONE (2).
     # LiveKit JS client's LocalAudioTrack may report source="unknown" instead
     # of "microphone", causing _on_track_available to reject the audio track.
@@ -309,4 +365,8 @@ async def run(ctx: JobContext) -> None:
         logger.info(f"[SEARCH] Enabled, backend={config.POLICY_SEARCH_BACKEND}")
 
     logger.info("Agent ready  -  waiting for voice input...")
-    await asyncio.Event().wait()
+
+    try:
+        await asyncio.Event().wait()
+    finally:
+        logger.info(f"[Session] Cleaned up: user_id={user_id}")

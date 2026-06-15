@@ -11,6 +11,7 @@ from loguru import logger
 
 from bootstrap.factory import get_pig_agent, get_redis
 from roast.event_bus import event_bus
+from roast.session_registry import registry
 
 router = APIRouter(prefix="/roast", tags=["roast"])
 
@@ -165,11 +166,20 @@ async def _handle_start_roast(
     user_id: str,
     msg: dict[str, Any],
 ) -> None:
-    """Handle a start_roast message: activate and stream the opening reply."""
+    """Handle a start_roast message: activate and stream the opening reply.
+
+    Routing logic:
+    - If user has an active LiveKit session → inject into session TTS pipeline
+      (opening lines play through room audio, all participants hear it).
+    - If no active session → stream text via WebSocket (App handles display/TTS).
+      TODO: MQTT wake hardware, wait for it to join room, then inject.
+    """
     persona_id = msg.get("persona_id", 1)
     roast_id = msg.get("roast_id", "")
     mode_id = msg.get("mode_id", "")
     prompt = msg.get("prompt", "")
+    headline = msg.get("headline", "")
+    source = msg.get("source", "")
 
     # Validate required fields
     if not roast_id or not mode_id or not prompt:
@@ -180,47 +190,81 @@ async def _handle_start_roast(
         })
         return
 
-    try:
-        # Stream opening reply via PigAgent.start_roast()
-        async for text in pig_agent.start_roast(
-            user_id=user_id,
-            persona_id=persona_id,
-            roast_id=roast_id,
-            mode_id=mode_id,
-            prompt=prompt,
-        ):
-            chunk = text if isinstance(text, str) else ""
-            if chunk:
-                await websocket.send_json({
-                    "type": "agent_response",
-                    "text": chunk,
-                    "final": False,
-                })
+    session_active = await registry.has_active_agent(user_id)
 
-        # Signal end of opening turn
-        await websocket.send_json({
-            "type": "agent_response",
-            "text": "",
-            "final": True,
-        })
-
-        # Transition to listening state
-        await websocket.send_json({
-            "type": "state_change",
-            "state": "listening",
-        })
-
-        # Publish roast_started to event bus
-        await event_bus.publish(user_id, {
-            "type": "roast_event",
-            "event": "roast_started",
+    if session_active:
+        # ── Route through LiveKit room data channel ───────────────
+        logger.info(
+            f"[WS] start_roast: routing to LiveKit room "
+            f"user={user_id} roast={roast_id}"
+        )
+        await registry.send_inject(user_id, {
+            "type": "start_roast",
+            "persona_id": persona_id,
             "roast_id": roast_id,
+            "mode_id": mode_id,
+            "prompt": prompt,
+            "headline": headline,
+            "source": source,
         })
-
-    except Exception as e:
-        logger.error(f"[WS] start_roast failed for {user_id}: {e}")
         await websocket.send_json({
-            "type": "error",
-            "code": "ROAST_START_FAILED",
-            "message": str(e),
+            "type": "roast_event",
+            "event": "roast_started_in_room",
+            "roast_id": roast_id,
+            "mode_id": mode_id,
         })
+        # session.py receives this via LiveKit data_received,
+        # runs pig_agent.start_roast() → session.say() → TTS broadcast
+
+    else:
+        # ── No active session — stream text via WS ───────────────
+        # TODO: MQTT wake hardware → wait for join → then inject
+        logger.info(
+            f"[WS] start_roast: no LiveKit session, streaming via WS "
+            f"user={user_id} roast={roast_id}"
+        )
+        try:
+            async for text in pig_agent.start_roast(
+                user_id=user_id,
+                persona_id=persona_id,
+                roast_id=roast_id,
+                mode_id=mode_id,
+                prompt=prompt,
+                headline=headline,
+                source=source,
+            ):
+                chunk = text if isinstance(text, str) else ""
+                if chunk:
+                    await websocket.send_json({
+                        "type": "agent_response",
+                        "text": chunk,
+                        "final": False,
+                    })
+
+            # Signal end of opening turn
+            await websocket.send_json({
+                "type": "agent_response",
+                "text": "",
+                "final": True,
+            })
+
+            # No active room — flag this for the App
+            await websocket.send_json({
+                "type": "state_change",
+                "state": "listening",
+                "needs_room": True,
+            })
+
+            await event_bus.publish(user_id, {
+                "type": "roast_event",
+                "event": "roast_started",
+                "roast_id": roast_id,
+            })
+
+        except Exception as exc:
+            logger.error(f"[WS] start_roast failed for {user_id}: {exc}")
+            await websocket.send_json({
+                "type": "error",
+                "code": "ROAST_START_FAILED",
+                "message": str(exc),
+            })
