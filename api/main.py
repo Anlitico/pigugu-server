@@ -44,8 +44,14 @@ async def _redis_subscriber() -> None:
                         db,
                         user_id=uuid.UUID(user_id),
                         roast_instance_id=payload["roast_instance_id"],
-                        turn_count=payload["turn_count"],
+                        roast_id=payload.get("roast_id", ""),
+                        mode=payload.get("mode", ""),
+                        headline=payload.get("headline", ""),
+                        source=payload.get("source", ""),
+                        turn_count=payload.get("turn_count", 0),
                         best_take=payload.get("best_take"),
+                        interrupted=payload.get("interrupted", False),
+                        started_at=payload.get("started_at"),
                     )
             except Exception as e:
                 logger.error("handle_roast_settled failed for %s: %s", user_id, e)

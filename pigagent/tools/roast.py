@@ -144,7 +144,7 @@ def create_start_roast_tool(
         conn = await _acquire()
         try:
             row = await conn.fetchrow(
-                "SELECT roast_id, game_mode, prompt "
+                "SELECT roast_id, game_mode, prompt, headline, source "
                 "FROM roast_scenarios "
                 "WHERE roast_id = $1 AND status = 'active'",
                 roast_id,
@@ -163,6 +163,8 @@ def create_start_roast_tool(
                 roast_id=row["roast_id"],
                 game_mode=row["game_mode"],
                 prompt=row["prompt"],
+                headline=row.get("headline", ""),
+                source=row.get("source", ""),
                 redis=redis,
                 pg_pool=pg_pool,
             )
@@ -241,6 +243,9 @@ def create_roast_complete_tool(
         if state.phase not in (Phase.ACTIVE, Phase.CLOSING):
             return {"settled": False, "reason": f"roast already settled or closed: {state.phase}"}
 
+        # User quit mid-roast (called from ACTIVE) vs natural ending (called from CLOSING)
+        interrupted = state.phase == Phase.ACTIVE
+
         state.phase = Phase.SETTLED
         state.extra["settled"] = True
 
@@ -250,12 +255,18 @@ def create_roast_complete_tool(
 
         await state.save(redis, pg_pool)
 
-        # Notify App — in-process event bus (WebSocket)
+        # Build rich settlement event for the App
         settlement_event = {
             "type": "roast_settled",
             "roast_instance_id": state.roast_instance_id,
+            "roast_id": state.roast_id,
+            "mode": str(state.mode),
+            "headline": state.extra.get("headline", ""),
+            "source": state.extra.get("source", ""),
             "turn_count": state.turn_count,
             "best_take": best_take or None,
+            "interrupted": interrupted,
+            "started_at": state.started_at,
         }
         await event_bus.publish(user_id, settlement_event)
 

@@ -12,6 +12,21 @@ from models.roast_result import RoastResult
 logger = logging.getLogger(__name__)
 
 
+def _format_result(row: RoastResult) -> dict:
+    return {
+        "roast_instance_id": row.roast_instance_id,
+        "roast_id": row.roast_id,
+        "mode": row.mode,
+        "headline": row.headline,
+        "source": row.source,
+        "turn_count": row.turn_count,
+        "best_take": row.best_take,
+        "interrupted": row.interrupted,
+        "started_at": row.started_at.isoformat() if row.started_at else None,
+        "settled_at": row.settled_at.isoformat() if row.settled_at else None,
+    }
+
+
 async def get_roast_result(
     db: AsyncSession, user_id: uuid.UUID, roast_instance_id: str,
 ) -> dict | None:
@@ -26,12 +41,7 @@ async def get_roast_result(
     if row is None:
         return None
 
-    return {
-        "roast_instance_id": row.roast_instance_id,
-        "turn_count": row.turn_count,
-        "best_take": row.best_take,
-        "settled_at": row.settled_at.isoformat() if row.settled_at else None,
-    }
+    return _format_result(row)
 
 
 async def get_pending_roasts(
@@ -45,15 +55,7 @@ async def get_pending_roasts(
         .limit(20)
     )
     rows = result.scalars().all()
-    return [
-        {
-            "roast_instance_id": row.roast_instance_id,
-            "turn_count": row.turn_count,
-            "best_take": row.best_take,
-            "settled_at": row.settled_at.isoformat() if row.settled_at else None,
-        }
-        for row in rows
-    ]
+    return [_format_result(row) for row in rows]
 
 
 async def mark_roast_viewed(
@@ -98,21 +100,40 @@ async def handle_roast_settled(
     db: AsyncSession,
     user_id: uuid.UUID,
     roast_instance_id: str,
-    turn_count: int,
-    best_take: str | None,
+    roast_id: str = "",
+    mode: str = "",
+    headline: str = "",
+    source: str = "",
+    turn_count: int = 0,
+    best_take: str | None = None,
+    interrupted: bool = False,
+    started_at: float | None = None,
 ) -> None:
-    """Called when a roast settles: persist result + send FCM push."""
+    """Called when a roast settles: persist result + WS broadcast + FCM push."""
+    from datetime import datetime, timezone
+
     logger.info(
-        "Roast settled: user=%s roast=%s turns=%d has_best_take=%s",
-        user_id, roast_instance_id, turn_count, bool(best_take),
+        "Roast settled: user=%s roast=%s mode=%s turns=%d has_best_take=%s interrupted=%s",
+        user_id, roast_instance_id, mode, turn_count, bool(best_take), interrupted,
+    )
+
+    started_dt = (
+        datetime.fromtimestamp(started_at, tz=timezone.utc)
+        if started_at else None
     )
 
     # Write settlement result to DB
     db.add(RoastResult(
         roast_instance_id=roast_instance_id,
         user_id=user_id,
+        roast_id=roast_id,
+        mode=mode,
+        headline=headline,
+        source=source,
         turn_count=turn_count,
         best_take=best_take,
+        interrupted=interrupted,
+        started_at=started_dt,
     ))
     await db.commit()
 

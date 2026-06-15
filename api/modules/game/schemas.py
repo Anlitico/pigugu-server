@@ -5,16 +5,28 @@ from pydantic import BaseModel
 
 class RoastResultResponse(BaseModel):
     roast_instance_id: str
-    turn_count: int
-    best_take: str | None
-    settled_at: str | None
+    roast_id: str = ""
+    mode: str = ""
+    headline: str = ""
+    source: str = ""
+    turn_count: int = 0
+    best_take: str | None = None
+    interrupted: bool = False
+    started_at: str | None = None
+    settled_at: str | None = None
 
 
 class PendingRoastItem(BaseModel):
     roast_instance_id: str
-    turn_count: int
-    best_take: str | None
-    settled_at: str | None
+    roast_id: str = ""
+    mode: str = ""
+    headline: str = ""
+    source: str = ""
+    turn_count: int = 0
+    best_take: str | None = None
+    interrupted: bool = False
+    started_at: str | None = None
+    settled_at: str | None = None
 
 
 class PendingRoastsResponse(BaseModel):

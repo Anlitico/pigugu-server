@@ -91,6 +91,7 @@ class TestGameModeTick:
         s.roast_instance_id = "test-id"
         s.phase = kw.pop("phase", Phase.ACTIVE)
         s.turn_count = kw.pop("turn_count", 0)
+        s.started_at = kw.pop("started_at", 0.0)
         s.extra = kw.pop("extra", {})
         return s
 

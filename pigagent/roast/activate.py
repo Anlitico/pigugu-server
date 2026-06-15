@@ -44,6 +44,8 @@ async def activate_roast(
     roast_id: str,
     game_mode: str,
     prompt: str,
+    headline: str = "",
+    source: str = "",
     redis,
     pg_pool=None,
 ) -> tuple[str, str]:
@@ -67,12 +69,16 @@ async def activate_roast(
     """
     mode = _resolve_game_mode(game_mode)
 
+    extra = mode.init_extra()
+    extra["headline"] = headline
+    extra["source"] = source
+
     state = await RoastState.start(
         user_id=user_id,
         persona_id=persona_id,
         roast_id=roast_id,
         mode=mode.mode,
-        extra=mode.init_extra(),
+        extra=extra,
         redis=redis,
         pg_pool=pg_pool,
     )

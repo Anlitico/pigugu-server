@@ -278,6 +278,8 @@ class PigAgent:
         roast_id: str,
         mode_id: str,
         prompt: str,
+        headline: str = "",
+        source: str = "",
     ) -> AsyncIterator[str | FlushSentinel]:
         """Start a roast game and stream the opening reply.
 
@@ -295,6 +297,8 @@ class PigAgent:
                 roast_id=roast_id,
                 game_mode=mode_id,
                 prompt=prompt,
+                headline=headline,
+                source=source,
                 redis=self._redis,
                 pg_pool=self._pg_pool,
             )

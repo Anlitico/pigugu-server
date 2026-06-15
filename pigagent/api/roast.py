@@ -19,9 +19,13 @@ class RoastStartRequest(BaseModel):
     roast_id: str
     mode_id: str
     prompt: str
+    headline: str = ""
+    source: str = ""
 
 
-async def _event_stream(user_id: str, persona_id: int, roast_id: str, mode_id: str, prompt: str):
+async def _event_stream(user_id: str, persona_id: int, roast_id: str,
+                         mode_id: str, prompt: str,
+                         headline: str = "", source: str = ""):
     """SSE generator: yields text chunks from start_roast()."""
     pig_agent = get_pig_agent()
     try:
@@ -31,6 +35,8 @@ async def _event_stream(user_id: str, persona_id: int, roast_id: str, mode_id: s
             roast_id=roast_id,
             mode_id=mode_id,
             prompt=prompt,
+            headline=headline,
+            source=source,
         ):
             yield f"data: {{\"text\": {__import__('json').dumps(text)}}}\n\n"
         yield 'data: {"done": true}\n\n'
@@ -55,6 +61,8 @@ async def start_roast(req: RoastStartRequest):
             roast_id=req.roast_id,
             mode_id=req.mode_id,
             prompt=req.prompt,
+            headline=req.headline,
+            source=req.source,
         ),
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache"},

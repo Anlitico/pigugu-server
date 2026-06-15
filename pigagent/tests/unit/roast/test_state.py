@@ -14,6 +14,7 @@ def _make(**kw):
     state.roast_instance_id = kw.get("roast_instance_id", "test-id")
     state.phase = kw.get("phase", Phase.ACTIVE)
     state.turn_count = kw.get("turn_count", 0)
+    state.started_at = kw.get("started_at", 0.0)
     state.extra = kw.get("extra", {})
     return state
 
