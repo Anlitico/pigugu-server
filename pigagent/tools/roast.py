@@ -250,6 +250,9 @@ def create_roast_complete_tool(
         state.extra["settled"] = True
 
         best_take = args.get("best_take", "")
+        # Normalise LLM outputs: treat empty string and literal "null" as None
+        if not best_take or best_take.strip().lower() == "null":
+            best_take = ""
         if best_take:
             state.extra["best_take"] = best_take
 

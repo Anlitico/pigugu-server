@@ -87,16 +87,16 @@ class GameMode(ABC):
             content = getattr(r, "content", "")
             if role not in ("system", "user", "assistant", "tool") or not content:
                 continue
-            # Match by roast_instance_id (primary). Also include the roast body
-            # system message as a fallback — its roast_instance_id is set
-            # asynchronously and may not be visible on the first tick.
+            # Match by roast_instance_id when present. Messages with
+            # rid=None (e.g. current LLM turn, not yet persisted) are
+            # always included — they belong to the current roast.
             rid = getattr(r, "roast_instance_id", None)
             is_roast_body = (
                 role == "system"
                 and ROAST_BODY_PREFIX in content
                 and not has_roast_body
             )
-            if rid != roast_id and not is_roast_body:
+            if rid is not None and rid != roast_id and not is_roast_body:
                 continue
             if is_roast_body:
                 has_roast_body = True
