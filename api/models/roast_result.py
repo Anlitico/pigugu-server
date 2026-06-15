@@ -4,7 +4,7 @@ import uuid
 from datetime import datetime
 
 from sqlalchemy import Boolean, DateTime, Integer, String, Text, func
-from sqlalchemy.dialects.postgresql import UUID
+from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
 from core.database import Base
@@ -37,7 +37,7 @@ class RoastResult(Base):
         Boolean, nullable=False, default=False
     )
     score_breakdown: Mapped[dict | None] = mapped_column(
-        "jsonb", nullable=True
+        JSONB, nullable=True
     )
     viewed: Mapped[bool] = mapped_column(
         Boolean, nullable=False, default=False
