@@ -80,16 +80,13 @@ async def run(ctx: JobContext) -> None:
 
     # ── Injected commands via LiveKit data channel (roast_ws.py → agent) ──
     @ctx.room.on("data_received")
-    def on_data_received(
-        payload: bytes,
-        participant: rtc.RemoteParticipant | None,
-        kind: rtc.DataPacketKind,
-        topic: str,
-    ) -> None:
+    def on_data_received(packet: rtc.DataPacket) -> None:
+        topic = getattr(packet, "topic", "")
         if topic != "roast_inject":
             return
         try:
-            msg = json.loads(payload)
+            data = packet.data if isinstance(packet.data, bytes) else str(packet.data).encode()
+            msg = json.loads(data)
             if msg.get("type") == "start_roast":
                 asyncio.create_task(
                     _handle_inject_start_roast(msg)
