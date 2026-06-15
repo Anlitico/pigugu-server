@@ -15,6 +15,8 @@ load_dotenv(dotenv_path=Path(__file__).parent.parent.parent.parent / ".env", ove
 
 from core.llm import get_llm, Message, ModelRegistry
 
+pytestmark = pytest.mark.integration
+
 
 # -- Helpers ------------------------------------------------------------------
 

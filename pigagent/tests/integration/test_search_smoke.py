@@ -12,6 +12,8 @@ from dotenv import load_dotenv
 
 load_dotenv(dotenv_path=Path(__file__).parent.parent.parent / ".env", override=True)
 
+pytestmark = pytest.mark.integration
+
 
 def _need(env_var: str):
     if not os.getenv(env_var):
