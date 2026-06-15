@@ -359,9 +359,10 @@ class TestDefaultTools:
              patch("tools.search.TavilyProvider"):
             registry = agent._create_default_tools()
 
-        assert len(registry) == 2
+        assert len(registry) == 3
         assert "web_search" in registry
         assert "volume_control" in registry
+        assert "mark_roast_complete" in registry
 
     def test_web_search_has_execute_handler(self):
         from unittest.mock import patch, MagicMock

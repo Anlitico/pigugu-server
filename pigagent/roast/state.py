@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import time
 import uuid
 from dataclasses import dataclass, field
 from typing import Any
@@ -30,6 +31,7 @@ class RoastState:
     roast_instance_id: str = field(default_factory=lambda: str(uuid.uuid4()))
     phase: Phase = Phase.ACTIVE
     turn_count: int = 0
+    started_at: float = field(default_factory=time.time)
     extra: dict[str, Any] = field(default_factory=dict)
 
     # ── Serialization ────────────────────────────────────────────────────
@@ -43,6 +45,7 @@ class RoastState:
             "mode": str(self.mode),
             "phase": str(self.phase),
             "turn_count": self.turn_count,
+            "started_at": self.started_at,
             "extra": self.extra,
         }
 
@@ -56,6 +59,7 @@ class RoastState:
         state.roast_instance_id = data["roast_instance_id"]
         state.phase = Phase(data["phase"]) if isinstance(data["phase"], str) else data["phase"]
         state.turn_count = data.get("turn_count", 0)
+        state.started_at = data.get("started_at", time.time())
         state.extra = data.get("extra", {})
         return state
 

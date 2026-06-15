@@ -29,6 +29,7 @@ from core.agent.runner import AgentRunner, RunnerConfig
 from core.agent.stop import no_tool_calls
 from context.manager import ContextManager
 from roast.pending import consume
+from roast.constants import GAME_EVENT_PREFIX
 from roast.types import Phase
 from roast.state import RoastState
 from tools.roast import _current_user_id, _current_persona_id
@@ -79,13 +80,21 @@ class PigAgent:
         self.runner = AgentRunner(runner_config)
 
     def _create_default_tools(self):
-        """Create the default tool set: web_search + volume_control + list_active_roasts + start_roast."""
-        from tools import create_web_search_tool, volume_tool, create_list_roasts_tool, create_start_roast_tool
+        """Create the default tool set: web_search + volume_control + list_active_roasts + start_roast + mark_roast_complete."""
+        from tools import (
+            create_web_search_tool, volume_tool,
+            create_list_roasts_tool, create_start_roast_tool,
+        )
+        from tools.roast import create_roast_complete_tool
         from tools.search import TavilyProvider
         from core.agent import ToolRegistry
         registry = ToolRegistry()
         registry.register(create_web_search_tool(TavilyProvider()))
         registry.register(volume_tool)
+        registry.register(create_roast_complete_tool(
+            redis=self._redis,
+            pg_pool=self._pg_pool,
+        ))
         if self._pg_pool:
             registry.register(create_list_roasts_tool(self._pg_pool))
             registry.register(create_start_roast_tool(
@@ -150,14 +159,16 @@ class PigAgent:
             asyncio.create_task(self._persist_turns(user_id, [session_msg]))
             self._session_seeded = True
 
-        # 5. Check roast routing — auto-close if game phase is no longer ACTIVE
+        # 5. Check roast routing
         roast_state = await self.get_active_roast(user_id)
         game_mode = None
         if roast_state:
-            if roast_state.phase != Phase.ACTIVE:
+            if roast_state.phase == Phase.SETTLED or roast_state.phase == Phase.CLOSED:
+                # Roast is over — close and enter Free Chat
                 await self.close_roast(user_id)
                 roast_state = None
             else:
+                # ACTIVE or CLOSING — load game mode
                 mode_id = str(roast_state.mode) if hasattr(roast_state, "mode") else ""
                 game_mode = self._game_modes.get(mode_id)
 
@@ -267,6 +278,8 @@ class PigAgent:
         roast_id: str,
         mode_id: str,
         prompt: str,
+        headline: str = "",
+        source: str = "",
     ) -> AsyncIterator[str | FlushSentinel]:
         """Start a roast game and stream the opening reply.
 
@@ -284,6 +297,8 @@ class PigAgent:
                 roast_id=roast_id,
                 game_mode=mode_id,
                 prompt=prompt,
+                headline=headline,
+                source=source,
                 redis=self._redis,
                 pg_pool=self._pg_pool,
             )
@@ -353,7 +368,7 @@ class PigAgent:
         try:
             pending_prompt = await consume(roast_state.roast_instance_id, self._redis)
             if pending_prompt:
-                messages.append(Message.system(f"[Game Event]\n{pending_prompt}"))
+                messages.append(Message.system(f"{GAME_EVENT_PREFIX}\n{pending_prompt}"))
         except Exception as e:
             logger.warning(f"[PigAgent] consume_pending failed: {e}")
 
@@ -362,8 +377,9 @@ class PigAgent:
             async for text in self.runner.stream(messages, interrupt_event=interrupt_event, session_id=session_id):
                 yield text
 
-            # 3. Tick  -  fire-and-forget, don't block the reply
-            asyncio.create_task(self._tick_roast(roast_state, game_mode, messages))
+            # 3. Tick  -  only in ACTIVE phase; skip during CLOSING
+            if roast_state.phase == Phase.ACTIVE:
+                asyncio.create_task(self._tick_roast(roast_state, game_mode, messages))
         finally:
             _current_user_id.reset(token_user)
             _current_persona_id.reset(token_persona)

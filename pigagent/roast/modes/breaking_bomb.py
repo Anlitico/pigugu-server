@@ -24,11 +24,15 @@ class BreakingBombMode(GameMode):
     def system_prompt_extension(self) -> str:
         return render("breaking_bomb_system")
 
+    @property
+    def director_prompt(self) -> str:
+        return render("breaking_bomb_director")
+
     # ── State helpers ──────────────────────────────────────────────────
 
     @staticmethod
     def init_extra() -> dict:
-        return {"reactions": []}
+        return {"reactions": [], "best_take": ""}
 
     # ── Advance ────────────────────────────────────────────────────────
 

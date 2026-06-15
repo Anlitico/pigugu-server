@@ -39,3 +39,26 @@ async def get_current_user(
             detail="Inactive user"
         )
     return user
+
+
+async def get_current_user_ws(token: str) -> User | None:
+    """Validate JWT token and return User, or None on failure.
+
+    For WebSocket connections where we can't use Depends(oauth2_scheme).
+    """
+    try:
+        payload = decode_access_token(token)
+        user_id: str = payload.get("sub")
+        if not user_id:
+            return None
+    except ValueError:
+        return None
+
+    from core.database import AsyncSessionLocal
+    from modules.auth.service import get_user_by_id
+
+    async with AsyncSessionLocal() as db:
+        user = await get_user_by_id(db, uuid.UUID(user_id))
+        if user is None or not user.is_active:
+            return None
+    return user

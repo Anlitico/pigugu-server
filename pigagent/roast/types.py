@@ -13,5 +13,6 @@ class Mode(StrEnum):
 
 class Phase(StrEnum):
     ACTIVE = "active"
-    REVIEW = "review"
+    CLOSING = "closing"     # AI is delivering closing statement after saturated/max_turns trigger
+    SETTLED = "settled"     # mark_roast_complete tool called, settlement data ready
     CLOSED = "closed"

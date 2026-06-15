@@ -15,6 +15,7 @@ def _state(**kw):
     s.roast_instance_id = "test-id"
     s.phase = kw.pop("phase", Phase.ACTIVE)
     s.turn_count = kw.pop("turn_count", 0)
+    s.started_at = kw.pop("started_at", 0.0)
     s.extra = kw.pop("extra", {})
     return s
 
@@ -29,85 +30,169 @@ class _FakeTurn:
 # RoastTogetherMode
 # -------------------------------------------------------------------
 
-class TestRoastTogetherEnergy:
-    def test_empty(self):
-        from roast.modes.roast_together import _compute_energy
-        assert _compute_energy("") == 0.0
-
-    def test_low_energy(self):
-        from roast.modes.roast_together import _compute_energy
-        e = _compute_energy("yeah whatever")
-        assert e < 0.3
-
-    def test_high_energy(self):
-        from roast.modes.roast_together import _compute_energy
-        e = _compute_energy("This is ABSOLUTELY INSANE!!! I cannot believe this ridiculous take on the situation!!!")
-        assert e > 0.5
-
-    def test_spicy_words(self):
-        from roast.modes.roast_together import _compute_energy
-        e = _compute_energy("absolutely totally completely insane ridiculous outrageous")
-        assert e >= 0.2  # spicy words contribute
-
-
 class TestRoastTogetherState:
     def test_init_extra(self):
         from roast.modes.roast_together import RoastTogetherMode
         extra = RoastTogetherMode.init_extra()
-        assert extra["user_energy"] == 0.0
-        assert extra["best_take"] == ""
-        assert extra["best_take_energy"] == 0.0
-
-    def test_update_state_tracks_energy(self):
-        from roast.modes.roast_together import RoastTogetherMode
-        mode = RoastTogetherMode()
-        state = _state(turn_count=1, extra={"user_energy": 0.0, "best_take": "", "best_take_energy": 0.0, "best_take_turn": 0})
-        records = [_FakeTurn("user", "This is TOTALLY ridiculous!!! I can't even.")]
-        mode._update_state(state, records)
-        assert state.extra["user_energy"] > 0.3
-
-    def test_update_state_captures_best_take(self):
-        from roast.modes.roast_together import RoastTogetherMode
-        mode = RoastTogetherMode()
-        state = _state(turn_count=1, extra={"user_energy": 0.0, "best_take": "", "best_take_energy": 0.0, "best_take_turn": 0})
-        records = [_FakeTurn("user", "This is the most ridiculous thing I have ever seen in my entire life!! Absolutely insane!!!")]
-        mode._update_state(state, records)
-        assert state.extra["best_take"] != ""
-        assert state.extra["best_take_energy"] > 0.5
-
-    def test_skips_weak_take(self):
-        from roast.modes.roast_together import RoastTogetherMode
-        mode = RoastTogetherMode()
-        state = _state(turn_count=1)
-        state.extra = {"user_energy": 0.0, "best_take": "", "best_take_energy": 0.0, "best_take_turn": 0}
-        records = [_FakeTurn("user", "yeah")]
-        mode._update_state(state, records)
-        assert state.extra["best_take"] == ""  # too short, low energy
+        assert extra == {"settled": False, "best_take": ""}
 
 
 class TestRoastTogetherTriggers:
-    def test_all_triggers_registered(self):
+    def test_single_trigger_only(self):
         from roast.modes.roast_together import RoastTogetherMode
         mode = RoastTogetherMode()
         names = [t.name for t in mode.triggers]
-        assert "ending_max_turns" in names
-        assert "user_spicy" in names
-        assert "user_disengaged" in names
+        assert names == ["ending_max_turns"]
 
-    def test_spicy_fires(self):
+    def test_max_turns_is_8(self):
         from roast.modes.roast_together import RoastTogetherMode
         mode = RoastTogetherMode()
-        state = _state(turn_count=2, extra={"user_energy": 0.9})
-        trigger = [t for t in mode.triggers if t.name == "user_spicy"][0]
+        assert mode.max_turns == 8
+
+    def test_ending_fires_at_max_turns(self):
+        from roast.modes.roast_together import RoastTogetherMode
+        mode = RoastTogetherMode()
+        state = _state(turn_count=8)
+        trigger = [t for t in mode.triggers if t.name == "ending_max_turns"][0]
         assert trigger.check(state, [])
 
-    def test_disengaged_fires(self):
+    def test_ending_not_fires_early(self):
         from roast.modes.roast_together import RoastTogetherMode
         mode = RoastTogetherMode()
-        state = _state(turn_count=3)
-        records = [_FakeTurn("user", "ok"), _FakeTurn("user", "no"), _FakeTurn("user", "yeah")]
-        trigger = [t for t in mode.triggers if t.name == "user_disengaged"][0]
-        assert trigger.check(state, records)
+        state = _state(turn_count=5)
+        trigger = [t for t in mode.triggers if t.name == "ending_max_turns"][0]
+        assert not trigger.check(state, [])
+
+    def test_ending_affects_phase(self):
+        from roast.modes.roast_together import RoastTogetherMode
+        mode = RoastTogetherMode()
+        trigger = [t for t in mode.triggers if t.name == "ending_max_turns"][0]
+        assert trigger.affects_phase is True
+
+
+# -------------------------------------------------------------------
+# mark_roast_complete Tool
+# -------------------------------------------------------------------
+
+class TestMarkRoastComplete:
+    def test_returns_false_no_active_user(self):
+        import importlib
+        from unittest.mock import MagicMock
+        # Import create_roast_complete_tool directly, bypassing tools/__init__.py
+        # which would trigger the OpenAI client init chain.
+        mod = importlib.import_module("tools.roast")
+        create_roast_complete_tool = mod.create_roast_complete_tool
+
+        redis = MagicMock()
+        tool = create_roast_complete_tool(redis=redis)
+        import asyncio
+        result = asyncio.run(tool.execute({}))
+        assert result["settled"] is False
+        assert result["reason"] == "no active user"
+
+    def test_returns_false_no_active_roast(self):
+        from unittest.mock import MagicMock, AsyncMock
+        from tools.roast import create_roast_complete_tool, _current_user_id
+        import contextvars
+
+        redis = MagicMock()
+        redis.get = AsyncMock(return_value=None)  # Redis returns no active roast
+
+        token = _current_user_id.set("u1")
+        try:
+            tool = create_roast_complete_tool(redis=redis)
+            import asyncio; result = asyncio.run(tool.execute({}))
+            assert result["settled"] is False
+            assert result["reason"] == "no active roast"
+        finally:
+            _current_user_id.reset(token)
+
+    def test_returns_false_already_closed(self):
+        from unittest.mock import MagicMock, AsyncMock
+        from tools.roast import create_roast_complete_tool, _current_user_id
+        from roast.types import Phase
+        import json
+
+        state_data = json.dumps({
+            "roast_instance_id": "test-1",
+            "user_id": "u1",
+            "persona_id": 1,
+            "roast_id": "n1",
+            "mode": "roast_together",
+            "phase": Phase.CLOSED,
+            "turn_count": 5,
+            "extra": {},
+        })
+
+        redis = MagicMock()
+        redis.get = AsyncMock(return_value=state_data)
+
+        token = _current_user_id.set("u1")
+        try:
+            tool = create_roast_complete_tool(redis=redis)
+            import asyncio; result = asyncio.run(tool.execute({}))
+            assert result["settled"] is False
+            assert "already settled or closed" in result["reason"]
+        finally:
+            _current_user_id.reset(token)
+
+    def test_settles_from_active(self):
+        from unittest.mock import MagicMock, AsyncMock
+        from tools.roast import create_roast_complete_tool, _current_user_id
+        from roast.types import Phase
+        import json
+
+        state_data = json.dumps({
+            "roast_instance_id": "test-1",
+            "user_id": "u1",
+            "persona_id": 1,
+            "roast_id": "n1",
+            "mode": "roast_together",
+            "phase": Phase.ACTIVE,
+            "turn_count": 3,
+            "extra": {},
+        })
+
+        redis = MagicMock()
+        redis.get = AsyncMock(return_value=state_data)
+        redis.setex = AsyncMock()
+
+        token = _current_user_id.set("u1")
+        try:
+            tool = create_roast_complete_tool(redis=redis)
+            import asyncio; result = asyncio.run(tool.execute({}))
+            assert result["settled"] is True
+        finally:
+            _current_user_id.reset(token)
+
+    def test_settles_from_closing(self):
+        from unittest.mock import MagicMock, AsyncMock
+        from tools.roast import create_roast_complete_tool, _current_user_id
+        from roast.types import Phase
+        import json
+
+        state_data = json.dumps({
+            "roast_instance_id": "test-2",
+            "user_id": "u1",
+            "persona_id": 1,
+            "roast_id": "n2",
+            "mode": "roast_together",
+            "phase": Phase.CLOSING,
+            "turn_count": 6,
+            "extra": {},
+        })
+
+        redis = MagicMock()
+        redis.get = AsyncMock(return_value=state_data)
+        redis.setex = AsyncMock()
+
+        token = _current_user_id.set("u1")
+        try:
+            tool = create_roast_complete_tool(redis=redis)
+            import asyncio; result = asyncio.run(tool.execute({}))
+            assert result["settled"] is True
+        finally:
+            _current_user_id.reset(token)
 
 
 # -------------------------------------------------------------------
@@ -181,7 +266,7 @@ class TestBreakingBombState:
     def test_init_extra(self):
         from roast.modes.breaking_bomb import BreakingBombMode
         extra = BreakingBombMode.init_extra()
-        assert extra == {"reactions": []}
+        assert extra == {"reactions": [], "best_take": ""}
 
     def test_update_state_records_reaction(self):
         from roast.modes.breaking_bomb import BreakingBombMode

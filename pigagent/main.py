@@ -25,7 +25,10 @@ if __name__ == "__main__":
     http_thread = threading.Thread(
         target=uvicorn.run,
         args=(create_app(),),
-        kwargs={"host": "0.0.0.0", "port": api_port, "log_level": "info"},
+        kwargs={
+            "host": "0.0.0.0", "port": api_port, "log_level": "info",
+            "ws_ping_interval": 20, "ws_ping_timeout": 10,
+        },
         daemon=True,
     )
     http_thread.start()

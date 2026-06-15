@@ -50,6 +50,10 @@ class _MinimalMode(GameMode):
     def system_prompt_extension(self) -> str:
         return "minimal rules"
 
+    @property
+    def director_prompt(self) -> str:
+        return "You are a test director. Default to action:none."
+
 
 class TestGameModeBase:
     def test_default_triggers_has_ending(self):
@@ -87,6 +91,7 @@ class TestGameModeTick:
         s.roast_instance_id = "test-id"
         s.phase = kw.pop("phase", Phase.ACTIVE)
         s.turn_count = kw.pop("turn_count", 0)
+        s.started_at = kw.pop("started_at", 0.0)
         s.extra = kw.pop("extra", {})
         return s
 
@@ -96,12 +101,12 @@ class TestGameModeTick:
         import asyncio
 
         redis = MagicMock()
-        state = self._state(turn_count=4)
+        state = self._state(turn_count=7)
         mode = RoastTogetherMode()
 
         result = asyncio.run(mode.tick(state, records=[], redis=redis))
         assert result is not None
-        assert state.turn_count == 5
+        assert state.turn_count == 8
 
     def test_no_transition_mid_game(self):
         from unittest.mock import MagicMock
@@ -123,7 +128,7 @@ class TestGameModeTick:
         import asyncio
 
         redis = MagicMock()
-        state = self._state(phase=Phase.REVIEW, turn_count=5)
+        state = self._state(phase=Phase.CLOSING, turn_count=5)
         mode = RoastTogetherMode()
 
         result = asyncio.run(mode.tick(state, records=[], redis=redis))

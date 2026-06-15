@@ -10,6 +10,7 @@ from typing import Any
 from loguru import logger
 
 from core.agent.tool import Tool
+from roast.constants import TOOL_MARK_ROAST_COMPLETE
 
 ConnectFn = Callable[[str], Awaitable[Any]]
 
@@ -143,7 +144,7 @@ def create_start_roast_tool(
         conn = await _acquire()
         try:
             row = await conn.fetchrow(
-                "SELECT roast_id, game_mode, prompt "
+                "SELECT roast_id, game_mode, prompt, headline, source "
                 "FROM roast_scenarios "
                 "WHERE roast_id = $1 AND status = 'active'",
                 roast_id,
@@ -162,6 +163,8 @@ def create_start_roast_tool(
                 roast_id=row["roast_id"],
                 game_mode=row["game_mode"],
                 prompt=row["prompt"],
+                headline=row.get("headline", ""),
+                source=row.get("source", ""),
                 redis=redis,
                 pg_pool=pg_pool,
             )
@@ -204,6 +207,108 @@ def create_start_roast_tool(
                 },
             },
             "required": ["filler_text", "roast_id"],
+        },
+        execute=_handler,
+    )
+
+
+def create_roast_complete_tool(
+    *,
+    redis=None,
+    pg_pool=None,
+) -> Tool:
+    """Create a mark_roast_complete Tool to end the current roast game.
+
+    Called by the agent when: (1) the closing statement is complete, or
+    (2) the user wants to quit mid-game.
+
+    Handler:
+    1. Loads the active roast state from Redis.
+    2. Transitions phase from ACTIVE/CLOSING to SETTLED.
+    3. Publishes a roast_settled event for App consumption.
+    """
+
+    async def _handler(args: dict) -> dict[str, Any]:
+        from roast.state import RoastState
+        from roast.types import Phase
+        from roast.event_bus import event_bus
+
+        user_id = _current_user_id.get()
+        if not user_id:
+            return {"settled": False, "reason": "no active user"}
+
+        state = await RoastState._load_active(user_id, redis)
+        if not state:
+            return {"settled": False, "reason": "no active roast"}
+        if state.phase not in (Phase.ACTIVE, Phase.CLOSING):
+            return {"settled": False, "reason": f"roast already settled or closed: {state.phase}"}
+
+        # User quit mid-roast (called from ACTIVE) vs natural ending (called from CLOSING)
+        interrupted = state.phase == Phase.ACTIVE
+
+        state.phase = Phase.SETTLED
+        state.extra["settled"] = True
+
+        best_take = args.get("best_take", "")
+        if best_take:
+            state.extra["best_take"] = best_take
+
+        await state.save(redis, pg_pool)
+
+        # Build rich settlement event for the App
+        settlement_event = {
+            "type": "roast_settled",
+            "roast_instance_id": state.roast_instance_id,
+            "roast_id": state.roast_id,
+            "mode": str(state.mode),
+            "headline": state.extra.get("headline", ""),
+            "source": state.extra.get("source", ""),
+            "turn_count": state.turn_count,
+            "best_take": best_take or None,
+            "interrupted": interrupted,
+            "started_at": state.started_at,
+        }
+        await event_bus.publish(user_id, settlement_event)
+
+        # Notify API server — cross-process Redis pub/sub (FCM push + DB write)
+        import json as _json
+        try:
+            if redis is not None:
+                await redis.publish(
+                    f"roast:settled:{user_id}",
+                    _json.dumps(settlement_event),
+                )
+        except Exception as e:
+            logger.warning(f"[mark_roast_complete] Redis publish failed: {e}")
+
+        logger.info(
+            f"[mark_roast_complete] Roast settled: {state.roast_instance_id} "
+            f"turns={state.turn_count} has_best_take={bool(best_take)} user={user_id}"
+        )
+
+        return {"settled": True, "best_take": best_take or None}
+
+    return Tool(
+        name=TOOL_MARK_ROAST_COMPLETE,
+        description=(
+            "End the current roast game. Call this when: "
+            "(1) you have finished your closing statement, or "
+            "(2) the user wants to quit. "
+            "Marks the roast as settled and lets the user continue free chat."
+        ),
+        parameters={
+            "type": "object",
+            "properties": {
+                "filler_text": {
+                    "type": "string",
+                    "description": "A brief spoken sentence to fill silence while the tool runs. Already spoken — do NOT repeat in your response.",
+                },
+                "best_take": {
+                    "type": "string",
+                    "description": "The user's best roast line from this session. Omit if no standout line emerged.",
+                },
+            },
+            "required": ["filler_text"],
         },
         execute=_handler,
     )
