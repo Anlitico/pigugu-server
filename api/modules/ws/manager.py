@@ -40,78 +40,70 @@ class WebSocketManager:
     # ── Redis Pub/Sub listener ──────────────────────────────────────
 
     async def _ensure_listener(self) -> None:
+        """Start pubsub listener in background — never blocks connect()."""
         if self._listener_task is not None:
             return
 
         async with self._lock:
             if self._listener_task is not None:
                 return
+            self._listener_task = asyncio.create_task(self._start_listener())
 
-            self._pubsub_redis = from_url(settings.redis_url, decode_responses=True)
-            self._pubsub = self._pubsub_redis.pubsub()
-            if self._pubsub is None:
-                logger.error("Redis pubsub() returned None — cannot start listener")
+    async def _start_listener(self) -> None:
+        """Connect to Redis, subscribe, then run the listen loop."""
+        while True:
+            try:
+                self._pubsub_redis = from_url(settings.redis_url, decode_responses=True)
+                self._pubsub = self._pubsub_redis.pubsub()
+                if self._pubsub is None:
+                    logger.error("Redis pubsub() returned None — cannot start listener")
+                    return
+                await self._pubsub.psubscribe(
+                    f"{WS_CHANNEL_PREFIX}*",
+                    f"{WS_USER_CHANNEL_PREFIX}*",
+                )
+                logger.info(
+                    "WS pubsub listener started (patterns=%s*, %s*)",
+                    WS_CHANNEL_PREFIX, WS_USER_CHANNEL_PREFIX,
+                )
+                await self._listen()
+            except asyncio.CancelledError:
                 return
-            await self._pubsub.psubscribe(
-                f"{WS_CHANNEL_PREFIX}*",
-                f"{WS_USER_CHANNEL_PREFIX}*",
-            )
-            self._listener_task = asyncio.create_task(self._listen())
-            logger.info(
-                "WS pubsub listener started (patterns=%s*, %s*)",
-                WS_CHANNEL_PREFIX, WS_USER_CHANNEL_PREFIX,
-            )
+            except Exception as e:
+                logger.error("WS pubsub listener crashed, reconnecting in 1s: %s", e)
+                await self._close_pubsub()
+                await asyncio.sleep(1)
 
     async def _listen(self) -> None:
+        """Consume pubsub messages and forward to local WS connections."""
         if self._pubsub is None:
             return
         while True:
-            try:
-                async for message in self._pubsub.listen():
-                    if message["type"] == "pmessage":
-                        channel: str = message["channel"]
-                        data = message["data"]
+            async for message in self._pubsub.listen():
+                if message["type"] == "pmessage":
+                    channel: str = message["channel"]
+                    data = message["data"]
 
-                        if channel.startswith(WS_USER_CHANNEL_PREFIX):
-                            user_id = channel[len(WS_USER_CHANNEL_PREFIX):]
-                            prefix = f"{user_id}{CONNECTION_KEY_SEP}"
-                            for key, ws in list(self._connections.items()):
-                                if key.startswith(prefix):
-                                    try:
-                                        await ws.send_text(data)
-                                    except Exception:
-                                        logger.debug("WS send failed for %s, removing", key)
-                                        self._connections.pop(key, None)
-
-                        elif channel.startswith(WS_CHANNEL_PREFIX):
-                            key = channel[len(WS_CHANNEL_PREFIX):]
-                            ws = self._connections.get(key)
-                            if ws:
+                    if channel.startswith(WS_USER_CHANNEL_PREFIX):
+                        user_id = channel[len(WS_USER_CHANNEL_PREFIX):]
+                        prefix = f"{user_id}{CONNECTION_KEY_SEP}"
+                        for key, ws in list(self._connections.items()):
+                            if key.startswith(prefix):
                                 try:
                                     await ws.send_text(data)
                                 except Exception:
                                     logger.debug("WS send failed for %s, removing", key)
                                     self._connections.pop(key, None)
-            except asyncio.CancelledError:
-                return
-            except Exception as e:
-                logger.error("WS pubsub listener crashed, reconnecting in 1s: %s", e)
-                await asyncio.sleep(1)
-                try:
-                    await self._close_pubsub()
-                    self._pubsub_redis = from_url(settings.redis_url, decode_responses=True)
-                    self._pubsub = self._pubsub_redis.pubsub()
-                    if self._pubsub is None:
-                        self._listener_task = None
-                        return
-                    await self._pubsub.psubscribe(
-                        f"{WS_CHANNEL_PREFIX}*",
-                        f"{WS_USER_CHANNEL_PREFIX}*",
-                    )
-                except Exception as e2:
-                    logger.error("Failed to reconnect pubsub: %s", e2)
-                    self._listener_task = None
-                    return
+
+                    elif channel.startswith(WS_CHANNEL_PREFIX):
+                        key = channel[len(WS_CHANNEL_PREFIX):]
+                        ws = self._connections.get(key)
+                        if ws:
+                            try:
+                                await ws.send_text(data)
+                            except Exception:
+                                logger.debug("WS send failed for %s, removing", key)
+                                self._connections.pop(key, None)
 
     async def _close_pubsub(self) -> None:
         old = self._pubsub
