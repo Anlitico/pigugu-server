@@ -41,6 +41,8 @@ dependencies = [
 
 [tool.pytest.ini_options]
 addopts = "-m 'not integration'"
+testpaths = ["tests"]
+norecursedirs = [".venv"]
 markers = [
     "integration: marks tests that call real LLM APIs (deselect with '-m \"not integration\"')",
 ]
