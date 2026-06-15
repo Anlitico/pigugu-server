@@ -127,11 +127,10 @@ class WebSocketManager:
         self, user_id: str, app_device_id: str, websocket: WebSocket,
     ) -> None:
         await websocket.accept()
-        logger.info("WS accepted, registering key...")
         key = self.make_key(user_id, app_device_id)
         self._connections[key] = websocket
-        logger.info("WS registered, starting listener...")
-        await self._ensure_listener()
+        # Fire-and-forget: never block WS accept on Redis availability
+        asyncio.ensure_future(self._ensure_listener())
         logger.info("WS connected: key=%s", key)
 
     def disconnect(self, user_id: str, app_device_id: str) -> None:
