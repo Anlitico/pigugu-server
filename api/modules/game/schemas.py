@@ -3,6 +3,24 @@ from datetime import datetime
 from pydantic import BaseModel
 
 
+class RoastResultResponse(BaseModel):
+    roast_instance_id: str
+    turn_count: int
+    best_take: str | None
+    settled_at: str | None
+
+
+class PendingRoastItem(BaseModel):
+    roast_instance_id: str
+    turn_count: int
+    best_take: str | None
+    settled_at: str | None
+
+
+class PendingRoastsResponse(BaseModel):
+    roasts: list[PendingRoastItem]
+
+
 class AchievementResponse(BaseModel):
     id: str
     code: str

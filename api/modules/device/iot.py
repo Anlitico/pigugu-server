@@ -60,15 +60,41 @@ async def _confirm_and_enable_destination(confirmation_token: str, dest_arn: str
         logger.warning("Could not find destination ARN to enable")
 
 
-# ── WS push helper ──────────────────────────────────────────
+# ── WS push helpers ─────────────────────────────────────────
 
-async def _push_ws(hw_id: str, event: dict) -> None:
-    """Push a JSON event to the app via WebSocket (best-effort)."""
+async def _push_ws(user_id: str, event: dict) -> None:
+    """Push a JSON event to the user's App via WebSocket (best-effort).
+
+    Broadcasts to ALL WebSocket connections for this user
+    (supports multi-device: phone + tablet).
+    """
     try:
         from modules.ws.manager import ws_manager
-        await ws_manager.broadcast(hw_id, json.dumps(event))
+        import json as _json
+        await ws_manager.broadcast_to_user(user_id, _json.dumps(event))
     except Exception as e:
-        logger.warning("WS push failed for %s: %s", hw_id, e)
+        logger.warning("WS push failed for user %s: %s", user_id, e)
+
+
+async def _push_ws_by_hw(hw_id: str, event: dict) -> None:
+    """Resolve user_id from hw_id and push via WebSocket.
+
+    Used by provisioning flows where only the hardware ID is available.
+    """
+    from sqlalchemy import select
+    from core.database import AsyncSessionLocal
+    from models.device import Device
+
+    try:
+        async with AsyncSessionLocal() as db:
+            result = await db.execute(
+                select(Device.user_id).where(Device.hardware_id.ilike(hw_id.strip().lower()))
+            )
+            row = result.first()
+            if row:
+                await _push_ws(str(row[0]), event)
+    except Exception as e:
+        logger.warning("_push_ws_by_hw failed for %s: %s", hw_id, e)
 
 
 # ── Ping-pong (pure function — reusable by provisioning & reboot) ─
@@ -100,7 +126,7 @@ async def _wait_for_pong(hw_id: str, request_id: str, session_id: str) -> None:
     try:
         key = f"provision:verify:{session_id}:{request_id}"
         if not await redis_exists(key):
-            await _push_ws(hw_id, {
+            await _push_ws_by_hw(hw_id, {
                 "event": "error",
                 "error_code": "PROVISION_VERIFY_TIMEOUT",
                 "error_msg": "设备无法连接到服务器",
@@ -122,7 +148,7 @@ async def _handle_online(hw_id: str, msg: dict) -> None:
     hw_id = hw_id.strip().lower()
     await redis_set(f"device:online:hw:{hw_id}", "1", ex=600)
     await redis_set(f"device:last_seen:hw:{hw_id}", str(datetime.now().isoformat()), ex=86400)
-    await _push_ws(hw_id, {"event": "online", "hardware_id": hw_id})
+    await _push_ws_by_hw(hw_id, {"event": "online", "hardware_id": hw_id})
 
     session_id = msg.get("session_id")
     request_id = uuid.uuid4()
@@ -198,7 +224,7 @@ async def _handle_online(hw_id: str, msg: dict) -> None:
             if session.expires_at < datetime.now(timezone.utc):
                 session.status = "expired"
                 await db.commit()
-                await _push_ws(hw_id, {
+                await _push_ws_by_hw(hw_id, {
                     "event": "error",
                     "error_code": "PROVISION_SESSION_EXPIRED",
                     "error_msg": "配网会话已过期",
@@ -219,14 +245,14 @@ async def _handle_online(hw_id: str, msg: dict) -> None:
         from core.aws import publish_mqtt_message
         await publish_mqtt_message(f"pgg/dev/{hw_id}/c2d", ping)
 
-        await _push_ws(hw_id, {"event": "verifying"})
+        await _push_ws_by_hw(hw_id, {"event": "verifying"})
 
         # Fire-and-forget watchdog: waits for pong or pushes timeout error
         asyncio.create_task(_wait_for_pong(hw_id, str(request_id), session_id))
 
     except Exception as e:
         logger.error("_handle_online failed for %s: %s", hw_id, e)
-        await _push_ws(hw_id, {"event": "error", "error_msg": "配网服务异常"})
+        await _push_ws_by_hw(hw_id, {"event": "error", "error_msg": "配网服务异常"})
 
 
 async def _handle_pong(hw_id: str, msg: dict, session_id: str | None, request_id: str | None) -> None:
@@ -264,7 +290,7 @@ async def _handle_pong(hw_id: str, msg: dict, session_id: str | None, request_id
     except Exception as e:
         logger.warning("Failed to persist device RTT for %s: %s", hw_id, e)
 
-    await _push_ws(hw_id, {"event": "verified", "rtt_ms": rtt_ms})
+    await _push_ws_by_hw(hw_id, {"event": "verified", "rtt_ms": rtt_ms})
 
 
 async def _handle_register(hw_id: str, msg: dict) -> None:
@@ -311,7 +337,7 @@ async def _handle_register(hw_id: str, msg: dict) -> None:
                         existing.certificate_arn = session.certificate_arn
                     existing.thing_name = hw_id
                 elif existing.user_id != session.user_id:
-                    await _push_ws(hw_id, {"event": "error", "error_code": "DEVICE_ALREADY_BOUND", "error_msg": "该设备已被其他账号绑定"})
+                    await _push_ws_by_hw(hw_id, {"event": "error", "error_code": "DEVICE_ALREADY_BOUND", "error_msg": "该设备已被其他账号绑定"})
                     return
             else:
                 has_active = (await db.execute(
@@ -339,7 +365,7 @@ async def _handle_register(hw_id: str, msg: dict) -> None:
 
             logger.info("_handle_register: %s bound successfully (session=%s)", hw_id, session_id)
 
-            await _push_ws(hw_id, {
+            await _push_ws_by_hw(hw_id, {
                 "event": "bound",
                 "hardware_id": hw_id,
                 "device_name": device_name,
@@ -347,7 +373,7 @@ async def _handle_register(hw_id: str, msg: dict) -> None:
 
     except Exception as e:
         logger.exception("_handle_register failed for %s: %s", hw_id, e)
-        await _push_ws(hw_id, {"event": "error", "error_msg": "绑定设备失败"})
+        await _push_ws_by_hw(hw_id, {"event": "error", "error_msg": "绑定设备失败"})
 
 
 @router.api_route("/webhook", methods=["POST", "GET"])

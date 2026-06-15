@@ -1,5 +1,7 @@
 import asyncio
+import json
 import logging
+import uuid
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 
@@ -14,25 +16,39 @@ from modules.device.iot import router as device_iot_router
 from modules.device.router import router as device_router
 from modules.game.router import leaderboard_router
 from modules.game.router import router as game_router
+from modules.game.service import handle_roast_settled
 from modules.gameplay.router import router as gameplay_router
 from modules.news.router import router as news_router
 from modules.push.router import router as push_router
 from modules.push.service import init_firebase
 from modules.agent.router import router as agent_router
-from modules.ws.manager import ws_manager
 from modules.ws.router import router as ws_router
 
 
 async def _redis_subscriber() -> None:
     redis = await get_redis()
     pubsub = redis.pubsub()
-    await pubsub.psubscribe("ws:device:*")
+    await pubsub.psubscribe("roast:settled:*")
     async for message in pubsub.listen():
         if message["type"] != "pmessage":
             continue
         channel: str = message["channel"]
-        device_id = channel.split(":")[-1]
-        await ws_manager.broadcast(device_id, message["data"])
+        data = message["data"]
+
+        if channel.startswith("roast:settled:"):
+            user_id = channel.split(":")[-1]
+            try:
+                payload = json.loads(data)
+                async with AsyncSessionLocal() as db:
+                    await handle_roast_settled(
+                        db,
+                        user_id=uuid.UUID(user_id),
+                        roast_instance_id=payload["roast_instance_id"],
+                        turn_count=payload["turn_count"],
+                        best_take=payload.get("best_take"),
+                    )
+            except Exception as e:
+                logger.error("handle_roast_settled failed for %s: %s", user_id, e)
 
 
 async def _session_cleanup() -> None:

@@ -243,31 +243,32 @@ def create_roast_complete_tool(
 
         state.phase = Phase.SETTLED
         state.extra["settled"] = True
-        await state.save(redis, pg_pool)
 
-        # Notify App asynchronously — settlement card trigger
-        await event_bus.publish(user_id, {
-            "type": "roast_settled",
-            "roast_instance_id": state.roast_instance_id,
-            "turn_count": state.turn_count,
-        })
-
-        logger.info(
-            f"[mark_roast_complete] Roast settled: {state.roast_instance_id} "
-            f"turns={state.turn_count} user={user_id}"
-        )
-
-        # Store best_take in extra if the LLM provided it
         best_take = args.get("best_take", "")
         if best_take:
             state.extra["best_take"] = best_take
 
-        await event_bus.publish(user_id, {
+        await state.save(redis, pg_pool)
+
+        # Notify App — in-process event bus (WebSocket)
+        settlement_event = {
             "type": "roast_settled",
             "roast_instance_id": state.roast_instance_id,
             "turn_count": state.turn_count,
             "best_take": best_take or None,
-        })
+        }
+        await event_bus.publish(user_id, settlement_event)
+
+        # Notify API server — cross-process Redis pub/sub (FCM push + DB write)
+        import json as _json
+        try:
+            if redis is not None:
+                await redis.publish(
+                    f"roast:settled:{user_id}",
+                    _json.dumps(settlement_event),
+                )
+        except Exception as e:
+            logger.warning(f"[mark_roast_complete] Redis publish failed: {e}")
 
         logger.info(
             f"[mark_roast_complete] Roast settled: {state.roast_instance_id} "

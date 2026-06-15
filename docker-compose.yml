@@ -45,7 +45,7 @@ services:
       - ./firebase-credentials.json:/api/firebase-credentials.json:ro
       - ./api:/api
       - ./alembic:/api/alembic
-    command: ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000", "--reload"]
+    command: ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000", "--reload", "--ws-ping-interval", "20", "--ws-ping-timeout", "10"]
 
   agent:
     build:
