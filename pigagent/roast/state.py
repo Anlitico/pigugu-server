@@ -99,6 +99,7 @@ class RoastState:
         state.roast_instance_id = str(uuid.uuid4())
         state.phase = Phase.ACTIVE
         state.turn_count = 0
+        state.started_at = time.time()
         state.extra = dict(extra) if extra else {}
 
         await state._save_active(redis)
