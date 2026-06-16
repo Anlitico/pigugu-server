@@ -87,6 +87,9 @@ class GameMode(ABC):
             content = getattr(r, "content", "")
             if role not in ("system", "user", "assistant", "tool") or not content:
                 continue
+            # Match by roast_instance_id when present. Messages with
+            # rid=None (e.g. current LLM turn, not yet persisted) are
+            # always included — they belong to the current roast.
             # Match by roast_instance_id. Loaded records have IDs from
             # sync _assign_roast_instance_id. Runner messages have rid=None
             # (not yet persisted) but ARE the current roast — include them.
