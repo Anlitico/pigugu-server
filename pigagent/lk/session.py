@@ -95,7 +95,7 @@ async def run(ctx: JobContext) -> None:
             logger.error(f"[Inject] Failed to parse data_received: {exc}")
 
     # ── Components ────────────────────────────────────────────────────
-    stt, pig_agent, tts = create_agent_components(config, persona=persona)
+    stt, pig_agent, tts = await create_agent_components(config, persona=persona)
     stt_plugin = stt.get_plugin()
     tts_plugin = tts.get_plugin()
     vad = get_vad()

@@ -87,7 +87,7 @@ async def roast_websocket(
 
     redis = get_redis()
     queue = await event_bus.subscribe(user_id)
-    pig_agent = get_pig_agent()
+    pig_agent = await get_pig_agent()
 
     # Check for existing active roast
     active_roast = await _lookup_active_roast(user_id, redis)
