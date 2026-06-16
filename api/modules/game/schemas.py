@@ -3,7 +3,7 @@ from datetime import datetime
 from pydantic import BaseModel
 
 
-class RoastResultResponse(BaseModel):
+class RoastHistoryResponse(BaseModel):
     roast_instance_id: str
     roast_id: str = ""
     mode: str = ""

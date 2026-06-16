@@ -14,7 +14,7 @@ from livekit.agents.types import NOT_GIVEN
 from livekit.agents.voice import room_io
 from agent_config import get_config
 from system_prompts import get_persona
-from bootstrap.factory import create_agent_components, get_vad
+from bootstrap.factory import create_agent_components, get_pg_pool, get_vad
 from lk.bridge import PigAgentVoiceBridge
 from metrics.turn import TelemetryCollector
 from roast.event_bus import event_bus
@@ -187,14 +187,41 @@ async def run(ctx: JobContext) -> None:
                 TelemetryCollector.mark("vad_end")
 
     async def _safe_add_turn(uid: str, role: str, content: str) -> None:
-        """Persist a turn to context, logging errors without crashing."""
+        """Persist a turn to context + roast_conversations (for App display).
+
+        All roles → context (agent_conversations)
+        user/assistant during active roast → roast_conversations
+        """
         try:
             if pig_agent.ctx:
                 await pig_agent.ctx.add_turn(
                     user_id=uid, role=role, content=content,
                 )
+            # Dual-write to roast_conversations for App display
+            if role in ("user", "assistant"):
+                asyncio.create_task(
+                    _write_roast_conversation(uid, role, content)
+                )
         except Exception as e:
             logger.error(f"[Session] Failed to persist {role} turn: {e}")
+
+    async def _write_roast_conversation(uid: str, role: str, content: str) -> None:
+        """Write user/assistant message to roast_conversations table."""
+        try:
+            state = await pig_agent.get_active_roast(uid)
+            if not state:
+                return  # Not in a roast — skip
+
+            pool = await get_pg_pool()
+            async with pool.acquire() as conn:
+                await conn.execute(
+                    """INSERT INTO roast_conversations
+                       (user_id, roast_id, roast_instance_id, role, content)
+                       VALUES ($1, $2, $3, $4, $5)""",
+                    uid, str(state.roast_id), state.roast_instance_id, role, content,
+                )
+        except Exception as e:
+            logger.error(f"[Session] Failed to write roast_conversation: {e}")
 
     @session.on("user_input_transcribed")
     def on_user_input_transcribed(event):

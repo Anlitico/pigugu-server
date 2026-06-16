@@ -7,12 +7,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from models.achievement import Achievement
 from models.conversation import Conversation
-from models.roast_result import RoastResult
+from models.roast_history import RoastHistory
 
 logger = logging.getLogger(__name__)
 
 
-def _format_result(row: RoastResult) -> dict:
+def _format_result(row: RoastHistory) -> dict:
     return {
         "roast_instance_id": row.roast_instance_id,
         "roast_id": row.roast_id,
@@ -27,14 +27,14 @@ def _format_result(row: RoastResult) -> dict:
     }
 
 
-async def get_roast_result(
+async def get_roast_history(
     db: AsyncSession, user_id: uuid.UUID, roast_instance_id: str,
 ) -> dict | None:
     """Return settlement data for a completed roast."""
     result = await db.execute(
-        select(RoastResult).where(
-            RoastResult.roast_instance_id == roast_instance_id,
-            RoastResult.user_id == user_id,
+        select(RoastHistory).where(
+            RoastHistory.roast_instance_id == roast_instance_id,
+            RoastHistory.user_id == user_id,
         )
     )
     row = result.scalar_one_or_none()
@@ -49,9 +49,9 @@ async def get_pending_roasts(
 ) -> list[dict]:
     """Return unviewed roast results for the user."""
     result = await db.execute(
-        select(RoastResult)
-        .where(RoastResult.user_id == user_id, RoastResult.viewed == False)
-        .order_by(RoastResult.settled_at.desc())
+        select(RoastHistory)
+        .where(RoastHistory.user_id == user_id, RoastHistory.viewed == False)
+        .order_by(RoastHistory.settled_at.desc())
         .limit(20)
     )
     rows = result.scalars().all()
@@ -63,9 +63,9 @@ async def mark_roast_viewed(
 ) -> None:
     """Mark a roast result as viewed by the user."""
     result = await db.execute(
-        select(RoastResult).where(
-            RoastResult.roast_instance_id == roast_instance_id,
-            RoastResult.user_id == user_id,
+        select(RoastHistory).where(
+            RoastHistory.roast_instance_id == roast_instance_id,
+            RoastHistory.user_id == user_id,
         )
     )
     row = result.scalar_one_or_none()
@@ -123,7 +123,7 @@ async def handle_roast_settled(
     )
 
     # Write settlement result to DB
-    db.add(RoastResult(
+    db.add(RoastHistory(
         roast_instance_id=roast_instance_id,
         user_id=user_id,
         roast_id=roast_id,
@@ -171,3 +171,28 @@ async def handle_roast_settled(
         )
     except Exception as e:
         logger.warning("FCM push failed for user=%s: %s", user_id, e)
+
+async def get_roast_conversation(
+    db: AsyncSession,
+    user_id: uuid.UUID,
+    roast_id: str,
+    *,
+    limit: int = 200,
+) -> list[dict]:
+    """Return user+assistant messages for a roast scenario, ordered by time."""
+    from sqlalchemy import text
+
+    result = await db.execute(
+        text(
+            """SELECT role, content, created_at
+               FROM roast_conversations
+               WHERE user_id = :uid AND roast_id = :rid
+               ORDER BY created_at ASC
+               LIMIT :lim"""
+        ),
+        {"uid": str(user_id), "rid": roast_id, "lim": limit},
+    )
+    return [
+        {"role": row.role, "content": row.content, "created_at": row.created_at.isoformat()}
+        for row in result.fetchall()
+    ]
