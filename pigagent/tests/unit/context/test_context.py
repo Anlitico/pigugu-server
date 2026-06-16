@@ -7,7 +7,7 @@ import pytest
 from core.llm.types import Message, ToolCall
 from context.schema import WorkingContext
 from core.agent.sanitize import validate_tool_calls
-from config import get_config
+from agent_config import get_config
 
 _cfg = get_config()
 

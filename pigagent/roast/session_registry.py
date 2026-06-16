@@ -48,7 +48,7 @@ class SessionRegistry:
     async def _get_service(self) -> RoomService:
         """Lazily initialise the RoomService client with LiveKit credentials."""
         if self._service is None:
-            from config import get_config
+            from agent_config import get_config
 
             cfg = get_config()
             api_key = os.getenv("LIVEKIT_API_KEY", "")

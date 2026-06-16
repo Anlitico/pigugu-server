@@ -81,6 +81,9 @@ async def start_roast_sync(req: RoastStartRequest):
 
     pig_agent = get_pig_agent()
 
+    if req.mode_id not in pig_agent._game_modes:
+        raise HTTPException(status_code=400, detail=f"Unknown game mode: {req.mode_id}")
+
     # Check if agent is already in the user's LiveKit room
     agent_active = await registry.has_active_agent(req.user_id)
 

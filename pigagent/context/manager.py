@@ -18,7 +18,7 @@ import time
 from loguru import logger
 from metrics.turn import TelemetryCollector
 
-from config import get_config
+from agent_config import get_config
 
 from .storage.memory import MemoryStore
 from .storage.redis import RedisStorage, RedisKeys, _refresh_user_ttl, _USER_TTL
@@ -108,8 +108,9 @@ class ContextManager:
         # L1: write to memory immediately (synchronous, sub-ms)
         mem.push_turn(record)
 
-        # Assign roast_instance_id — only affects next turn's assemble, fire-and-forget
-        asyncio.create_task(self._assign_roast_instance_id(user_id, record))
+        # Assign roast_instance_id synchronously — both in-memory and persisted
+        # records need it for downstream filtering (Director, assemble).
+        await self._assign_roast_instance_id(user_id, record)
 
         # L2 + L3: fire-and-forget to Redis and PG
         data = json.dumps(record.to_dict(), ensure_ascii=False)

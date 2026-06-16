@@ -12,7 +12,7 @@ from fastapi import APIRouter, HTTPException, Query
 from livekit import api
 from loguru import logger
 
-from config import get_config
+from agent_config import get_config
 
 router = APIRouter(prefix="/livekit", tags=["livekit"])
 
