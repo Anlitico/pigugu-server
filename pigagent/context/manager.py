@@ -36,6 +36,7 @@ class ContextManager:
         self._redis = redis_client
         self._pg_pool = pg_pool
         self._compressor = ContextCompressor(redis_client=redis_client, pg_pool=pg_pool)
+        self._turn_lock = asyncio.Lock()
 
     def _store(self, user_id: str) -> RedisStorage:
         return RedisStorage(user_id, self._redis)
@@ -91,33 +92,39 @@ class ContextManager:
         store = self._store(user_id)
         pg = self._pg(user_id)
 
-        # Resolve turn number — memory first, then Redis, then PG
-        current = mem.get_last_turn_number()
-        if current == 0:
-            current = await store.get_last_turn_number()
-        if current == 0:
-            current = await pg.recover_turn_counter()
+        # Serialise turn writes — prevents concurrent add_turn from
+        # session.py events (e.g. interrupt) getting the same turn number.
+        async with self._turn_lock:
+            # Resolve turn number — memory first, then Redis, then PG
+            current = mem.get_last_turn_number()
+            if current == 0:
+                current = await store.get_last_turn_number()
+            if current == 0:
+                current = await pg.recover_turn_counter()
 
-        turn_count = current + 1
-        record = ConversationRecord(
-            turn_number=turn_count, role=role, content=content,
-            created_at=time.time(),
-            tool_calls=tool_calls, tool_call_id=tool_call_id,
-            name=name, partial=partial,
-        )
-        # L1: write to memory immediately (synchronous, sub-ms)
-        mem.push_turn(record)
+            turn_count = current + 1
+            record = ConversationRecord(
+                turn_number=turn_count, role=role, content=content,
+                created_at=time.time(),
+                tool_calls=tool_calls, tool_call_id=tool_call_id,
+                name=name, partial=partial,
+            )
+            # L1: write to memory immediately (synchronous, sub-ms)
+            mem.push_turn(record)
 
         # Assign roast_instance_id synchronously — both in-memory and persisted
         # records need it for downstream filtering (Director, assemble).
         await self._assign_roast_instance_id(user_id, record)
+            # Assign roast_instance_id synchronously — both in-memory and persisted
+            # records need it for downstream filtering (Director, assemble).
+            await self._assign_roast_instance_id(user_id, record)
 
-        # L2 + L3: fire-and-forget to Redis and PG
-        data = json.dumps(record.to_dict(), ensure_ascii=False)
-        if self._redis:
-            asyncio.create_task(self._bg_redis_push(store, data))
-        if self._pg_pool:
-            asyncio.create_task(pg.flush_one(turn_count, record.to_message(), record.roast_instance_id))
+            # L2 + L3: fire-and-forget to Redis and PG
+            data = json.dumps(record.to_dict(), ensure_ascii=False)
+            if self._redis:
+                asyncio.create_task(self._bg_redis_push(store, data))
+            if self._pg_pool:
+                asyncio.create_task(pg.flush_one(turn_count, record.to_message(), record.roast_instance_id))
 
         return turn_count
 

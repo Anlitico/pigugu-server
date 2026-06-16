@@ -186,6 +186,16 @@ async def run(ctx: JobContext) -> None:
                 logger.info(f"[DEBUG] User stopped speaking ({event.new_state})")
                 TelemetryCollector.mark("vad_end")
 
+    async def _safe_add_turn(uid: str, role: str, content: str) -> None:
+        """Persist a turn to context, logging errors without crashing."""
+        try:
+            if pig_agent.ctx:
+                await pig_agent.ctx.add_turn(
+                    user_id=uid, role=role, content=content,
+                )
+        except Exception as e:
+            logger.error(f"[Session] Failed to persist {role} turn: {e}")
+
     @session.on("user_input_transcribed")
     def on_user_input_transcribed(event):
         logger.info(f"[STT] Transcript: is_final={event.is_final} text='{event.transcript}'")
@@ -194,6 +204,11 @@ async def run(ctx: JobContext) -> None:
         else:
             TelemetryCollector.mark("stt_final")
             logger.info(f"[STT] Final transcript: '{event.transcript.strip()}'")
+            # Persist user message to context (memory + Redis + PG)
+            if pig_agent.ctx:
+                asyncio.create_task(
+                    _safe_add_turn(user_id, "user", event.transcript.strip())
+                )
             # Publish to event bus for app WebSocket subscribers
             asyncio.create_task(
                 event_bus.publish(user_id, {
@@ -233,6 +248,11 @@ async def run(ctx: JobContext) -> None:
         text = getattr(item, "text_content", None)
         if text and hasattr(item, "role"):
             if item.role == "assistant":
+                # Persist assistant message to context (memory + Redis + PG)
+                if pig_agent.ctx:
+                    asyncio.create_task(
+                        _safe_add_turn(user_id, "assistant", text.strip())
+                    )
                 # Publish to event bus for app WebSocket subscribers
                 asyncio.create_task(
                     event_bus.publish(user_id, {
