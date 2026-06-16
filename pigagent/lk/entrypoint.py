@@ -6,7 +6,7 @@ import os
 from loguru import logger
 
 from livekit.agents import WorkerOptions, cli
-from config import get_config
+from agent_config import get_config
 from bootstrap.factory import validate_configuration
 from lk.session import run as session_run
 

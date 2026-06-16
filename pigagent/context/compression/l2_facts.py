@@ -5,7 +5,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from config import get_config
+from agent_config import get_config
 
 _cfg = get_config()
 

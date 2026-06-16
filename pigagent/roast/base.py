@@ -71,7 +71,7 @@ class GameMode(ABC):
                   "prompt": str|null, "close": bool}
         On failure, returns action="none" gracefully.
         """
-        from config import get_config
+        from agent_config import get_config
         from core.llm import get_llm
         from core.llm.types import Message as LLMMessage
 
@@ -87,15 +87,16 @@ class GameMode(ABC):
             content = getattr(r, "content", "")
             if role not in ("system", "user", "assistant", "tool") or not content:
                 continue
-            # Match by roast_instance_id. Records from the current roast
-            # always have their roast_instance_id set (sync assignment).
+            # Match by roast_instance_id. Loaded records have IDs from
+            # sync _assign_roast_instance_id. Runner messages have rid=None
+            # (not yet persisted) but ARE the current roast — include them.
             rid = getattr(r, "roast_instance_id", None)
             is_roast_body = (
                 role == "system"
                 and ROAST_BODY_PREFIX in content
                 and not has_roast_body
             )
-            if rid != roast_id and not is_roast_body:
+            if rid is not None and rid != roast_id and not is_roast_body:
                 continue
             if is_roast_body:
                 has_roast_body = True

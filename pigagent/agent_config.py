@@ -1,4 +1,4 @@
-﻿# pigagent/config.py
+# pigagent/config.py
 """
 Configuration for AI Agent
 

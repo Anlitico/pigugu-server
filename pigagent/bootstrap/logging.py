@@ -7,7 +7,7 @@ from pathlib import Path
 
 from loguru import logger
 
-from config import get_config
+from agent_config import get_config
 
 
 class _InterceptHandler(logging.Handler):

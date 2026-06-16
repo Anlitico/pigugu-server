@@ -12,7 +12,7 @@ from livekit import rtc
 from livekit.agents import AgentSession, JobContext
 from livekit.agents.types import NOT_GIVEN
 from livekit.agents.voice import room_io
-from config import get_config
+from agent_config import get_config
 from system_prompts import get_persona
 from bootstrap.factory import create_agent_components, get_vad
 from lk.bridge import PigAgentVoiceBridge

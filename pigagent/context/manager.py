@@ -18,7 +18,7 @@ import time
 from loguru import logger
 from metrics.turn import TelemetryCollector
 
-from config import get_config
+from agent_config import get_config
 
 from .storage.memory import MemoryStore
 from .storage.redis import RedisStorage, RedisKeys, _refresh_user_ttl, _USER_TTL

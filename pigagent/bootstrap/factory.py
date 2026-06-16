@@ -10,7 +10,7 @@ import os
 
 from loguru import logger
 
-from config import get_config
+from agent_config import get_config
 from core.audio.stt import create_stt
 from core.audio.tts import create_tts
 from agent import PigAgent
