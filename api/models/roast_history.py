@@ -1,4 +1,4 @@
-"""RoastResult — persisted settlement data served to the App."""
+"""RoastHistory — each roast session, keyed by roast_instance_id."""
 
 import uuid
 from datetime import datetime
@@ -10,8 +10,8 @@ from sqlalchemy.orm import Mapped, mapped_column
 from core.database import Base
 
 
-class RoastResult(Base):
-    __tablename__ = "roast_results"
+class RoastHistory(Base):
+    __tablename__ = "roast_history"
 
     roast_instance_id: Mapped[str] = mapped_column(
         String, primary_key=True

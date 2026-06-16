@@ -27,7 +27,7 @@ async def _event_stream(user_id: str, persona_id: int, roast_id: str,
                          mode_id: str, prompt: str,
                          headline: str = "", source: str = ""):
     """SSE generator: yields text chunks from start_roast()."""
-    pig_agent = get_pig_agent()
+    pig_agent = await get_pig_agent()
     try:
         async for text in pig_agent.start_roast(
             user_id=user_id,
@@ -48,7 +48,7 @@ async def _event_stream(user_id: str, persona_id: int, roast_id: str,
 @router.post("/start")
 async def start_roast(req: RoastStartRequest):
     """Start a roast game and stream the opening reply as SSE."""
-    pig_agent = get_pig_agent()
+    pig_agent = await get_pig_agent()
 
     # Validate game mode exists
     if req.mode_id not in pig_agent._game_modes:
@@ -79,7 +79,7 @@ async def start_roast_sync(req: RoastStartRequest):
     """
     from roast.session_registry import registry
 
-    pig_agent = get_pig_agent()
+    pig_agent = await get_pig_agent()
 
     if req.mode_id not in pig_agent._game_modes:
         raise HTTPException(status_code=400, detail=f"Unknown game mode: {req.mode_id}")

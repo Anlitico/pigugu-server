@@ -135,21 +135,20 @@ class TestGenerateReply:
         assert captured_messages[0].content == "You are helpful."
 
     def test_persists_turn_after_stream(self):
+        """User/assistant messages are now persisted by session.py events.
+        Agent only persists system messages (session info, roast body) and tool calls."""
         agent, ctx, redis, pg = _make_agent()
         _mock_runner_stream(agent, ["response text"])
 
         import asyncio
         result = asyncio.run(_run_collect(agent.generate_reply("u1", "hello")))
 
-        assert ctx.add_turn.call_count >= 2
+        # Agent no longer persists user or assistant messages
         calls = ctx.add_turn.call_args_list
-        # Find user message
         user_calls = [c for c in calls if c[1].get("role") == "user"]
         assistant_calls = [c for c in calls if c[1].get("role") == "assistant"]
-        assert len(user_calls) >= 1
-        assert any(c[1].get("content") == "hello" for c in user_calls)
-        assert len(assistant_calls) >= 1
-        assert any(c[1].get("content") == "response text" for c in assistant_calls)
+        assert len(user_calls) == 0, "user messages should be persisted by session.py"
+        assert len(assistant_calls) == 0, "assistant messages should be persisted by session.py"
 
     def test_context_load_failure_does_not_block(self):
         agent, ctx, redis, pg = _make_agent()

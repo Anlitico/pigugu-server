@@ -14,7 +14,7 @@ from livekit.agents.types import NOT_GIVEN
 from livekit.agents.voice import room_io
 from agent_config import get_config
 from system_prompts import get_persona
-from bootstrap.factory import create_agent_components, get_vad
+from bootstrap.factory import create_agent_components, get_pg_pool, get_redis, get_vad
 from lk.bridge import PigAgentVoiceBridge
 from metrics.turn import TelemetryCollector
 from roast.event_bus import event_bus
@@ -95,7 +95,7 @@ async def run(ctx: JobContext) -> None:
             logger.error(f"[Inject] Failed to parse data_received: {exc}")
 
     # ── Components ────────────────────────────────────────────────────
-    stt, pig_agent, tts = create_agent_components(config, persona=persona)
+    stt, pig_agent, tts = await create_agent_components(config, persona=persona)
     stt_plugin = stt.get_plugin()
     tts_plugin = tts.get_plugin()
     vad = get_vad()
@@ -186,6 +186,55 @@ async def run(ctx: JobContext) -> None:
                 logger.info(f"[DEBUG] User stopped speaking ({event.new_state})")
                 TelemetryCollector.mark("vad_end")
 
+    async def _safe_add_turn(uid: str, role: str, content: str) -> None:
+        """Persist a turn to context + roast_conversations (for App display).
+
+        All roles → context (agent_conversations)
+        user/assistant during active roast → roast_conversations
+        """
+        try:
+            if pig_agent.ctx:
+                await pig_agent.ctx.add_turn(
+                    user_id=uid, role=role, content=content,
+                )
+            # Dual-write to roast_conversations for App display
+            if role in ("user", "assistant"):
+                asyncio.create_task(
+                    _write_roast_conversation(uid, role, content)
+                )
+        except Exception as e:
+            logger.error(f"[Session] Failed to persist {role} turn: {e}")
+
+    async def _write_roast_conversation(uid: str, role: str, content: str) -> None:
+        """Write user/assistant message to roast_conversations table + push to App WS."""
+        try:
+            state = await pig_agent.get_active_roast(uid)
+            if not state:
+                return  # Not in a roast — skip
+
+            # 1. Persist to DB
+            pool = await get_pg_pool()
+            async with pool.acquire() as conn:
+                await conn.execute(
+                    """INSERT INTO roast_conversations
+                       (user_id, roast_id, roast_instance_id, role, content)
+                       VALUES ($1, $2, $3, $4, $5)""",
+                    uid, str(state.roast_id), state.roast_instance_id, role, content,
+                )
+
+            # 2. Push to App WS via Redis Pub/Sub → cross-pod fan-out
+            redis = get_redis()
+            if redis:
+                msg = json.dumps({
+                    "type": "roast_message",
+                    "roast_id": str(state.roast_id),
+                    "role": role,
+                    "content": content,
+                })
+                await redis.publish(f"ws:user:{uid}", msg)
+        except Exception as e:
+            logger.error(f"[Session] Failed to write roast_conversation: {e}")
+
     @session.on("user_input_transcribed")
     def on_user_input_transcribed(event):
         logger.info(f"[STT] Transcript: is_final={event.is_final} text='{event.transcript}'")
@@ -194,6 +243,11 @@ async def run(ctx: JobContext) -> None:
         else:
             TelemetryCollector.mark("stt_final")
             logger.info(f"[STT] Final transcript: '{event.transcript.strip()}'")
+            # Persist user message to context (memory + Redis + PG)
+            if pig_agent.ctx:
+                asyncio.create_task(
+                    _safe_add_turn(user_id, "user", event.transcript.strip())
+                )
             # Publish to event bus for app WebSocket subscribers
             asyncio.create_task(
                 event_bus.publish(user_id, {
@@ -233,6 +287,11 @@ async def run(ctx: JobContext) -> None:
         text = getattr(item, "text_content", None)
         if text and hasattr(item, "role"):
             if item.role == "assistant":
+                # Persist assistant message to context (memory + Redis + PG)
+                if pig_agent.ctx:
+                    asyncio.create_task(
+                        _safe_add_turn(user_id, "assistant", text.strip())
+                    )
                 # Publish to event bus for app WebSocket subscribers
                 asyncio.create_task(
                     event_bus.publish(user_id, {

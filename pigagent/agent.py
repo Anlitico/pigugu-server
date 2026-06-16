@@ -174,9 +174,7 @@ class PigAgent:
 
         TelemetryCollector.mark("ctx_done")
 
-        # 5. Persist user message before streaming — fire-and-forget so it doesn't block LLM
-        if self.ctx and user_id:
-            asyncio.create_task(self._persist_turns(user_id, [new_msg]))
+        # 5. User message is persisted by session.py (user_input_transcribed event).
 
         # 6. Stream and collect response
         response_chunks: list[str] = []
@@ -224,11 +222,13 @@ class PigAgent:
             f"status={self.runner.last_status}"
         )
 
-        # 7. Persist runner-added messages (assistant, tool calls). User message was persisted before stream.
+        # 7. Persist tool messages (assistant is handled by session.py's
+        # conversation_item_added event).
         if self.ctx and user_id:
             runner_msgs = self.runner.last_messages[pre_stream_count:] if self.runner.last_messages else []
-            if runner_msgs:
-                turn_no = await self._persist_turns(user_id, runner_msgs)
+            tool_msgs = [m for m in runner_msgs if m.role == "tool"]
+            if tool_msgs:
+                turn_no = await self._persist_turns(user_id, tool_msgs)
                 if turn_no:
                     TelemetryCollector.set_meta("turn_number", turn_no)
 

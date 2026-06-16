@@ -6,6 +6,8 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+import pytest
+
 
 class TestValidateConfiguration:
     def test_missing_livekit_key_fails(self, monkeypatch):
@@ -77,7 +79,8 @@ class TestValidateConfiguration:
 
 
 class TestGetPigAgent:
-    def test_returns_singleton(self):
+    @pytest.mark.asyncio
+    async def test_returns_singleton(self):
         from bootstrap.factory import get_pig_agent, _pig_agent
         # Reset singleton for test
         import bootstrap.factory as f
@@ -85,10 +88,12 @@ class TestGetPigAgent:
 
         with patch("bootstrap.factory._build_pig_agent") as mock_build:
             mock_agent = MagicMock()
-            mock_build.return_value = mock_agent
+            async def _async_build(*args, **kwargs):
+                return mock_agent
+            mock_build.side_effect = _async_build
 
-            a1 = get_pig_agent()
-            a2 = get_pig_agent()
+            a1 = await get_pig_agent()
+            a2 = await get_pig_agent()
             assert a1 is a2
             mock_build.assert_called_once()
 

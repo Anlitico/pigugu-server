@@ -95,21 +95,21 @@ def get_redis():
     return _redis
 
 
-def get_pg_pool():
-    """Return the global PG DSN string for sync init. Pool is in context.storage.pg._ensure_pg_pool()."""
-    database_url = os.getenv("DATABASE_URL", "").replace("+asyncpg", "")
-    return database_url
+async def get_pg_pool():
+    """Return the global asyncpg connection pool (lazy singleton)."""
+    from context.storage.pg import _ensure_pg_pool
+    return await _ensure_pg_pool()
 
 
-def get_pig_agent() -> PigAgent:
+async def get_pig_agent() -> PigAgent:
     """Return the global PigAgent singleton."""
     global _pig_agent
     if _pig_agent is None:
-        _pig_agent = _build_pig_agent()
+        _pig_agent = await _build_pig_agent()
     return _pig_agent
 
 
-def _build_pig_agent(config=None) -> PigAgent:
+async def _build_pig_agent(config=None) -> PigAgent:
     """Build the PigAgent singleton (called once at first use)."""
     if config is None:
         config = get_config()
@@ -127,7 +127,7 @@ def _build_pig_agent(config=None) -> PigAgent:
     logger.info(f"[Factory] Game mode cache built: {list(game_modes.keys())}")
 
     redis = get_redis()
-    pg_pool = get_pg_pool()
+    pg_pool = await get_pg_pool()
 
     from context.manager import ContextManager
     ctx = ContextManager(redis_client=redis, pg_pool=pg_pool)
@@ -212,7 +212,7 @@ def validate_configuration(config=None):
     return True
 
 
-def create_agent_components(config=None, persona=None):
+async def create_agent_components(config=None, persona=None):
     """Create TTS per session. STT, PigAgent, VAD are global singletons.
 
     Args:
@@ -231,7 +231,7 @@ def create_agent_components(config=None, persona=None):
 
     # ── PigAgent (global singleton) ─────────────────────────────────────
 
-    pig_agent = get_pig_agent()
+    pig_agent = await get_pig_agent()
 
     # ── TTS (per session  -  persona voice/speed/emotion) ────────────────
 
