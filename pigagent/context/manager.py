@@ -112,9 +112,6 @@ class ContextManager:
             # L1: write to memory immediately (synchronous, sub-ms)
             mem.push_turn(record)
 
-        # Assign roast_instance_id synchronously — both in-memory and persisted
-        # records need it for downstream filtering (Director, assemble).
-        await self._assign_roast_instance_id(user_id, record)
             # Assign roast_instance_id synchronously — both in-memory and persisted
             # records need it for downstream filtering (Director, assemble).
             await self._assign_roast_instance_id(user_id, record)
