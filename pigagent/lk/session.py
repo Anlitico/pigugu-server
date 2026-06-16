@@ -14,7 +14,7 @@ from livekit.agents.types import NOT_GIVEN
 from livekit.agents.voice import room_io
 from agent_config import get_config
 from system_prompts import get_persona
-from bootstrap.factory import create_agent_components, get_pg_pool, get_vad
+from bootstrap.factory import create_agent_components, get_pg_pool, get_redis, get_vad
 from lk.bridge import PigAgentVoiceBridge
 from metrics.turn import TelemetryCollector
 from roast.event_bus import event_bus
@@ -206,12 +206,13 @@ async def run(ctx: JobContext) -> None:
             logger.error(f"[Session] Failed to persist {role} turn: {e}")
 
     async def _write_roast_conversation(uid: str, role: str, content: str) -> None:
-        """Write user/assistant message to roast_conversations table."""
+        """Write user/assistant message to roast_conversations table + push to App WS."""
         try:
             state = await pig_agent.get_active_roast(uid)
             if not state:
                 return  # Not in a roast — skip
 
+            # 1. Persist to DB
             pool = await get_pg_pool()
             async with pool.acquire() as conn:
                 await conn.execute(
@@ -220,6 +221,17 @@ async def run(ctx: JobContext) -> None:
                        VALUES ($1, $2, $3, $4, $5)""",
                     uid, str(state.roast_id), state.roast_instance_id, role, content,
                 )
+
+            # 2. Push to App WS via Redis Pub/Sub → cross-pod fan-out
+            redis = get_redis()
+            if redis:
+                msg = json.dumps({
+                    "type": "roast_message",
+                    "roast_id": str(state.roast_id),
+                    "role": role,
+                    "content": content,
+                })
+                await redis.publish(f"ws:user:{uid}", msg)
         except Exception as e:
             logger.error(f"[Session] Failed to write roast_conversation: {e}")
 
