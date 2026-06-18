@@ -9,6 +9,7 @@ Create Date: 2026-06-16 14:05:00.000000
 from typing import Sequence, Union
 
 from alembic import op
+from sqlalchemy import text
 
 
 # revision identifiers, used by Alembic.
@@ -19,8 +20,18 @@ depends_on: Union[str, Sequence[str], None] = None
 
 
 def upgrade() -> None:
-    op.rename_table('roast_results', 'roast_history')
+    conn = op.get_bind()
+    row = conn.execute(
+        text("SELECT EXISTS (SELECT FROM pg_tables WHERE tablename = 'roast_results')")
+    ).scalar()
+    if row:
+        op.rename_table('roast_results', 'roast_history')
 
 
 def downgrade() -> None:
-    op.rename_table('roast_history', 'roast_results')
+    conn = op.get_bind()
+    row = conn.execute(
+        text("SELECT EXISTS (SELECT FROM pg_tables WHERE tablename = 'roast_history')")
+    ).scalar()
+    if row:
+        op.rename_table('roast_history', 'roast_results')
