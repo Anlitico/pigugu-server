@@ -229,14 +229,13 @@ def create_roast_complete_tool(
     Handler:
     1. Loads the active roast state from Redis.
     2. Transitions phase from ACTIVE/CLOSING to SETTLED.
-    3. Publishes a roast_settled event for App consumption.
-    4. Writes roast_history to PG.
+    3. Writes roast_history to PG.
+    4. Pushes settlement event to App via Redis (ws:user:{uid}).
     """
 
     async def _handler(args: dict) -> dict[str, Any]:
         from roast.state import RoastState
         from roast.types import Phase
-        from roast.event_bus import event_bus
 
         user_id = _current_user_id.get()
         if not user_id:
@@ -272,7 +271,6 @@ def create_roast_complete_tool(
             "end_reason": end_reason,
             "started_at": state.started_at,
         }
-        await event_bus.publish(user_id, settlement_event)
 
         # Write roast_history directly (PG, no Redis round-trip)
         try:
@@ -299,16 +297,18 @@ def create_roast_complete_tool(
         except Exception as e:
             logger.warning(f"[mark_roast_complete] roast_history write failed: {e}")
 
-        # Redis pub/sub for FCM push (cross-process)
-        import json as _json
-        try:
-            if redis is not None:
-                await redis.publish(
-                    f"roast:settled:{user_id}",
-                    _json.dumps(settlement_event),
-                )
-        except Exception as e:
-            logger.warning(f"[mark_roast_complete] Redis publish failed: {e}")
+        # Push card to App via WS (Redis → ws_manager → all user devices).
+        # Only for completed roasts — quit/interrupted does NOT send a card.
+        if end_reason == "completed":
+            import json as _json
+            try:
+                if redis is not None:
+                    await redis.publish(
+                        f"ws:user:{user_id}",
+                        _json.dumps(settlement_event),
+                    )
+            except Exception as e:
+                logger.warning(f"[mark_roast_complete] Redis publish failed: {e}")
 
         logger.info(
             f"[mark_roast_complete] Roast settled: {state.roast_instance_id} "

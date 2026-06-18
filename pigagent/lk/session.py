@@ -17,7 +17,6 @@ from system_prompts import get_persona
 from bootstrap.factory import create_agent_components, get_pg_pool, get_redis, get_vad
 from lk.bridge import PigAgentVoiceBridge
 from metrics.turn import TelemetryCollector
-from roast.event_bus import event_bus
 
 
 async def run(ctx: JobContext) -> None:
@@ -67,18 +66,12 @@ async def run(ctx: JobContext) -> None:
     @ctx.room.on("participant_disconnected")
     def on_participant_disconnected(participant: rtc.RemoteParticipant):
         logger.info(f"[ROOM] Participant disconnected: {participant.identity}")
-        asyncio.create_task(
-            event_bus.publish(user_id, {
-                "type": "state_change",
-                "state": "disconnected",
-            })
-        )
 
     @ctx.room.on("track_subscribed")
     def on_track_subscribed(track: rtc.Track, publication: rtc.RemoteTrackPublication, participant: rtc.RemoteParticipant):
         logger.info(f"[AUDIO] Track subscribed: kind={track.kind} source={participant.identity}")
 
-    # ── Injected commands via LiveKit data channel (roast_ws.py → agent) ──
+    # ── Injected commands via LiveKit data channel (API server → agent) ──
     @ctx.room.on("data_received")
     def on_data_received(packet: rtc.DataPacket) -> None:
         topic = getattr(packet, "topic", "")
@@ -146,19 +139,6 @@ async def run(ctx: JobContext) -> None:
     @session.on("agent_state_changed")
     def on_agent_state_changed(event):
         logger.info(f"[STATE] {event.old_state} -> {event.new_state}")
-
-        # Map LiveKit state to app-friendly state
-        state_map = {
-            "thinking": "thinking",
-            "speaking": "speaking",
-        }
-        app_state = state_map.get(event.new_state, "listening")
-        asyncio.create_task(
-            event_bus.publish(user_id, {
-                "type": "state_change",
-                "state": app_state,
-            })
-        )
 
         # Timing
         if event.new_state == "thinking" and event.old_state != "thinking":
@@ -255,13 +235,6 @@ async def run(ctx: JobContext) -> None:
                 asyncio.create_task(
                     _safe_add_turn(user_id, "user", event.transcript.strip())
                 )
-            # Publish to event bus for app WebSocket subscribers
-            asyncio.create_task(
-                event_bus.publish(user_id, {
-                    "type": "user_transcript",
-                    "text": event.transcript.strip(),
-                })
-            )
             try:
                 payload = json.dumps({"text": event.transcript.strip()})
                 asyncio.create_task(
@@ -299,14 +272,6 @@ async def run(ctx: JobContext) -> None:
                     asyncio.create_task(
                         _safe_add_turn(user_id, "assistant", text.strip())
                     )
-                # Publish to event bus for app WebSocket subscribers
-                asyncio.create_task(
-                    event_bus.publish(user_id, {
-                        "type": "agent_response",
-                        "text": text.strip(),
-                        "final": True,
-                    })
-                )
                 try:
                     payload = json.dumps({"text": text.strip()})
                     asyncio.create_task(
@@ -331,13 +296,6 @@ async def run(ctx: JobContext) -> None:
     def on_close(event):
         TelemetryCollector.finish_turn()  # flush the last turn
         logger.info(f"[SESSION] Closed  -  reason: {event.reason}")
-        asyncio.create_task(
-            event_bus.publish(user_id, {
-                "type": "roast_event",
-                "event": "session_closed",
-                "reason": str(event.reason),
-            })
-        )
 
     # ── Start ─────────────────────────────────────────────────────────
     logger.info(f"Starting voice agent session... ({len(ctx.room.remote_participants)} participants)")
@@ -378,7 +336,7 @@ async def run(ctx: JobContext) -> None:
 
     # ── Handle injected start_roast from App via LiveKit data channel ────
     async def _handle_inject_start_roast(msg: dict) -> None:
-        """Called when roast_ws.py sends a start_roast command through the
+        """Called when the API server sends a start_roast command through the
         LiveKit room data channel (topic="roast_inject").
 
         Runs the full pig_agent.start_roast() pipeline: activate roast,

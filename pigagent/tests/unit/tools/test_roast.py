@@ -1,5 +1,6 @@
 """Tests for tools.roast — create_list_roasts_tool and create_start_roast_tool."""
 
+import json
 from datetime import datetime, timezone
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -233,20 +234,22 @@ class TestRoastToolRegistration:
 def _make_complete_tool(*, redis=None, pg_pool=None):
     from tools.roast import create_roast_complete_tool, _current_user_id
     _current_user_id.set("test-user")
+    mock_redis = redis or MagicMock()
+    mock_redis.publish = AsyncMock()
     mock_pool = MagicMock()
     mock_conn = AsyncMock()
     mock_pool.acquire = MagicMock()
     mock_pool.acquire.return_value.__aenter__ = AsyncMock(return_value=mock_conn)
     mock_pool.acquire.return_value.__aexit__ = AsyncMock(return_value=None)
-    tool = create_roast_complete_tool(redis=redis or MagicMock(), pg_pool=pg_pool or mock_pool)
-    return tool, mock_pool, mock_conn
+    tool = create_roast_complete_tool(redis=mock_redis, pg_pool=pg_pool or mock_pool)
+    return tool, mock_pool, mock_conn, mock_redis
 
 
 class TestRoastCompleteTool:
     @pytest.mark.asyncio
     async def test_settles_completed_roast(self):
         """end_reason='completed' — best_take from state.extra, interrupted=False."""
-        tool, mock_pool, mock_conn = _make_complete_tool()
+        tool, mock_pool, mock_conn, mock_redis = _make_complete_tool()
         from roast.types import Phase
 
         mock_state = MagicMock()
@@ -277,11 +280,20 @@ class TestRoastCompleteTool:
         call_args = mock_conn.execute.call_args[0][1:]
         assert call_args[7] == "That was killer!"  # best_take from state.extra
         assert call_args[8] is False  # interrupted=False for completed
+        # WS card push only for completed
+        mock_redis.publish.assert_called_once()
+        publish_args = mock_redis.publish.call_args[0]
+        assert publish_args[0] == "ws:user:test-user"
+        assert "roast_settled" in publish_args[1]
+        assert "roast_settled" in publish_args[1]
+        published = json.loads(publish_args[1])
+        assert published["end_reason"] == "completed"
+        assert published["best_take"] == "That was killer!"
 
     @pytest.mark.asyncio
     async def test_settles_quit_roast(self):
-        """end_reason='quit' — best_take from state.extra, interrupted=True."""
-        tool, mock_pool, mock_conn = _make_complete_tool()
+        """end_reason='quit' — best_take from state.extra, interrupted=True, NO WS push."""
+        tool, mock_pool, mock_conn, mock_redis = _make_complete_tool()
         from roast.types import Phase
 
         mock_state = MagicMock()
@@ -303,11 +315,13 @@ class TestRoastCompleteTool:
         assert result["end_reason"] == "quit"
         call_args = mock_conn.execute.call_args[0][1:]
         assert call_args[8] is True  # interrupted=True for quit
+        # No WS card push for quit
+        mock_redis.publish.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_normalises_null_string_best_take(self):
         """best_take='null' in state.extra → None in DB."""
-        tool, mock_pool, mock_conn = _make_complete_tool()
+        tool, mock_pool, mock_conn, mock_redis = _make_complete_tool()
         from roast.types import Phase
 
         mock_state = MagicMock()
@@ -331,7 +345,7 @@ class TestRoastCompleteTool:
 
     @pytest.mark.asyncio
     async def test_returns_error_when_no_active_roast(self):
-        tool, mock_pool, mock_conn = _make_complete_tool()
+        tool, mock_pool, mock_conn, mock_redis = _make_complete_tool()
 
         with patch("roast.state.RoastState._load_active", new_callable=AsyncMock) as mock_load:
             mock_load.return_value = None
@@ -342,7 +356,7 @@ class TestRoastCompleteTool:
 
     @pytest.mark.asyncio
     async def test_returns_error_when_already_settled(self):
-        tool, mock_pool, mock_conn = _make_complete_tool()
+        tool, mock_pool, mock_conn, mock_redis = _make_complete_tool()
         from roast.types import Phase
 
         mock_state = MagicMock()
@@ -357,7 +371,7 @@ class TestRoastCompleteTool:
 
     @pytest.mark.asyncio
     async def test_handles_pg_write_failure_gracefully(self):
-        tool, mock_pool, mock_conn = _make_complete_tool()
+        tool, mock_pool, mock_conn, mock_redis = _make_complete_tool()
         from roast.types import Phase
 
         mock_conn.execute = AsyncMock(side_effect=Exception("PG down"))
@@ -382,7 +396,7 @@ class TestRoastCompleteTool:
     @pytest.mark.asyncio
     async def test_defaults_to_completed_when_end_reason_missing(self):
         """If LLM doesn't pass end_reason, default to 'completed'."""
-        tool, mock_pool, mock_conn = _make_complete_tool()
+        tool, mock_pool, mock_conn, mock_redis = _make_complete_tool()
         from roast.types import Phase
 
         mock_state = MagicMock()
