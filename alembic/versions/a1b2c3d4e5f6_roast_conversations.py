@@ -20,24 +20,34 @@ depends_on: Union[str, Sequence[str], None] = None
 
 
 def upgrade() -> None:
-    op.create_table(
-        'roast_conversations',
-        sa.Column('id', sa.BigInteger(), autoincrement=True, nullable=False),
-        sa.Column('user_id', sa.Text(), nullable=False),
-        sa.Column('roast_id', sa.Text(), nullable=False),
-        sa.Column('roast_instance_id', sa.Text(), nullable=True),
-        sa.Column('role', sa.Text(), nullable=False),
-        sa.Column('content', sa.Text(), nullable=False),
-        sa.Column('created_at', sa.DateTime(timezone=True), server_default=sa.func.now()),
-        sa.PrimaryKeyConstraint('id'),
-    )
-    op.create_index(
-        'idx_roast_conv_lookup',
-        'roast_conversations',
-        ['user_id', 'roast_id', 'created_at'],
-    )
+    conn = op.get_bind()
+    exists = conn.execute(
+        sa.text("SELECT EXISTS (SELECT FROM pg_tables WHERE tablename = 'roast_conversations')")
+    ).scalar()
+    if not exists:
+        op.create_table(
+            'roast_conversations',
+            sa.Column('id', sa.BigInteger(), autoincrement=True, nullable=False),
+            sa.Column('user_id', sa.Text(), nullable=False),
+            sa.Column('roast_id', sa.Text(), nullable=False),
+            sa.Column('roast_instance_id', sa.Text(), nullable=True),
+            sa.Column('role', sa.Text(), nullable=False),
+            sa.Column('content', sa.Text(), nullable=False),
+            sa.Column('created_at', sa.DateTime(timezone=True), server_default=sa.func.now()),
+            sa.PrimaryKeyConstraint('id'),
+        )
+        op.create_index(
+            'idx_roast_conv_lookup',
+            'roast_conversations',
+            ['user_id', 'roast_id', 'created_at'],
+        )
 
 
 def downgrade() -> None:
-    op.drop_index('idx_roast_conv_lookup', table_name='roast_conversations')
-    op.drop_table('roast_conversations')
+    conn = op.get_bind()
+    exists = conn.execute(
+        sa.text("SELECT EXISTS (SELECT FROM pg_tables WHERE tablename = 'roast_conversations')")
+    ).scalar()
+    if exists:
+        op.drop_index('idx_roast_conv_lookup', table_name='roast_conversations')
+        op.drop_table('roast_conversations')
