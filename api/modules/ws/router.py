@@ -37,7 +37,9 @@ async def websocket_app(
         await websocket.close(code=4001)
         return
 
-    user_id = str(user.id)
+    # Use email as WS key so pigagent's Redis pubsub channel matches
+    # (pigagent publishes to ws:user:{email} from session participant identity).
+    user_id = user.email
     await ws_manager.connect(user_id, app_device_id, websocket)
     # NOTE: ws_manager.connect() accepts the WS internally
     import logging
