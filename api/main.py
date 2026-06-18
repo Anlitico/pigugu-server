@@ -84,8 +84,9 @@ async def _session_cleanup() -> None:
                     )
                 )
                 await db.commit()
-                if result.rowcount:
-                    logger.info("Cleaned up %d expired provisioning sessions", result.rowcount)
+                count = result.rowcount  # type: ignore[reportAttributeAccessIssue]
+                if count:
+                    logger.info("Cleaned up %d expired provisioning sessions", count)
         except Exception as e:
             logger.error("Session cleanup failed: %s", e)
 
