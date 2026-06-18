@@ -9,7 +9,7 @@ spec:
       - name: migration
         # 使用和你 API 相同的镜像
         image: __IMAGE__
-        command: ["alembic", "upgrade", "head"]
+        command: ["alembic", "upgrade", "heads"]
         env:
         - name: DATABASE_URL
           valueFrom:
