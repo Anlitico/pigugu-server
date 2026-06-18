@@ -211,6 +211,10 @@ async def run(ctx: JobContext) -> None:
             state = await pig_agent.get_active_roast(uid)
             if not state:
                 return  # Not in a roast — skip
+            # Only write during active roast (skip free chat after settlement)
+            from roast.types import Phase
+            if state.phase not in (Phase.ACTIVE, Phase.CLOSING):
+                return
 
             # 1. Persist to DB
             pool = await get_pg_pool()
