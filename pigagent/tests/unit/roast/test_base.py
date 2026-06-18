@@ -134,3 +134,46 @@ class TestGameModeTick:
         result = asyncio.run(mode.tick(state, records=[], redis=redis))
         assert result is None
         assert state.turn_count == 5  # unchanged
+
+
+class TestWriteDirectorLog:
+    """Tests for _write_director_log — fire-and-forget PG write for Director decisions."""
+
+    def test_writes_row_via_pg_pool(self):
+        import asyncio; from roast.base import _write_director_log
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        mock_conn = AsyncMock()
+        mock_pool = MagicMock()
+        mock_pool.acquire = MagicMock()
+        mock_pool.acquire.return_value.__aenter__ = AsyncMock(return_value=mock_conn)
+        mock_pool.acquire.return_value.__aexit__ = AsyncMock(return_value=None)
+
+        result = {"action": "inject", "best_take": "That's gold!", "prompt": "Amplify it.", "close": False}
+
+        with patch("bootstrap.factory.get_pg_pool", new_callable=AsyncMock) as mock_get_pool:
+            mock_get_pool.return_value = mock_pool
+            asyncio.run(_write_director_log("rid-1", 5, result))
+
+        mock_conn.execute.assert_called_once()
+        args = mock_conn.execute.call_args[0][1:]
+        assert args[0] == "rid-1"
+        assert args[1] == 5
+        assert args[2] == "inject"
+        assert args[3] == "That's gold!"
+        assert args[4] == "Amplify it."
+        assert args[5] is False
+
+    def test_handles_pg_failure_gracefully(self):
+        import asyncio; from roast.base import _write_director_log
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        mock_pool = MagicMock()
+        mock_pool.acquire = MagicMock()
+        mock_pool.acquire.return_value.__aenter__ = AsyncMock(side_effect=Exception("PG down"))
+        mock_pool.acquire.return_value.__aexit__ = AsyncMock(return_value=None)
+
+        with patch("bootstrap.factory.get_pg_pool", new_callable=AsyncMock) as mock_get_pool:
+            mock_get_pool.return_value = mock_pool
+            # Should not raise
+            asyncio.run(_write_director_log("rid-2", 3, {"action": "none"}))

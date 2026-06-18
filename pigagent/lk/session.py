@@ -211,8 +211,11 @@ async def run(ctx: JobContext) -> None:
             state = await pig_agent.get_active_roast(uid)
             if not state:
                 return  # Not in a roast — skip
-            # Only write during active roast (skip free chat after settlement)
+            # Only write during active roast. During CLOSING, only allow
+            # assistant (the closing statement itself), not user interjections.
             from roast.types import Phase
+            if state.phase == Phase.CLOSING and role != "assistant":
+                return
             if state.phase not in (Phase.ACTIVE, Phase.CLOSING):
                 return
 

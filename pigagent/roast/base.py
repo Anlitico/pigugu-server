@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import Callable, ClassVar, TYPE_CHECKING
@@ -147,6 +148,10 @@ class GameMode(ABC):
                 f"best_take={'yes' if result.get('best_take') else 'no'} "
                 f"close={result.get('close', False)}"
             )
+            # Fire-and-forget: persist Director decision for debugging/analysis
+            asyncio.ensure_future(_write_director_log(
+                state.roast_instance_id, state.turn_count, result,
+            ))
             return result
         except Exception as e:
             logger.error(f"[{self.mode}] Director failed: {e}")
@@ -241,4 +246,27 @@ class GameMode(ABC):
             f"[{self.mode}] Triggered: {trigger.name} "
             f"roast={state.roast_instance_id} turn={state.turn_count}"
         )
+
+
+async def _write_director_log(
+    roast_instance_id: str, turn_number: int, result: dict,
+) -> None:
+    """Persist Director LLM decision to roast_director_logs for analysis."""
+    try:
+        from bootstrap.factory import get_pg_pool
+        pool = await get_pg_pool()
+        async with pool.acquire() as conn:
+            await conn.execute(
+                """INSERT INTO roast_director_logs
+                   (roast_instance_id, turn_number, action, best_take, prompt, close)
+                   VALUES ($1, $2, $3, $4, $5, $6)""",
+                roast_instance_id,
+                turn_number,
+                result.get("action"),
+                result.get("best_take"),
+                result.get("prompt"),
+                result.get("close", False),
+            )
+    except Exception as e:
+        logger.warning(f"[Director] Failed to write director log: {e}")
 
