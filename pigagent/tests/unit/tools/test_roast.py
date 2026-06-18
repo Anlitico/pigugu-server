@@ -244,12 +244,13 @@ def _make_complete_tool(*, redis=None, pg_pool=None):
 
 class TestRoastCompleteTool:
     @pytest.mark.asyncio
-    async def test_settles_active_roast(self):
+    async def test_settles_completed_roast(self):
+        """end_reason='completed' — best_take from state.extra, interrupted=False."""
         tool, mock_pool, mock_conn = _make_complete_tool()
         from roast.types import Phase
 
         mock_state = MagicMock()
-        mock_state.phase = Phase.ACTIVE
+        mock_state.phase = Phase.CLOSING
         mock_state.roast_instance_id = "rid-123"
         mock_state.user_id = "test-user"
         mock_state.roast_id = "roast-1"
@@ -257,15 +258,15 @@ class TestRoastCompleteTool:
         mock_state.mode.__str__ = MagicMock(return_value="roast_together")
         mock_state.turn_count = 5
         mock_state.started_at = 1700000000.0
-        mock_state.extra = {"headline": "Test", "source": "test"}
+        mock_state.extra = {"headline": "Test", "source": "test", "best_take": "That was killer!"}
         mock_state.save = AsyncMock()
 
         with patch("roast.state.RoastState._load_active", new_callable=AsyncMock) as mock_load:
             mock_load.return_value = mock_state
-            result = await tool.execute({"best_take": "That was killer!", "filler_text": "..."})
+            result = await tool.execute({"end_reason": "completed", "filler_text": "..."})
 
         assert result["settled"] is True
-        assert result["best_take"] == "That was killer!"
+        assert result["end_reason"] == "completed"
         assert mock_state.phase == Phase.SETTLED
         mock_state.save.assert_called_once()
         # Verify PG write
@@ -273,9 +274,39 @@ class TestRoastCompleteTool:
         sql = mock_conn.execute.call_args[0][0]
         assert "INSERT INTO roast_history" in sql
         assert "ON CONFLICT" in sql
+        call_args = mock_conn.execute.call_args[0][1:]
+        assert call_args[7] == "That was killer!"  # best_take from state.extra
+        assert call_args[8] is False  # interrupted=False for completed
+
+    @pytest.mark.asyncio
+    async def test_settles_quit_roast(self):
+        """end_reason='quit' — best_take from state.extra, interrupted=True."""
+        tool, mock_pool, mock_conn = _make_complete_tool()
+        from roast.types import Phase
+
+        mock_state = MagicMock()
+        mock_state.phase = Phase.ACTIVE  # user quit mid-roast
+        mock_state.roast_instance_id = "rid-999"
+        mock_state.roast_id = "roast-4"
+        mock_state.mode = MagicMock()
+        mock_state.mode.__str__ = MagicMock(return_value="roast_together")
+        mock_state.turn_count = 1
+        mock_state.started_at = 1700000000.0
+        mock_state.extra = {"headline": "H", "source": "S"}
+        mock_state.save = AsyncMock()
+
+        with patch("roast.state.RoastState._load_active", new_callable=AsyncMock) as mock_load:
+            mock_load.return_value = mock_state
+            result = await tool.execute({"end_reason": "quit", "filler_text": "..."})
+
+        assert result["settled"] is True
+        assert result["end_reason"] == "quit"
+        call_args = mock_conn.execute.call_args[0][1:]
+        assert call_args[8] is True  # interrupted=True for quit
 
     @pytest.mark.asyncio
     async def test_normalises_null_string_best_take(self):
+        """best_take='null' in state.extra → None in DB."""
         tool, mock_pool, mock_conn = _make_complete_tool()
         from roast.types import Phase
 
@@ -287,17 +318,16 @@ class TestRoastCompleteTool:
         mock_state.mode.__str__ = MagicMock(return_value="roast_together")
         mock_state.turn_count = 3
         mock_state.started_at = 1700000000.0
-        mock_state.extra = {"headline": "H", "source": "S"}
+        mock_state.extra = {"headline": "H", "source": "S", "best_take": "null"}
         mock_state.save = AsyncMock()
 
         with patch("roast.state.RoastState._load_active", new_callable=AsyncMock) as mock_load:
             mock_load.return_value = mock_state
-            result = await tool.execute({"best_take": "null", "filler_text": "..."})
+            result = await tool.execute({"end_reason": "completed", "filler_text": "..."})
 
         assert result["settled"] is True
-        assert result["best_take"] is None  # "null" string → None
         call_args = mock_conn.execute.call_args[0][1:]
-        assert call_args[7] is None  # best_take column (param #8, 0-indexed=7)
+        assert call_args[7] is None  # "null" string → None in DB
 
     @pytest.mark.asyncio
     async def test_returns_error_when_no_active_roast(self):
@@ -305,7 +335,7 @@ class TestRoastCompleteTool:
 
         with patch("roast.state.RoastState._load_active", new_callable=AsyncMock) as mock_load:
             mock_load.return_value = None
-            result = await tool.execute({"filler_text": "..."})
+            result = await tool.execute({"end_reason": "completed", "filler_text": "..."})
 
         assert result["settled"] is False
         assert "no active roast" in result["reason"]
@@ -320,7 +350,7 @@ class TestRoastCompleteTool:
 
         with patch("roast.state.RoastState._load_active", new_callable=AsyncMock) as mock_load:
             mock_load.return_value = mock_state
-            result = await tool.execute({"filler_text": "..."})
+            result = await tool.execute({"end_reason": "completed", "filler_text": "..."})
 
         assert result["settled"] is False
         assert "already settled" in result["reason"]
@@ -344,23 +374,24 @@ class TestRoastCompleteTool:
 
         with patch("roast.state.RoastState._load_active", new_callable=AsyncMock) as mock_load:
             mock_load.return_value = mock_state
-            result = await tool.execute({"filler_text": "..."})
+            result = await tool.execute({"end_reason": "completed", "filler_text": "..."})
 
         # Should still succeed — PG write failure is non-fatal
         assert result["settled"] is True
 
     @pytest.mark.asyncio
-    async def test_interrupted_flag_when_called_from_active(self):
+    async def test_defaults_to_completed_when_end_reason_missing(self):
+        """If LLM doesn't pass end_reason, default to 'completed'."""
         tool, mock_pool, mock_conn = _make_complete_tool()
         from roast.types import Phase
 
         mock_state = MagicMock()
-        mock_state.phase = Phase.ACTIVE  # interrupted mid-roast
-        mock_state.roast_instance_id = "rid-999"
-        mock_state.roast_id = "roast-4"
+        mock_state.phase = Phase.CLOSING
+        mock_state.roast_instance_id = "rid-111"
+        mock_state.roast_id = "roast-5"
         mock_state.mode = MagicMock()
         mock_state.mode.__str__ = MagicMock(return_value="roast_together")
-        mock_state.turn_count = 1
+        mock_state.turn_count = 2
         mock_state.started_at = 1700000000.0
         mock_state.extra = {"headline": "H", "source": "S"}
         mock_state.save = AsyncMock()
@@ -369,6 +400,7 @@ class TestRoastCompleteTool:
             mock_load.return_value = mock_state
             result = await tool.execute({"filler_text": "..."})
 
-        # interrupted = True because phase was ACTIVE (not CLOSING)
+        assert result["settled"] is True
+        assert result["end_reason"] == "completed"
         call_args = mock_conn.execute.call_args[0][1:]
-        assert call_args[8] is True  # interrupted column (param #9, 0-indexed=8)
+        assert call_args[8] is False  # interrupted=False (default completed)

@@ -199,25 +199,38 @@ class GameMode(ABC):
         state.turn_count += 1
 
         # ── Director (async, fire-and-forget style but awaited) ──────────
+        director_prompt: str | None = None
         try:
             director_result = await self._direct(state, records)
 
             if director_result.get("best_take"):
                 state.extra["best_take"] = director_result["best_take"]
 
+            # Inject: Director wants to give the Agent a hint (→ [Game Event] in
+            # next turn's messages, NOT persisted to agent_conversations).
             if director_result.get("action") == "inject" and director_result.get("prompt"):
-                prompt = director_result["prompt"]
-                await pending.write(state.roast_instance_id, prompt, redis)
+                director_prompt = director_result["prompt"]
 
-                if director_result.get("close"):
-                    state.phase = Phase.CLOSING
-                    logger.info(
-                        f"[{self.mode}] Director triggered CLOSING "
-                        f"roast={state.roast_instance_id} turn={state.turn_count}"
+            # Close: Director signals the game should end (→ phase=CLOSING
+            # persisted in RoastState, affects all future turns).
+            if director_result.get("close"):
+                state.phase = Phase.CLOSING
+                # Ensure a closing prompt is always injected so the Agent
+                # sees [Game Event] and knows to wrap up.
+                if not director_prompt:
+                    director_prompt = (
+                        "THE GAME IS OVER. Wrap up now with a closing thought. "
+                        "Stay in character. Call mark_roast_complete when done."
                     )
+                logger.info(
+                    f"[{self.mode}] Director triggered CLOSING "
+                    f"roast={state.roast_instance_id} turn={state.turn_count}"
+                )
 
+            if director_prompt:
+                await pending.write(state.roast_instance_id, director_prompt, redis)
                 await state.save(redis, pg_pool)
-                return prompt
+                return director_prompt
         except Exception as e:
             logger.error(f"[{self.mode}] Director error (degraded): {e}")
 
