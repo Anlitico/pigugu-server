@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import Callable, ClassVar, TYPE_CHECKING
@@ -147,6 +148,10 @@ class GameMode(ABC):
                 f"best_take={'yes' if result.get('best_take') else 'no'} "
                 f"close={result.get('close', False)}"
             )
+            # Fire-and-forget: persist Director decision for debugging/analysis
+            asyncio.ensure_future(_write_director_log(
+                state.roast_instance_id, state.turn_count, result,
+            ))
             return result
         except Exception as e:
             logger.error(f"[{self.mode}] Director failed: {e}")
@@ -194,25 +199,38 @@ class GameMode(ABC):
         state.turn_count += 1
 
         # ── Director (async, fire-and-forget style but awaited) ──────────
+        director_prompt: str | None = None
         try:
             director_result = await self._direct(state, records)
 
             if director_result.get("best_take"):
                 state.extra["best_take"] = director_result["best_take"]
 
+            # Inject: Director wants to give the Agent a hint (→ [Game Event] in
+            # next turn's messages, NOT persisted to agent_conversations).
             if director_result.get("action") == "inject" and director_result.get("prompt"):
-                prompt = director_result["prompt"]
-                await pending.write(state.roast_instance_id, prompt, redis)
+                director_prompt = director_result["prompt"]
 
-                if director_result.get("close"):
-                    state.phase = Phase.CLOSING
-                    logger.info(
-                        f"[{self.mode}] Director triggered CLOSING "
-                        f"roast={state.roast_instance_id} turn={state.turn_count}"
+            # Close: Director signals the game should end (→ phase=CLOSING
+            # persisted in RoastState, affects all future turns).
+            if director_result.get("close"):
+                state.phase = Phase.CLOSING
+                # Ensure a closing prompt is always injected so the Agent
+                # sees [Game Event] and knows to wrap up.
+                if not director_prompt:
+                    director_prompt = (
+                        "THE GAME IS OVER. Wrap up now with a closing thought. "
+                        "Stay in character. Call mark_roast_complete when done."
                     )
+                logger.info(
+                    f"[{self.mode}] Director triggered CLOSING "
+                    f"roast={state.roast_instance_id} turn={state.turn_count}"
+                )
 
+            if director_prompt:
+                await pending.write(state.roast_instance_id, director_prompt, redis)
                 await state.save(redis, pg_pool)
-                return prompt
+                return director_prompt
         except Exception as e:
             logger.error(f"[{self.mode}] Director error (degraded): {e}")
 
@@ -241,4 +259,27 @@ class GameMode(ABC):
             f"[{self.mode}] Triggered: {trigger.name} "
             f"roast={state.roast_instance_id} turn={state.turn_count}"
         )
+
+
+async def _write_director_log(
+    roast_instance_id: str, turn_number: int, result: dict,
+) -> None:
+    """Persist Director LLM decision to roast_director_logs for analysis."""
+    try:
+        from bootstrap.factory import get_pg_pool
+        pool = await get_pg_pool()
+        async with pool.acquire() as conn:
+            await conn.execute(
+                """INSERT INTO roast_director_logs
+                   (roast_instance_id, turn_number, action, best_take, prompt, close)
+                   VALUES ($1, $2, $3, $4, $5, $6)""",
+                roast_instance_id,
+                turn_number,
+                result.get("action"),
+                result.get("best_take"),
+                result.get("prompt"),
+                result.get("close", False),
+            )
+    except Exception as e:
+        logger.warning(f"[Director] Failed to write director log: {e}")
 

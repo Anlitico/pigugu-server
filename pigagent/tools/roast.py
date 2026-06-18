@@ -219,13 +219,18 @@ def create_roast_complete_tool(
 ) -> Tool:
     """Create a mark_roast_complete Tool to end the current roast game.
 
-    Called by the agent when: (1) the closing statement is complete, or
-    (2) the user wants to quit mid-game.
+    Called by the agent when: (1) the Director has signalled closing and
+    the closing statement is complete (end_reason="completed"), or
+    (2) the user wants to quit mid-game (end_reason="quit").
+
+    best_take is read from state.extra (set by Director during the roast) —
+    the agent does NOT pass it.
 
     Handler:
     1. Loads the active roast state from Redis.
     2. Transitions phase from ACTIVE/CLOSING to SETTLED.
     3. Publishes a roast_settled event for App consumption.
+    4. Writes roast_history to PG.
     """
 
     async def _handler(args: dict) -> dict[str, Any]:
@@ -243,22 +248,18 @@ def create_roast_complete_tool(
         if state.phase not in (Phase.ACTIVE, Phase.CLOSING):
             return {"settled": False, "reason": f"roast already settled or closed: {state.phase}"}
 
-        # User quit mid-roast (called from ACTIVE) vs natural ending (called from CLOSING)
-        interrupted = state.phase == Phase.ACTIVE
-
+        end_reason = args.get("end_reason", "completed")
         state.phase = Phase.SETTLED
         state.extra["settled"] = True
 
-        best_take = args.get("best_take", "")
-        # Normalise LLM outputs: treat empty string and literal "null" as None
-        if not best_take or best_take.strip().lower() == "null":
+        # best_take is set by Director during the roast — agent does not pass it
+        best_take = (state.extra.get("best_take") or "").strip()
+        if best_take.lower() == "null":
             best_take = ""
-        if best_take:
-            state.extra["best_take"] = best_take
 
         await state.save(redis, pg_pool)
 
-        # Build rich settlement event for the App
+        # Build settlement event for the App
         settlement_event = {
             "type": "roast_settled",
             "roast_instance_id": state.roast_instance_id,
@@ -268,7 +269,7 @@ def create_roast_complete_tool(
             "source": state.extra.get("source", ""),
             "turn_count": state.turn_count,
             "best_take": best_take or None,
-            "interrupted": interrupted,
+            "end_reason": end_reason,
             "started_at": state.started_at,
         }
         await event_bus.publish(user_id, settlement_event)
@@ -292,7 +293,7 @@ def create_roast_complete_tool(
                         state.roast_instance_id, user_id, state.roast_id,
                         str(state.mode), state.extra.get("headline", ""),
                         state.extra.get("source", ""), state.turn_count,
-                        settlement_event["best_take"], interrupted,
+                        settlement_event["best_take"], end_reason == "quit",
                         state.started_at,
                     )
         except Exception as e:
@@ -311,18 +312,19 @@ def create_roast_complete_tool(
 
         logger.info(
             f"[mark_roast_complete] Roast settled: {state.roast_instance_id} "
-            f"turns={state.turn_count} has_best_take={bool(best_take)} user={user_id}"
+            f"turns={state.turn_count} end_reason={end_reason} user={user_id}"
         )
 
-        return {"settled": True, "best_take": best_take or None}
+        return {"settled": True, "end_reason": end_reason}
 
     return Tool(
         name=TOOL_MARK_ROAST_COMPLETE,
         description=(
             "End the current roast game. Call this when: "
-            "(1) you have finished your closing statement, or "
-            "(2) the user wants to quit. "
-            "Marks the roast as settled and lets the user continue free chat."
+            "(1) the Director has signalled closing and you have finished your "
+            "closing statement — use end_reason='completed', or "
+            "(2) the user wants to quit mid-game — use end_reason='quit'. "
+            "Do NOT call this during normal conversation when no roast is active."
         ),
         parameters={
             "type": "object",
@@ -331,12 +333,13 @@ def create_roast_complete_tool(
                     "type": "string",
                     "description": "A brief spoken sentence to fill silence while the tool runs. Already spoken — do NOT repeat in your response.",
                 },
-                "best_take": {
+                "end_reason": {
                     "type": "string",
-                    "description": "The user's best roast line from this session. Omit if no standout line emerged.",
+                    "enum": ["completed", "quit"],
+                    "description": "Why the roast is ending. 'completed' = natural close after Director signal + closing statement. 'quit' = user requested to stop early.",
                 },
             },
-            "required": ["filler_text"],
+            "required": ["filler_text", "end_reason"],
         },
         execute=_handler,
     )
