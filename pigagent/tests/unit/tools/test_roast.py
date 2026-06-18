@@ -226,3 +226,149 @@ class TestRoastToolRegistration:
         registry.register(list_tool)
         registry.register(start_tool)
         assert len(registry) == 2
+
+
+# ── create_roast_complete_tool helpers ───────────────────────────────────────
+
+def _make_complete_tool(*, redis=None, pg_pool=None):
+    from tools.roast import create_roast_complete_tool, _current_user_id
+    _current_user_id.set("test-user")
+    mock_pool = MagicMock()
+    mock_conn = AsyncMock()
+    mock_pool.acquire = MagicMock()
+    mock_pool.acquire.return_value.__aenter__ = AsyncMock(return_value=mock_conn)
+    mock_pool.acquire.return_value.__aexit__ = AsyncMock(return_value=None)
+    tool = create_roast_complete_tool(redis=redis or MagicMock(), pg_pool=pg_pool or mock_pool)
+    return tool, mock_pool, mock_conn
+
+
+class TestRoastCompleteTool:
+    @pytest.mark.asyncio
+    async def test_settles_active_roast(self):
+        tool, mock_pool, mock_conn = _make_complete_tool()
+        from roast.types import Phase
+
+        mock_state = MagicMock()
+        mock_state.phase = Phase.ACTIVE
+        mock_state.roast_instance_id = "rid-123"
+        mock_state.user_id = "test-user"
+        mock_state.roast_id = "roast-1"
+        mock_state.mode = MagicMock()
+        mock_state.mode.__str__ = MagicMock(return_value="roast_together")
+        mock_state.turn_count = 5
+        mock_state.started_at = 1700000000.0
+        mock_state.extra = {"headline": "Test", "source": "test"}
+        mock_state.save = AsyncMock()
+
+        with patch("roast.state.RoastState._load_active", new_callable=AsyncMock) as mock_load:
+            mock_load.return_value = mock_state
+            result = await tool.execute({"best_take": "That was killer!", "filler_text": "..."})
+
+        assert result["settled"] is True
+        assert result["best_take"] == "That was killer!"
+        assert mock_state.phase == Phase.SETTLED
+        mock_state.save.assert_called_once()
+        # Verify PG write
+        mock_conn.execute.assert_called_once()
+        sql = mock_conn.execute.call_args[0][0]
+        assert "INSERT INTO roast_history" in sql
+        assert "ON CONFLICT" in sql
+
+    @pytest.mark.asyncio
+    async def test_normalises_null_string_best_take(self):
+        tool, mock_pool, mock_conn = _make_complete_tool()
+        from roast.types import Phase
+
+        mock_state = MagicMock()
+        mock_state.phase = Phase.CLOSING
+        mock_state.roast_instance_id = "rid-456"
+        mock_state.roast_id = "roast-2"
+        mock_state.mode = MagicMock()
+        mock_state.mode.__str__ = MagicMock(return_value="roast_together")
+        mock_state.turn_count = 3
+        mock_state.started_at = 1700000000.0
+        mock_state.extra = {"headline": "H", "source": "S"}
+        mock_state.save = AsyncMock()
+
+        with patch("roast.state.RoastState._load_active", new_callable=AsyncMock) as mock_load:
+            mock_load.return_value = mock_state
+            result = await tool.execute({"best_take": "null", "filler_text": "..."})
+
+        assert result["settled"] is True
+        assert result["best_take"] is None  # "null" string → None
+        call_args = mock_conn.execute.call_args[0][1:]
+        assert call_args[7] is None  # best_take column (param #8, 0-indexed=7)
+
+    @pytest.mark.asyncio
+    async def test_returns_error_when_no_active_roast(self):
+        tool, mock_pool, mock_conn = _make_complete_tool()
+
+        with patch("roast.state.RoastState._load_active", new_callable=AsyncMock) as mock_load:
+            mock_load.return_value = None
+            result = await tool.execute({"filler_text": "..."})
+
+        assert result["settled"] is False
+        assert "no active roast" in result["reason"]
+
+    @pytest.mark.asyncio
+    async def test_returns_error_when_already_settled(self):
+        tool, mock_pool, mock_conn = _make_complete_tool()
+        from roast.types import Phase
+
+        mock_state = MagicMock()
+        mock_state.phase = Phase.SETTLED
+
+        with patch("roast.state.RoastState._load_active", new_callable=AsyncMock) as mock_load:
+            mock_load.return_value = mock_state
+            result = await tool.execute({"filler_text": "..."})
+
+        assert result["settled"] is False
+        assert "already settled" in result["reason"]
+
+    @pytest.mark.asyncio
+    async def test_handles_pg_write_failure_gracefully(self):
+        tool, mock_pool, mock_conn = _make_complete_tool()
+        from roast.types import Phase
+
+        mock_conn.execute = AsyncMock(side_effect=Exception("PG down"))
+        mock_state = MagicMock()
+        mock_state.phase = Phase.CLOSING
+        mock_state.roast_instance_id = "rid-789"
+        mock_state.roast_id = "roast-3"
+        mock_state.mode = MagicMock()
+        mock_state.mode.__str__ = MagicMock(return_value="roast_together")
+        mock_state.turn_count = 2
+        mock_state.started_at = 1700000000.0
+        mock_state.extra = {"headline": "H", "source": "S"}
+        mock_state.save = AsyncMock()
+
+        with patch("roast.state.RoastState._load_active", new_callable=AsyncMock) as mock_load:
+            mock_load.return_value = mock_state
+            result = await tool.execute({"filler_text": "..."})
+
+        # Should still succeed — PG write failure is non-fatal
+        assert result["settled"] is True
+
+    @pytest.mark.asyncio
+    async def test_interrupted_flag_when_called_from_active(self):
+        tool, mock_pool, mock_conn = _make_complete_tool()
+        from roast.types import Phase
+
+        mock_state = MagicMock()
+        mock_state.phase = Phase.ACTIVE  # interrupted mid-roast
+        mock_state.roast_instance_id = "rid-999"
+        mock_state.roast_id = "roast-4"
+        mock_state.mode = MagicMock()
+        mock_state.mode.__str__ = MagicMock(return_value="roast_together")
+        mock_state.turn_count = 1
+        mock_state.started_at = 1700000000.0
+        mock_state.extra = {"headline": "H", "source": "S"}
+        mock_state.save = AsyncMock()
+
+        with patch("roast.state.RoastState._load_active", new_callable=AsyncMock) as mock_load:
+            mock_load.return_value = mock_state
+            result = await tool.execute({"filler_text": "..."})
+
+        # interrupted = True because phase was ACTIVE (not CLOSING)
+        call_args = mock_conn.execute.call_args[0][1:]
+        assert call_args[8] is True  # interrupted column (param #9, 0-indexed=8)

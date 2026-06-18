@@ -273,7 +273,32 @@ def create_roast_complete_tool(
         }
         await event_bus.publish(user_id, settlement_event)
 
-        # Notify API server — cross-process Redis pub/sub (FCM push + DB write)
+        # Write roast_history directly (PG, no Redis round-trip)
+        try:
+            if pg_pool is not None:
+                from bootstrap.factory import get_pg_pool as _get_pool
+                pool = pg_pool if hasattr(pg_pool, 'acquire') else await _get_pool()
+                async with pool.acquire() as conn:
+                    await conn.execute(
+                        """INSERT INTO roast_history
+                           (roast_instance_id, user_id, roast_id, mode, headline, source,
+                            turn_count, best_take, interrupted, started_at, settled_at)
+                           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, to_timestamp($10), NOW())
+                           ON CONFLICT (roast_instance_id) DO UPDATE SET
+                            turn_count = EXCLUDED.turn_count,
+                            best_take = EXCLUDED.best_take,
+                            interrupted = EXCLUDED.interrupted,
+                            settled_at = NOW()""",
+                        state.roast_instance_id, user_id, state.roast_id,
+                        str(state.mode), state.extra.get("headline", ""),
+                        state.extra.get("source", ""), state.turn_count,
+                        settlement_event["best_take"], interrupted,
+                        state.started_at,
+                    )
+        except Exception as e:
+            logger.warning(f"[mark_roast_complete] roast_history write failed: {e}")
+
+        # Redis pub/sub for FCM push (cross-process)
         import json as _json
         try:
             if redis is not None:
