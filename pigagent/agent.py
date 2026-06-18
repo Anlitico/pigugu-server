@@ -313,6 +313,7 @@ class PigAgent:
                     user_id=user_id,
                     role="system",
                     content=body,
+                    roast_instance_id=instance_id,
                 )
             except Exception as e:
                 logger.error(f"[PigAgent] Failed to persist roast body: {e}")
