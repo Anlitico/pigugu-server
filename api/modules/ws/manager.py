@@ -53,7 +53,7 @@ class WebSocketManager:
         """Connect to Redis, subscribe, then run the listen loop."""
         while True:
             try:
-                self._pubsub_redis = from_url(settings.redis_url, decode_responses=True)
+                self._pubsub_redis = from_url(settings.redis_url, decode_responses=True, socket_keepalive=True, socket_timeout=None)
                 self._pubsub = self._pubsub_redis.pubsub()
                 if self._pubsub is None:
                     logger.error("Redis pubsub() returned None — cannot start listener")
