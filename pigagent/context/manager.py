@@ -87,6 +87,7 @@ class ContextManager:
         tool_call_id: str | None = None,
         name: str | None = None,
         partial: bool = False,
+        roast_instance_id: str | None = None,
     ) -> int:
         mem = self._mem(user_id)
         store = self._store(user_id)
@@ -106,6 +107,7 @@ class ContextManager:
             record = ConversationRecord(
                 turn_number=turn_count, role=role, content=content,
                 created_at=time.time(),
+                roast_instance_id=roast_instance_id,
                 tool_calls=tool_calls, tool_call_id=tool_call_id,
                 name=name, partial=partial,
             )
