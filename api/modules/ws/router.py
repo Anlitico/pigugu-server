@@ -37,9 +37,7 @@ async def websocket_app(
         await websocket.close(code=4001)
         return
 
-    # Use email as WS key so pigagent's Redis pubsub channel matches
-    # (pigagent publishes to ws:user:{email} from session participant identity).
-    user_id = user.email
+    user_id = str(user.id)
     await ws_manager.connect(user_id, app_device_id, websocket)
     # NOTE: ws_manager.connect() accepts the WS internally
     import logging
@@ -97,8 +95,8 @@ async def _handle_start_roast(
 ) -> None:
     """Handle start_roast: forward to pigagent, then relay result to App.
 
-    Uses user.email as the room identifier so it matches what the user
-    enters in the LiveKit web client for testing.
+    Uses UUID as the room identifier — canonical user_id across all
+    three ends (app, server, firmware).
     """
     roast_id = msg.get("roast_id", "")
     mode_id = msg.get("mode_id", "")
@@ -117,7 +115,7 @@ async def _handle_start_roast(
                 f"{AGENT_BASE}/roast/start-sync",
                 json={
                     # Use email as user_id → room_name = email in LiveKit
-                    "user_id": user.email,
+                    "user_id": str(user.id),
                     "persona_id": msg.get("persona_id", 1),
                     "roast_id": roast_id,
                     "mode_id": mode_id,
