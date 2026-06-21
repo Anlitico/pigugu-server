@@ -29,7 +29,7 @@ from core.agent.runner import AgentRunner, RunnerConfig
 from core.agent.stop import no_tool_calls
 from context.manager import ContextManager
 from roast.pending import consume
-from roast.constants import GAME_EVENT_PREFIX
+from roast.constants import GAME_EVENT_PREFIX, FREE_CHAT_MODE_PREFIX
 from roast.types import Phase
 from roast.state import RoastState
 from tools.roast import _current_user_id, _current_persona_id
@@ -167,6 +167,17 @@ class PigAgent:
                 # Roast is over — close and enter Free Chat
                 await self.close_roast(user_id)
                 roast_state = None
+                # Inject free chat mode marker
+                free_chat_marker = self._build_free_chat_marker()
+                messages.append(Message.system(free_chat_marker))
+                if self.ctx:
+                    asyncio.create_task(
+                        self.ctx.add_turn(
+                            user_id=user_id,
+                            role="system",
+                            content=free_chat_marker,
+                        )
+                    )
             else:
                 # ACTIVE or CLOSING — load game mode
                 mode_id = str(roast_state.mode) if hasattr(roast_state, "mode") else ""
@@ -237,7 +248,13 @@ class PigAgent:
     def build_session_info(self) -> str:
         """Build a one-time system message injected at conversation start."""
         now = datetime.now(ZoneInfo("America/Los_Angeles")).strftime("%Y-%m-%d %H:%M:%S %Z")
-        return f"[Session Start]\nCurrent time: {now}"
+        marker = self._build_free_chat_marker()
+        return f"[Session Start]\nCurrent time: {now}\n\n{marker}"
+
+    @staticmethod
+    def _build_free_chat_marker() -> str:
+        from system_prompts.loader import render
+        return f"{FREE_CHAT_MODE_PREFIX}\n{render('free_chat_marker.j2')}"
 
     async def seed_session_info(self, user_id: str) -> None:
         """Persist session-info system message at the start of a new conversation."""
