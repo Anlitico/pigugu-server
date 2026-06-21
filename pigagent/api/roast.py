@@ -8,7 +8,7 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from loguru import logger
 
-from bootstrap.factory import get_pig_agent
+from bootstrap.factory import create_pig_agent, get_game_modes
 
 router = APIRouter(prefix="/roast", tags=["roast"])
 
@@ -23,14 +23,12 @@ class RoastStartRequest(BaseModel):
     source: str = ""
 
 
-async def _event_stream(user_id: str, persona_id: int, roast_id: str,
+async def _event_stream(pig_agent, persona_id: int, roast_id: str,
                          mode_id: str, prompt: str,
                          headline: str = "", source: str = ""):
     """SSE generator: yields text chunks from start_roast()."""
-    pig_agent = await get_pig_agent()
     try:
         async for text in pig_agent.start_roast(
-            user_id=user_id,
             persona_id=persona_id,
             roast_id=roast_id,
             mode_id=mode_id,
@@ -47,16 +45,49 @@ async def _event_stream(user_id: str, persona_id: int, roast_id: str,
 
 @router.post("/start")
 async def start_roast(req: RoastStartRequest):
-    """Start a roast game and stream the opening reply as SSE."""
-    pig_agent = await get_pig_agent()
+    """Start a roast game and stream the opening reply as SSE.
+
+    Two paths:
+    - Agent in room → inject via LiveKit data channel → return settled_in_room
+    - No agent → create temporary PigAgent → stream text via SSE
+    """
+    from roast.session_registry import registry
+
+    game_modes = get_game_modes()
 
     # Validate game mode exists
-    if req.mode_id not in pig_agent._game_modes:
+    if req.mode_id not in game_modes:
         raise HTTPException(status_code=400, detail=f"Unknown game mode: {req.mode_id}")
+
+    # Check if agent is already in the user's LiveKit room
+    agent_active = await registry.has_active_agent(req.user_id)
+
+    if agent_active:
+        # Route through LiveKit room data channel — session's PigAgent handles it
+        await registry.send_inject(req.user_id, {
+            "type": "start_roast",
+            "persona_id": req.persona_id,
+            "roast_id": req.roast_id,
+            "mode_id": req.mode_id,
+            "prompt": req.prompt,
+            "headline": req.headline,
+            "source": req.source,
+        })
+        # Return SSE with settled_in_room marker so the client knows
+        async def _settled():
+            yield 'data: {"settled_in_room": true, "done": true}\n\n'
+        return StreamingResponse(
+            _settled(),
+            media_type="text/event-stream",
+            headers={"Cache-Control": "no-cache"},
+        )
+
+    # No agent — create temporary PigAgent and stream via SSE
+    pig_agent = await create_pig_agent(req.user_id)
 
     return StreamingResponse(
         _event_stream(
-            user_id=req.user_id,
+            pig_agent,
             persona_id=req.persona_id,
             roast_id=req.roast_id,
             mode_id=req.mode_id,
@@ -79,9 +110,9 @@ async def start_roast_sync(req: RoastStartRequest):
     """
     from roast.session_registry import registry
 
-    pig_agent = await get_pig_agent()
+    game_modes = get_game_modes()
 
-    if req.mode_id not in pig_agent._game_modes:
+    if req.mode_id not in game_modes:
         raise HTTPException(status_code=400, detail=f"Unknown game mode: {req.mode_id}")
 
     # Check if agent is already in the user's LiveKit room
@@ -104,10 +135,10 @@ async def start_roast_sync(req: RoastStartRequest):
         }
 
     # No agent — generate opening text for WS streaming
+    pig_agent = await create_pig_agent(req.user_id)
     try:
         full_text = ""
         async for text in pig_agent.start_roast(
-            user_id=req.user_id,
             persona_id=req.persona_id,
             roast_id=req.roast_id,
             mode_id=req.mode_id,

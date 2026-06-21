@@ -1,9 +1,14 @@
 # pigagent/bootstrap/factory.py
 """
-Component factory: STT/TTS per session, PigAgent + storage as global singletons.
+Component factory: STT/TTS per session, PigAgent + ContextManager per user.
 
-Storage (Redis + PG pool) is initialized at module load time. If either fails,
-the process exits  -  there is no fallback.
+Storage (Redis + PG pool) and caches (prompts, game modes) are initialized
+at module load time. If Redis or PG fails, the process exits — there is no
+fallback.
+
+PigAgent and ContextManager are created per session/user, not as global
+singletons. Shared resources (Redis, PG pool, LLM provider, STT, VAD,
+prompt cache, game mode cache) remain singletons.
 """
 
 import os
@@ -16,9 +21,36 @@ from core.audio.tts import create_tts
 from agent import PigAgent
 
 
+# ── Shared caches (built once) ────────────────────────────────────────────
+
+_prompts_cache: dict[int, str] | None = None
+_game_modes_cache: dict | None = None
+
+
+def _ensure_caches():
+    """Build prompt and game mode caches once. Idempotent."""
+    global _prompts_cache, _game_modes_cache
+    if _prompts_cache is None:
+        from system_prompts import PersonaRegistry
+        PersonaRegistry.register_defaults()
+        _prompts_cache = PersonaRegistry.build_prompt_cache()
+        logger.info(f"[Factory] Prompt cache built: {list(_prompts_cache.keys())}")
+    if _game_modes_cache is None:
+        from roast import GameModeRegistry
+        GameModeRegistry.register_defaults()
+        _game_modes_cache = GameModeRegistry.build_cache()
+        logger.info(f"[Factory] Game mode cache built: {list(_game_modes_cache.keys())}")
+    return _prompts_cache, _game_modes_cache
+
+
+def get_game_modes() -> dict:
+    """Return the shared game modes cache (built once)."""
+    _, game_modes = _ensure_caches()
+    return game_modes
+
+
 # ── Global singletons ──────────────────────────────────────────────────────
 
-_pig_agent: PigAgent | None = None
 _redis = None
 _vad = None
 _stt = None
@@ -101,39 +133,28 @@ async def get_pg_pool():
     return await _ensure_pg_pool()
 
 
-async def get_pig_agent() -> PigAgent:
-    """Return the global PigAgent singleton."""
-    global _pig_agent
-    if _pig_agent is None:
-        _pig_agent = await _build_pig_agent()
-    return _pig_agent
+async def create_pig_agent(user_id: str, config=None) -> PigAgent:
+    """Create a new PigAgent instance for a specific user/session.
 
-
-async def _build_pig_agent(config=None) -> PigAgent:
-    """Build the PigAgent singleton (called once at first use)."""
+    Each call creates a fresh PigAgent + ContextManager. Shared resources
+    (Redis, PG pool, prompts, game modes, model config) are reused.
+    """
     if config is None:
         config = get_config()
 
     model = config.resolve_model()
 
-    from system_prompts import PersonaRegistry
-    PersonaRegistry.register_defaults()
-    prompts = PersonaRegistry.build_prompt_cache()
-    logger.info(f"[Factory] Prompt cache built: {list(prompts.keys())}")
-
-    from roast import GameModeRegistry
-    GameModeRegistry.register_defaults()
-    game_modes = GameModeRegistry.build_cache()
-    logger.info(f"[Factory] Game mode cache built: {list(game_modes.keys())}")
+    prompts, game_modes = _ensure_caches()
 
     redis = get_redis()
     pg_pool = await get_pg_pool()
 
     from context.manager import ContextManager
-    ctx = ContextManager(redis_client=redis, pg_pool=pg_pool)
-    logger.info("[Factory] ContextManager created")
+    ctx = ContextManager(user_id, redis_client=redis, pg_pool=pg_pool)
+    logger.info(f"[Factory] ContextManager created for user={user_id}")
 
     pig_agent = PigAgent(
+        user_id,
         ctx,
         redis=redis,
         pg_pool=pg_pool,
@@ -144,7 +165,7 @@ async def _build_pig_agent(config=None) -> PigAgent:
         max_tokens=config.LLM_MAX_TOKENS,
         max_iterations=config.AGENT_MAX_STEPS,
     )
-    logger.info(f"[Factory] PigAgent singleton created with model={model}")
+    logger.info(f"[Factory] PigAgent created for user={user_id} model={model}")
     return pig_agent
 
 
@@ -213,14 +234,18 @@ def validate_configuration(config=None):
 
 
 async def create_agent_components(config=None, persona=None):
-    """Create TTS per session. STT, PigAgent, VAD are global singletons.
+    """Create TTS per session. STT and VAD are global singletons.
+
+    PigAgent is NOT created here — it's per-session and requires user_id,
+    which is resolved after the LiveKit session starts. Callers should
+    use create_pig_agent(user_id) separately once user_id is known.
 
     Args:
         config: AgentConfig instance. If None, loads from get_config().
         persona: Persona instance for TTS voice override.
 
     Returns:
-        Tuple of (stt, pig_agent, tts) instances.
+        Tuple of (stt, tts) instances.
     """
     if config is None:
         config = get_config()
@@ -228,10 +253,6 @@ async def create_agent_components(config=None, persona=None):
     # ── STT (global singleton) ─────────────────────────────────────────
 
     stt = get_stt()
-
-    # ── PigAgent (global singleton) ─────────────────────────────────────
-
-    pig_agent = await get_pig_agent()
 
     # ── TTS (per session  -  persona voice/speed/emotion) ────────────────
 
@@ -265,4 +286,4 @@ async def create_agent_components(config=None, persona=None):
         base_url=config.CARTESIA_TTS_BASE_URL,
     )
 
-    return stt, pig_agent, tts
+    return stt, tts

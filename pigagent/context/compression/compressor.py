@@ -1,4 +1,4 @@
-﻿# pigagent/context/compression/compressor.py
+# pigagent/context/compression/compressor.py
 """ContextCompressor  -  unified compression pipeline.
 
 Receives a standardized list of ConversationRecord from
@@ -36,15 +36,23 @@ def _strip_label(content: str) -> str:
 class ContextCompressor:
     """Unified compression pipeline. One entry point: run()."""
 
-    def __init__(self, *, redis_client=None, pg_pool=None):
+    def __init__(self, user_id: str, *, redis_client=None, pg_pool=None):
+        self._user_id = user_id
         self._store_client = redis_client
         self._pg_pool = pg_pool
+
+        from context.storage.redis import RedisStorage
+        from context.storage.pg import PgStorage
+        from context.storage.memory import MemoryStore
+
+        self._store = RedisStorage(user_id, self._store_client)
+        self._pg_store = PgStorage(user_id, self._pg_pool)
+        self._mem = MemoryStore()
 
     # ── Entry ─────────────────────────────────────────────────────────
 
     async def run(
         self, *,
-        user_id: str,
         records: list,
         existing_summary: str = "",
         model: str = "qwen-plus-us",
@@ -60,32 +68,24 @@ class ContextCompressor:
         if not await snap.should_compress(existing_summary=existing_summary, model=model):
             return
 
-        metrics = CompressionMetrics(user_id, scenario=snap.scenario)
+        metrics = CompressionMetrics(self._user_id, scenario=snap.scenario)
         metrics.set_meta("turns_in", len(real_turns))
         metrics.set_meta("model", model)
         metrics.mark("check_done")
-
-        from context.storage.redis import RedisStorage
-        from context.storage.pg import PgStorage
-        from context.storage.memory import MemoryStore
-
-        self._store = RedisStorage(user_id, self._store_client)
-        self._pg_store = PgStorage(user_id, self._pg_pool)
-        self._mem = MemoryStore(user_id)
 
         # Pass unified list inside snap for splitting
         snap.records = records  # temporarily override for splitting
 
         if snap.scenario == "roast":
-            await self._run_roast(user_id, snap, existing_summary, model, metrics)
+            await self._run_roast(snap, existing_summary, model, metrics)
         else:
-            await self._run_free_chat(user_id, snap, existing_summary, model, metrics)
+            await self._run_free_chat(snap, existing_summary, model, metrics)
 
         metrics.finish()
 
     # ── Scenario: free_chat (L2 + L3) ──────────────────────────────
 
-    async def _run_free_chat(self, user_id: str, snap: ContextSnapshot,
+    async def _run_free_chat(self, snap: ContextSnapshot,
                               existing_summary: str, model: str,
                               metrics: CompressionMetrics) -> None:
         """L2 + L3. All real turns go to L3, L2 from full context minus L2 itself."""
@@ -129,10 +129,10 @@ class ContextCompressor:
             metrics.set_meta("facts", len(l2_facts))
 
             await self._persist_summaries(end_turn, l2_profile=l2_profile, l3_session=l3_text, model=model)
-            turns_out = self._rebuild_memory(user_id, end_turn, l2_profile=l2_profile, l3_session=l3_text)
+            turns_out = self._rebuild_memory(end_turn, l2_profile=l2_profile, l3_session=l3_text)
             metrics.set_meta("turns_out", turns_out)
             await self._store.set_compressing(False); self._mem.set_compressing(False)
-            logger.info(f"[Compress] free_chat u={user_id}: L2={len(l2_facts)}f L3={len(l3_text)}c")
+            logger.info(f"[Compress] free_chat u={self._user_id}: L2={len(l2_facts)}f L3={len(l3_text)}c")
 
         except Exception as e:
             logger.error(f"[Compress] free_chat failed: {e}")
@@ -143,7 +143,7 @@ class ContextCompressor:
 
     # ── Scenario: roast (L2 + L3 + L4) ──────────────────────────────
 
-    async def _run_roast(self, user_id: str, snap: ContextSnapshot,
+    async def _run_roast(self, snap: ContextSnapshot,
                           existing_summary: str, model: str,
                           metrics: CompressionMetrics) -> None:
         """L2 + L3 + L4. Split unified list by roast_prompt_turn anchor."""
@@ -233,14 +233,14 @@ class ContextCompressor:
                 roast_prompt=prompt_text, roast_prompt_turn=prompt_turn,
                 model=model,
             )
-            turns_out = self._rebuild_memory(user_id, end_turn,
+            turns_out = self._rebuild_memory(end_turn,
                                              l2_profile=l2_profile, l3_session=l3_text,
                                              l4_roast=l4_text, roast_id=prompt_rid,
                                              roast_prompt=prompt_text, roast_prompt_turn=prompt_turn)
             metrics.set_meta("turns_out", turns_out)
 
             await self._store.set_compressing(False); self._mem.set_compressing(False)
-            logger.info(f"[Compress] roast u={user_id}: L2={len(l2_facts)}f L3={len(l3_text)}c L4={'Y' if l4_text else 'N'}")
+            logger.info(f"[Compress] roast u={self._user_id}: L2={len(l2_facts)}f L3={len(l3_text)}c L4={'Y' if l4_text else 'N'}")
 
         except Exception as e:
             logger.error(f"[Compress] roast failed: {e}")
@@ -285,7 +285,7 @@ class ContextCompressor:
     # ── Memory Rebuild ──────────────────────────────────────────────
 
     def _rebuild_memory(
-        self, user_id: str, end_turn: int, *,
+        self, end_turn: int, *,
         l2_profile: str = "", l3_session: str = "", l4_roast: str = "",
         roast_id: str = "", roast_prompt: str = "", roast_prompt_turn: int = 0,
     ) -> int:
@@ -304,7 +304,7 @@ class ContextCompressor:
             "roast_id": roast_id, "roast_prompt": roast_prompt,
             "roast_prompt_turn": roast_prompt_turn,
         })
-        logger.info(f"[Compress] Memory rebuilt u={user_id}: "
+        logger.info(f"[Compress] Memory rebuilt u={self._user_id}: "
                     f"post_anchor={len(post_anchor)}")
         return len(post_anchor)
 

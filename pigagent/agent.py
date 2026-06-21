@@ -5,9 +5,9 @@ game mode triggers). The voice bridge (lk.bridge) handles the LiveKit
 pipeline adaptation  -  PigAgent itself has zero LiveKit dependency.
 
 Public API:
-    agent.generate_reply(user_id, user_text, persona_id)   -  high-level entry
-    agent.stream(messages, persona_id)                     -  low-level ReAct loop
-    agent.start_roast(user_id, persona_id, roast_id, mode_id)  -  begin roast game
+    agent.generate_reply(user_text, persona_id)   -  high-level entry
+    agent.stream(messages, persona_id)            -  low-level ReAct loop
+    agent.start_roast(persona_id, roast_id, mode_id)  -  begin roast game
 """
 
 from __future__ import annotations
@@ -40,6 +40,7 @@ class PigAgent:
 
     def __init__(
         self,
+        user_id: str,
         ctx: ContextManager | None = None,
         *,
         redis,
@@ -54,6 +55,7 @@ class PigAgent:
         max_iterations: int = 5,
         tool_timeout: float = 60.0,
     ):
+        self.user_id = user_id
         self.ctx = ctx
         self._redis = redis
         self._pg_pool = pg_pool
@@ -112,7 +114,6 @@ class PigAgent:
 
     async def generate_reply(
         self,
-        user_id: str,
         user_text: str,
         *,
         persona_id: int = 1,
@@ -140,9 +141,9 @@ class PigAgent:
 
         # 2. Load context from Redis/PG
         messages: list[Message] = []
-        if self.ctx and user_id:
+        if self.ctx:
             try:
-                messages = await self.ctx.load(user_id=user_id)
+                messages = await self.ctx.load()
             except Exception as e:
                 logger.warning(f"[PigAgent] load context failed: {e}")
 
@@ -157,16 +158,17 @@ class PigAgent:
         if not self._session_seeded:
             session_msg = Message.system(self.build_session_info())
             messages.insert(-1, session_msg)  # before user message, after history
-            asyncio.create_task(self._persist_turns(user_id, [session_msg]))
+            if self.ctx:
+                asyncio.create_task(self._persist_turns([session_msg]))
             self._session_seeded = True
 
         # 5. Check roast routing
-        roast_state = await self.get_active_roast(user_id)
+        roast_state = await self.get_active_roast()
         game_mode = None
         if roast_state:
             if roast_state.phase == Phase.SETTLED or roast_state.phase == Phase.CLOSED:
                 # Roast is over — close and enter Free Chat
-                await self.close_roast(user_id)
+                await self.close_roast()
                 roast_state = None
                 # Inject free chat mode marker
                 free_chat_marker = self._build_free_chat_marker()
@@ -174,7 +176,6 @@ class PigAgent:
                 if self.ctx:
                     asyncio.create_task(
                         self.ctx.add_turn(
-                            user_id=user_id,
                             role="system",
                             content=free_chat_marker,
                         )
@@ -191,7 +192,7 @@ class PigAgent:
         # 6. Stream and collect response
         response_chunks: list[str] = []
         logger.info(
-            f"[PigAgent] generate_reply user={user_id} persona={persona_id} "
+            f"[PigAgent] generate_reply user={self.user_id} persona={persona_id} "
             f"roast={roast_state is not None} msgs={len(messages)}"
         )
 
@@ -201,7 +202,7 @@ class PigAgent:
         TelemetryCollector.mark("llm_req")
 
         # Make user context available to tool handlers via contextvars
-        token_user = _current_user_id.set(user_id)
+        token_user = _current_user_id.set(self.user_id)
         token_persona = _current_persona_id.set(persona_id)
         try:
             if roast_state and game_mode:
@@ -209,7 +210,7 @@ class PigAgent:
                     messages, roast_state, game_mode,
                     interrupt_event=interrupt_event,
                     session_id=session_id,
-                    wc=self.ctx._last_wc.get(user_id) if self.ctx else None,
+                    wc=self.ctx._last_wc if self.ctx else None,
                     current_msg=new_msg,
                 ):
                     if first_yield:
@@ -238,11 +239,11 @@ class PigAgent:
 
         # 7. Persist tool messages (assistant is handled by session.py's
         # conversation_item_added event).
-        if self.ctx and user_id:
+        if self.ctx:
             runner_msgs = self.runner.last_messages[pre_stream_count:] if self.runner.last_messages else []
             tool_msgs = [m for m in runner_msgs if m.role == "tool"]
             if tool_msgs:
-                turn_no = await self._persist_turns(user_id, tool_msgs)
+                turn_no = await self._persist_turns(tool_msgs)
                 if turn_no:
                     TelemetryCollector.set_meta("turn_number", turn_no)
 
@@ -259,13 +260,13 @@ class PigAgent:
         from system_prompts.loader import render
         return f"{FREE_CHAT_MODE_PREFIX}\n{render('free_chat_marker.j2')}"
 
-    async def seed_session_info(self, user_id: str) -> None:
+    async def seed_session_info(self) -> None:
         """Persist session-info system message at the start of a new conversation."""
-        if not self.ctx or not user_id:
+        if not self.ctx:
             return
         msg = self.build_session_info()
         try:
-            await self.ctx.add_turn(user_id=user_id, role="system", content=msg)
+            await self.ctx.add_turn(role="system", content=msg)
         except Exception as e:
             logger.warning(f"[PigAgent] Failed to seed session info: {e}")
 
@@ -293,7 +294,6 @@ class PigAgent:
 
     async def start_roast(
         self,
-        user_id: str,
         persona_id: int,
         roast_id: str,
         mode_id: str,
@@ -312,7 +312,7 @@ class PigAgent:
 
         try:
             instance_id, body = await activate_roast(
-                user_id=user_id,
+                user_id=self.user_id,
                 persona_id=persona_id,
                 roast_id=roast_id,
                 game_mode=mode_id,
@@ -330,7 +330,6 @@ class PigAgent:
         if body and self.ctx:
             try:
                 await self.ctx.add_turn(
-                    user_id=user_id,
                     role="system",
                     content=body,
                     roast_instance_id=instance_id,
@@ -340,26 +339,26 @@ class PigAgent:
 
         logger.info(
             f"[PigAgent] Roast started: {instance_id} "
-            f"roast_id={roast_id} mode={mode_id} user={user_id}"
+            f"roast_id={roast_id} mode={mode_id} user={self.user_id}"
         )
 
         # Trigger opening reply  -  roast body is already in context
         async for text in self.generate_reply(
-            user_id, "Game start",
+            "Game start",
             persona_id=persona_id,
         ):
             yield text
 
-    async def get_active_roast(self, user_id: str):
+    async def get_active_roast(self):
         try:
-            return await RoastState._load_active(user_id, self._redis)
+            return await RoastState._load_active(self.user_id, self._redis)
         except Exception as e:
             logger.warning(f"[PigAgent] get_active_roast failed: {e}")
             return None
 
-    async def close_roast(self, user_id: str) -> None:
+    async def close_roast(self) -> None:
         try:
-            state = await RoastState._load_active(user_id, self._redis)
+            state = await RoastState._load_active(self.user_id, self._redis)
             if state:
                 await state.close(self._redis, self._pg_pool)
                 logger.info(f"[PigAgent] Roast closed: {state.roast_instance_id}")
@@ -425,13 +424,13 @@ class PigAgent:
             logger.error(f"[PigAgent] tick failed: {e}")
 
     async def _persist_turns(
-        self, user_id: str, messages: list[Message],
+        self, messages: list[Message],
     ) -> int:
         """Persist all new messages to Redis/PG.
 
         Returns the first turn number, or 0 if nothing was persisted.
         """
-        if not messages:
+        if not messages or not self.ctx:
             return 0
         ctx = self._require_ctx()
         first_turn = 0
@@ -444,7 +443,6 @@ class PigAgent:
                         for tc in msg.tool_calls
                     ]
                 turn_no = await ctx.add_turn(
-                    user_id=user_id,
                     role=msg.role,
                     content=msg.content or "",
                     tool_calls=tool_calls_raw,

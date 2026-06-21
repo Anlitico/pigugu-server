@@ -81,7 +81,7 @@ class TestDirectorIntegration:
         state = _make_state(turn_count=2)
         records = _mid_game_records()
 
-        result = await mode._direct(state, records)
+        result = await mode._direct(state, wc=records)
 
         assert result["action"] in ("none", "inject")
         assert result["close"] in (True, False)
@@ -95,7 +95,7 @@ class TestDirectorIntegration:
         state = _make_state(turn_count=2)
         records = _mid_game_records()
 
-        result = await mode._direct(state, records)
+        result = await mode._direct(state, wc=records)
 
         assert set(result.keys()) == {"action", "best_take", "prompt", "close"}
         assert result["action"] in ("none", "inject")
@@ -137,7 +137,7 @@ class TestDirectorIntegration:
                          roast_instance_id=_ROAST_ID),
         ]
 
-        result = await mode._direct(state, records)
+        result = await mode._direct(state, wc=records)
 
         assert result["action"] in ("none", "inject")
         # The director SHOULD inject and signal close for exhausted topic
@@ -172,7 +172,7 @@ class TestDirectorIntegration:
             ),
         ]
 
-        result = await mode._direct(state, records)
+        result = await mode._direct(state, wc=records)
 
         # Should still produce valid output despite the noise
         assert result["action"] in ("none", "inject")
@@ -202,7 +202,7 @@ class TestDirectorIntegration:
                          roast_instance_id=_ROAST_ID),
         ]
 
-        result = await mode._direct(state, records)
+        result = await mode._direct(state, wc=records)
 
         if result["best_take"]:
             # Should be a close match to the user's original line.

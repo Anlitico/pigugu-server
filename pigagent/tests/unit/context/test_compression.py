@@ -137,18 +137,12 @@ class TestCompressionMetrics:
 
 
 class TestRebuildMemory:
-    def teardown_method(self):
-        from context.storage.memory import clear_all
-        clear_all()
-
     def test_post_anchor_filtering(self):
-        from context.storage.memory import clear_all
         from context.storage.memory import MemoryStore
         from context.schema import ConversationRecord
         from context.compression.compressor import ContextCompressor
 
-        clear_all()
-        mem = MemoryStore("u1")
+        mem = MemoryStore()
         records = [
             ConversationRecord(turn_number=1, role="user", content="a", created_at=1.0),
             ConversationRecord(turn_number=2, role="assistant", content="b", created_at=2.0),
@@ -159,9 +153,9 @@ class TestRebuildMemory:
         for r in records:
             mem.push_turn(r)
 
-        comp = ContextCompressor(redis_client=None, pg_pool=None)
+        comp = ContextCompressor("u1", redis_client=None, pg_pool=None)
         comp._mem = mem
-        count = comp._rebuild_memory("u1", end_turn=3, l2_profile="p", l3_session="s")
+        count = comp._rebuild_memory(end_turn=3, l2_profile="p", l3_session="s")
         assert count == 2  # turns 4 and 5
         remaining = mem.get_hot_turns(10)
         assert len(remaining) == 2
@@ -169,18 +163,16 @@ class TestRebuildMemory:
         assert remaining[1].turn_number == 5
 
     def test_rebuild_stores_summaries(self):
-        from context.storage.memory import clear_all
         from context.storage.memory import MemoryStore
         from context.schema import ConversationRecord
         from context.compression.compressor import ContextCompressor
 
-        clear_all()
-        mem = MemoryStore("u1")
+        mem = MemoryStore()
         mem.push_turn(ConversationRecord(turn_number=1, role="user", content="hi", created_at=1.0))
 
-        comp = ContextCompressor(redis_client=None, pg_pool=None)
+        comp = ContextCompressor("u1", redis_client=None, pg_pool=None)
         comp._mem = mem
-        comp._rebuild_memory("u1", end_turn=1,
+        comp._rebuild_memory(end_turn=1,
                              l2_profile="profile text", l3_session="session text",
                              l4_roast="roast text", roast_id="rid1",
                              roast_prompt="prompt", roast_prompt_turn=2)

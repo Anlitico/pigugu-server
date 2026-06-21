@@ -44,11 +44,10 @@ class TestEventStream:
 
         mock_agent.start_roast = _start_roast
 
-        with patch("api.roast.get_pig_agent", return_value=mock_agent):
-            import asyncio
-            events = asyncio.run(_collect_events(_event_stream(
-                "u1", 1, "r1", "roast_together", "news text",
-            )))
+        import asyncio
+        events = asyncio.run(_collect_events(_event_stream(
+            mock_agent, 1, "r1", "roast_together", "news text",
+        )))
 
         assert events[0].startswith("data: ")
         assert '"text"' in events[0]
@@ -67,11 +66,10 @@ class TestEventStream:
 
         mock_agent.start_roast = _failing
 
-        with patch("api.roast.get_pig_agent", return_value=mock_agent):
-            import asyncio
-            events = asyncio.run(_collect_events(_event_stream(
-                "u1", 1, "r1", "roast_together", "news",
-            )))
+        import asyncio
+        events = asyncio.run(_collect_events(_event_stream(
+            mock_agent, 1, "r1", "roast_together", "news",
+        )))
 
         assert any('"error"' in e for e in events)
 
@@ -81,18 +79,14 @@ class TestEventStream:
 
 class TestStartRoastEndpoint:
     def test_unknown_game_mode_returns_400(self):
-        from api.roast import router, RoastStartRequest
+        from api.roast import router
         from fastapi.testclient import TestClient
         from fastapi import FastAPI
 
-        pig_agent = MagicMock()
-        pig_agent._game_modes = {}
-
         app = FastAPI()
         app.include_router(router)
-        app.dependency_overrides = {}  # no DB needed
 
-        with patch("api.roast.get_pig_agent", return_value=pig_agent):
+        with patch("api.roast.get_game_modes", return_value={}):
             client = TestClient(app)
             response = client.post("/roast/start", json={
                 "user_id": "u1",
@@ -110,7 +104,6 @@ class TestStartRoastEndpoint:
         from fastapi import FastAPI
 
         pig_agent = MagicMock()
-        pig_agent._game_modes = {"roast_together": MagicMock()}
 
         async def _start_roast(*args, **kwargs):
             yield "chunk1"
@@ -118,10 +111,16 @@ class TestStartRoastEndpoint:
 
         pig_agent.start_roast = _start_roast
 
+        # Mock session registry: no active agent → creates PigAgent → streams SSE
+        mock_registry = MagicMock()
+        mock_registry.has_active_agent = AsyncMock(return_value=False)
+
         app = FastAPI()
         app.include_router(router)
 
-        with patch("api.roast.get_pig_agent", return_value=pig_agent):
+        with patch("roast.session_registry.registry", mock_registry), \
+             patch("api.roast.create_pig_agent", return_value=pig_agent), \
+             patch("api.roast.get_game_modes", return_value={"roast_together": MagicMock()}):
             client = TestClient(app)
             response = client.post("/roast/start", json={
                 "user_id": "u1",
@@ -137,6 +136,37 @@ class TestStartRoastEndpoint:
         assert "chunk1" in body
         assert "chunk2" in body
         assert '"done"' in body
+
+    def test_active_session_injects_and_returns_settled(self):
+        from api.roast import router
+        from fastapi.testclient import TestClient
+        from fastapi import FastAPI
+
+        # Mock session registry: agent IS active → inject via room → settled
+        mock_registry = MagicMock()
+        mock_registry.has_active_agent = AsyncMock(return_value=True)
+        mock_registry.send_inject = AsyncMock()
+
+        app = FastAPI()
+        app.include_router(router)
+
+        with patch("roast.session_registry.registry", mock_registry), \
+             patch("api.roast.get_game_modes", return_value={"roast_together": MagicMock()}):
+            client = TestClient(app)
+            response = client.post("/roast/start", json={
+                "user_id": "u1",
+                "persona_id": 1,
+                "roast_id": "r1",
+                "mode_id": "roast_together",
+                "prompt": "test prompt",
+            })
+
+        assert response.status_code == 200
+        assert "text/event-stream" in response.headers["content-type"]
+        body = response.text
+        assert '"settled_in_room"' in body
+        assert '"done"' in body
+        mock_registry.send_inject.assert_called_once()
 
 
 class TestServerCreateApp:

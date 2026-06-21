@@ -20,7 +20,6 @@ def _make_bridge(**kwargs):
     defaults = {
         "pig_agent": pig,
         "persona_id": 1,
-        "user_id": "u1",
     }
     defaults.update(kwargs)
     return PigAgentVoiceBridge(**defaults), pig
@@ -121,7 +120,7 @@ class TestLlmNode:
 
         pig.generate_reply.assert_called_once()
         args, kwargs = pig.generate_reply.call_args
-        assert args == ("u1", "hello")
+        assert args == ("hello",)
         assert kwargs["persona_id"] == 1
         assert result == "Hello!"
 

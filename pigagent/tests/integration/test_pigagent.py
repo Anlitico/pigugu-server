@@ -23,6 +23,7 @@ def _make_test_agent():
     prompts = PersonaRegistry.build_prompt_cache()
 
     return PigAgent(
+        "int-test",
         ctx=None,
         redis=MagicMock(),
         pg_pool=MagicMock(),
@@ -57,7 +58,7 @@ class TestGenerateReply:
 
         import asyncio
         result = asyncio.run(_collect(
-            agent.generate_reply("integration-test-user", "Hello! How are you?")
+            agent.generate_reply("Hello! How are you?")
         ))
         assert len(result) > 0, "Empty response from LLM"
 
@@ -69,7 +70,7 @@ class TestGenerateReply:
 
         import asyncio
         result = asyncio.run(_collect(
-            agent.generate_reply("u1", "What is your opinion on technology?",
+            agent.generate_reply("What is your opinion on technology?",
                                  persona_id=1)
         ))
         assert len(result) > 0
@@ -113,9 +114,10 @@ class TestStartRoast:
         prompts = PersonaRegistry.build_prompt_cache()
 
         from context.manager import ContextManager
-        ctx = ContextManager(redis_client=redis_client, pg_pool=None)
+        ctx = ContextManager("integration-test", redis_client=redis_client, pg_pool=None)
 
         agent = PigAgent(
+            "integration-test",
             ctx=ctx,
             redis=redis_client,
             pg_pool=None,
@@ -132,11 +134,11 @@ class TestStartRoast:
         import asyncio
         result = asyncio.run(_collect(
             agent.start_roast(
-                "integration-test", 1, "test-roast-id", "roast_together",
+                1, "test-roast-id", "roast_together",
                 "Donald Trump tweeted about AI today. Share your thoughts.",
             )
         ))
         assert len(result) > 0, "Empty roast reply"
 
         # Cleanup
-        asyncio.run(agent.close_roast("integration-test"))
+        asyncio.run(agent.close_roast())
