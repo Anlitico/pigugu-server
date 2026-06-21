@@ -65,13 +65,23 @@ class GameMode(ABC):
 
     # ── Director ────────────────────────────────────────────────────────────
 
-    async def _direct(self, state: RoastState, records: list) -> dict:
+    async def _direct(
+        self, state: RoastState, *, wc, current_msg=None,
+    ) -> dict:
         """Run the director LLM to evaluate the conversation.
+
+        Builds the message list from WorkingContext.raw_records (which carry
+        proper roast_instance_id) instead of receiving an opaque records list.
 
         Returns: {"action": "none"|"inject", "best_take": str|null,
                   "prompt": str|null, "close": bool}
         On failure, returns action="none" gracefully.
         """
+        # Degraded: no WorkingContext available (shouldn't happen in normal
+        # operation — callers guard this — but defend against it anyway).
+        if wc is None:
+            return {"action": "none", "best_take": None, "prompt": None, "close": False}
+
         from agent_config import get_config
         from core.llm import get_llm
         from core.llm.types import Message as LLMMessage
@@ -83,18 +93,12 @@ class GameMode(ABC):
         roast_id = state.roast_instance_id
         has_roast_body = False
 
-        for r in records:
-            role = getattr(r, "role", "")
-            content = getattr(r, "content", "")
+        for r in wc.raw_records:
+            role = r.role
+            content = r.content
             if role not in ("system", "user", "assistant", "tool") or not content:
                 continue
-            # Match by roast_instance_id when present. Messages with
-            # rid=None (e.g. current LLM turn, not yet persisted) are
-            # always included — they belong to the current roast.
-            # Match by roast_instance_id. Loaded records have IDs from
-            # sync _assign_roast_instance_id. Runner messages have rid=None
-            # (not yet persisted) but ARE the current roast — include them.
-            rid = getattr(r, "roast_instance_id", None)
+            rid = r.roast_instance_id
             is_roast_body = (
                 role == "system"
                 and ROAST_BODY_PREFIX in content
@@ -104,7 +108,16 @@ class GameMode(ABC):
                 continue
             if is_roast_body:
                 has_roast_body = True
-            messages.append(LLMMessage(role=role, content=content))  # type: ignore[arg-type]
+            messages.append(LLMMessage(role=role, content=content,))
+
+        # Append the current user message that triggered this round.
+        # It may not be in wc.raw_records yet (snapshot taken before
+        # add_turn for this message completed).
+        if current_msg is not None:
+            messages.append(LLMMessage(
+                role=getattr(current_msg, "role", "user"),
+                content=getattr(current_msg, "content", ""),
+            ))
 
         try:
             llm = get_llm(director_model)
@@ -148,9 +161,24 @@ class GameMode(ABC):
                 f"best_take={'yes' if result.get('best_take') else 'no'} "
                 f"close={result.get('close', False)}"
             )
-            # Fire-and-forget: persist Director decision for debugging/analysis
+            # Use the global turn_number from the last assistant record in
+            # WorkingContext.raw_records. This aligns director log entries
+            # with agent_conversations.turn_number so the entire data flow
+            # can be joined on a single turn_number.
+            # We use assistant (not user) because STT may split user input
+            # into multiple fragments — assistant responses are always whole.
+            turn_number = 0
+            for r in reversed(wc.raw_records):
+                if getattr(r, "role", "") == "assistant":
+                    turn_number = r.turn_number
+                    break
+            # Fallback: if no assistant record exists yet (extremely rare —
+            # only before the first assistant response), use state.turn_count
+            # to avoid (roast_instance_id, 0) collision.
+            if turn_number == 0:
+                turn_number = state.turn_count
             asyncio.ensure_future(_write_director_log(
-                state.roast_instance_id, state.turn_count, result,
+                state.roast_instance_id, turn_number, result,
             ))
             return result
         except Exception as e:
@@ -180,9 +208,10 @@ class GameMode(ABC):
         self,
         state: RoastState,
         *,
-        records: list,
+        wc,  # WorkingContext — required, carries raw_records with global turn_number
         redis,
         pg_pool=None,
+        current_msg=None,  # current user Message (may not be in wc snapshot yet)
     ) -> str | None:
         """Advance state after one user turn.
 
@@ -201,7 +230,9 @@ class GameMode(ABC):
         # ── Director (async, fire-and-forget style but awaited) ──────────
         director_prompt: str | None = None
         try:
-            director_result = await self._direct(state, records)
+            director_result = await self._direct(
+                state, wc=wc, current_msg=current_msg,
+            )
 
             if director_result.get("best_take"):
                 state.extra["best_take"] = director_result["best_take"]
@@ -237,7 +268,7 @@ class GameMode(ABC):
         # ── Code triggers (safety net) ──────────────────────────────────
         for trigger in self.triggers:
             try:
-                if trigger.check(state, records):
+                if trigger.check(state, wc.raw_records):
                     prompt = trigger.prompt(state) if callable(trigger.prompt) else trigger.prompt
                     await self._emit(state, trigger, prompt, redis)
                     await state.save(redis, pg_pool)
@@ -264,7 +295,12 @@ class GameMode(ABC):
 async def _write_director_log(
     roast_instance_id: str, turn_number: int, result: dict,
 ) -> None:
-    """Persist Director LLM decision to roast_director_logs for analysis."""
+    """Persist Director LLM decision to roast_director_logs for analysis.
+
+    When multiple director evaluations happen for the same turn_number
+    (e.g. STT splits one user utterance into fragments, each triggers its
+    own LLM → director cycle), only the LAST one is kept via UPSERT.
+    """
     try:
         from bootstrap.factory import get_pg_pool
         pool = await get_pg_pool()
@@ -272,7 +308,12 @@ async def _write_director_log(
             await conn.execute(
                 """INSERT INTO roast_director_logs
                    (roast_instance_id, turn_number, action, best_take, prompt, close)
-                   VALUES ($1, $2, $3, $4, $5, $6)""",
+                   VALUES ($1, $2, $3, $4, $5, $6)
+                   ON CONFLICT (roast_instance_id, turn_number) DO UPDATE SET
+                       action = EXCLUDED.action,
+                       best_take = EXCLUDED.best_take,
+                       prompt = EXCLUDED.prompt,
+                       close = EXCLUDED.close""",
                 roast_instance_id,
                 turn_number,
                 result.get("action"),

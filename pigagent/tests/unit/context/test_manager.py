@@ -19,14 +19,6 @@ class TestContextManager:
 class TestContextManagerExtended:
     """Additional ContextManager tests  -  pure helpers, Redis writes."""
 
-    def test_record_to_msg(self):
-        from context.schema import ConversationRecord
-        from context.manager import _record_to_msg
-        cr = ConversationRecord(turn_number=1, role="user", content="hi", created_at=100.0)
-        msg = _record_to_msg(cr)
-        assert msg.role == "user"
-        assert msg.content == "hi"
-
     @pytest.mark.asyncio
     async def test_write_game_state_without_redis(self):
         from context.manager import ContextManager
@@ -47,7 +39,7 @@ class TestContextManagerExtended:
         wc = await ctx.assemble(user_id="u1")
         assert wc.user_id == "u1"
         assert wc.summary == ""
-        assert wc.raw_turns == []
+        assert wc.raw_records == []
         assert wc.roast is None
 
     @pytest.mark.asyncio

@@ -208,6 +208,8 @@ class PigAgent:
                     messages, roast_state, game_mode,
                     interrupt_event=interrupt_event,
                     session_id=session_id,
+                    wc=self.ctx._last_wc.get(user_id) if self.ctx else None,
+                    current_msg=new_msg,
                 ):
                     if first_yield:
                         TelemetryCollector.mark("llm_internal")
@@ -373,6 +375,8 @@ class PigAgent:
         *,
         interrupt_event: asyncio.Event | None = None,
         session_id: str | None = None,
+        wc=None,  # WorkingContext snapshot — carries raw_records with turn_number
+        current_msg=None,  # current user Message (may not be in wc snapshot yet)
     ) -> AsyncIterator[str | FlushSentinel]:
         """Roast pipeline: consume pending  ->  stream  ->  tick.
 
@@ -397,16 +401,21 @@ class PigAgent:
 
             # 3. Tick  -  only in ACTIVE phase; skip during CLOSING
             if roast_state.phase == Phase.ACTIVE:
-                asyncio.create_task(self._tick_roast(roast_state, game_mode, messages))
+                asyncio.create_task(self._tick_roast(roast_state, game_mode, wc, current_msg))
         finally:
             _current_user_id.reset(token_user)
             _current_persona_id.reset(token_persona)
 
-    async def _tick_roast(self, roast_state, game_mode, messages) -> None:
+    async def _tick_roast(
+        self, roast_state, game_mode, wc, current_msg,
+    ) -> None:
         """Background: advance state, check triggers, persist."""
         try:
+            if wc is None:
+                return
             triggered = await game_mode.tick(
-                roast_state, records=messages,
+                roast_state,
+                wc=wc, current_msg=current_msg,
                 redis=self._redis, pg_pool=self._pg_pool,
             )
             if triggered:

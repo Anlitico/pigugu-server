@@ -37,6 +37,7 @@ class ContextManager:
         self._pg_pool = pg_pool
         self._compressor = ContextCompressor(redis_client=redis_client, pg_pool=pg_pool)
         self._turn_lock = asyncio.Lock()
+        self._last_wc: dict[str, WorkingContext] = {}
 
     def _store(self, user_id: str) -> RedisStorage:
         return RedisStorage(user_id, self._redis)
@@ -231,7 +232,6 @@ class ContextManager:
             wc.summary = sr.text
             wc.summary_end_turn = sr.end_turn
 
-        wc.raw_turns = [_record_to_msg(r) for r in raw_records]
         wc.raw_records = raw_records
 
         if snap.roast_instance_id:
@@ -257,6 +257,9 @@ class ContextManager:
                 )
             )
 
+        # Cache per-user for downstream consumers (Director, compression, etc.)
+        # so they don't need their own assemble() call.
+        self._last_wc[user_id] = wc
         return wc
 
     @staticmethod
@@ -356,9 +359,3 @@ class ContextManager:
                         f"turns={len(records)}")
         except Exception as e:
             logger.warning(f"[Context] Re-warm Redis failed for {user_id}: {e}")
-
-
-# ── Helpers ──────────────────────────────────────────────────────────────
-
-def _record_to_msg(r: ConversationRecord):
-    return r.to_message()

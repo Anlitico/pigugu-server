@@ -103,8 +103,10 @@ class TestGameModeTick:
         redis = MagicMock()
         state = self._state(turn_count=7)
         mode = RoastTogetherMode()
+        wc = MagicMock()
+        wc.raw_records = []
 
-        result = asyncio.run(mode.tick(state, records=[], redis=redis))
+        result = asyncio.run(mode.tick(state, wc=wc, redis=redis))
         assert result is not None
         assert state.turn_count == 8
 
@@ -116,8 +118,10 @@ class TestGameModeTick:
         redis = MagicMock()
         state = self._state(turn_count=1)
         mode = RoastTogetherMode()
+        wc = MagicMock()
+        wc.raw_records = []
 
-        result = asyncio.run(mode.tick(state, records=[], redis=redis))
+        result = asyncio.run(mode.tick(state, wc=wc, redis=redis))
         assert result is None
         assert state.turn_count == 2
 
@@ -130,8 +134,10 @@ class TestGameModeTick:
         redis = MagicMock()
         state = self._state(phase=Phase.CLOSING, turn_count=5)
         mode = RoastTogetherMode()
+        wc = MagicMock()
+        wc.raw_records = []
 
-        result = asyncio.run(mode.tick(state, records=[], redis=redis))
+        result = asyncio.run(mode.tick(state, wc=wc, redis=redis))
         assert result is None
         assert state.turn_count == 5  # unchanged
 
@@ -164,13 +170,15 @@ class TestGameModeTickDirector:
         redis.setex = AsyncMock()
         state = self._state(turn_count=3)
         mode = RoastTogetherMode()
+        wc = MagicMock()
+        wc.raw_records = []
 
         with patch.object(mode, '_direct', new_callable=AsyncMock) as mock_direct:
             mock_direct.return_value = {
                 "action": "none", "best_take": None,
                 "prompt": None, "close": True,
             }
-            result = asyncio.run(mode.tick(state, records=[], redis=redis))
+            result = asyncio.run(mode.tick(state, wc=wc, redis=redis))
 
         assert result is not None
         assert "GAME IS OVER" in result
@@ -191,13 +199,15 @@ class TestGameModeTickDirector:
         redis.setex = AsyncMock()
         state = self._state(turn_count=5)
         mode = RoastTogetherMode()
+        wc = MagicMock()
+        wc.raw_records = []
 
         with patch.object(mode, '_direct', new_callable=AsyncMock) as mock_direct:
             mock_direct.return_value = {
                 "action": "inject", "best_take": "Great line!",
                 "prompt": "Custom closing prompt.", "close": True,
             }
-            result = asyncio.run(mode.tick(state, records=[], redis=redis))
+            result = asyncio.run(mode.tick(state, wc=wc, redis=redis))
 
         assert result == "Custom closing prompt."
         assert state.phase == Phase.CLOSING
@@ -218,13 +228,15 @@ class TestGameModeTickDirector:
         redis.setex = AsyncMock()
         state = self._state(turn_count=2)
         mode = RoastTogetherMode()
+        wc = MagicMock()
+        wc.raw_records = []
 
         with patch.object(mode, '_direct', new_callable=AsyncMock) as mock_direct:
             mock_direct.return_value = {
                 "action": "inject", "best_take": "Nice!",
                 "prompt": "Keep going, dig deeper.", "close": False,
             }
-            result = asyncio.run(mode.tick(state, records=[], redis=redis))
+            result = asyncio.run(mode.tick(state, wc=wc, redis=redis))
 
         assert result == "Keep going, dig deeper."
         assert state.phase == Phase.ACTIVE  # unchanged
@@ -251,6 +263,8 @@ class TestWriteDirectorLog:
             asyncio.run(_write_director_log("rid-1", 5, result))
 
         mock_conn.execute.assert_called_once()
+        sql = mock_conn.execute.call_args[0][0]
+        assert "ON CONFLICT" in sql
         args = mock_conn.execute.call_args[0][1:]
         assert args[0] == "rid-1"
         assert args[1] == 5

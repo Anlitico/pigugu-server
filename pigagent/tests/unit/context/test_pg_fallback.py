@@ -216,16 +216,16 @@ class TestAssembleFallback:
         with patch("context.storage.pg._connect", side_effect=[pool1, pool2]):
             wc = await mgr.assemble("u1")
 
-            # Summary was consumed once into raw_turns — sr/um are cleared
+            # Summary was consumed once into raw_records — sr/um are cleared
             assert wc.summary == ""
             assert wc.summary_end_turn == 0
             # L2 + L3 virtual records prepended to the real turn
-            assert len(wc.raw_turns) == 3
-            assert wc.raw_turns[0].role == "system"
-            assert "User is a developer" in wc.raw_turns[0].content
-            assert wc.raw_turns[1].role == "system"
-            assert "Previous conversation about Python" in wc.raw_turns[1].content
-            assert wc.raw_turns[2].role == "user"
+            assert len(wc.raw_records) == 3
+            assert wc.raw_records[0].role == "system"
+            assert "User is a developer" in wc.raw_records[0].content
+            assert wc.raw_records[1].role == "system"
+            assert "Previous conversation about Python" in wc.raw_records[1].content
+            assert wc.raw_records[2].role == "user"
             assert wc.raw_records[0].turn_number == -3  # L2 virtual
             assert wc.raw_records[1].turn_number == -2  # L3 virtual
             assert wc.raw_records[2].turn_number == 11  # real turn
@@ -243,7 +243,7 @@ class TestAssembleFallback:
 
         wc = await mgr.assemble("u1")
         assert wc.summary == ""
-        assert wc.raw_turns == []
+        assert wc.raw_records == []
         assert wc.user_memory is not None
         assert wc.user_memory.user_id == "u1"
 
@@ -262,8 +262,8 @@ class TestAssembleFallback:
         mgr = ContextManager(redis_client=redis, pg_pool=None)
         wc = await mgr.assemble("u1")
 
-        assert len(wc.raw_turns) == 1
-        assert wc.raw_turns[0].role == "user"
+        assert len(wc.raw_records) == 1
+        assert wc.raw_records[0].role == "user"
 
 
 class TestRewarmRedis:
