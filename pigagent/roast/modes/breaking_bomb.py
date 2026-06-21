@@ -40,13 +40,14 @@ class BreakingBombMode(GameMode):
         self,
         state: RoastState,
         *,
-        records: list,
+        wc,
         redis,
         pg_pool=None,
+        current_msg=None,
     ) -> str | None:
         """Record the user's reaction, then run base trigger checks."""
-        self._update_state(state, records)
-        return await super().tick(state, records=records, redis=redis, pg_pool=pg_pool)
+        self._update_state(state, wc.raw_records)
+        return await super().tick(state, wc=wc, redis=redis, pg_pool=pg_pool, current_msg=current_msg)
 
     def _update_state(self, state: RoastState, records: list) -> None:
         """Record the latest user reaction."""

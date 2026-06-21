@@ -8,7 +8,7 @@ import pytest
 
 from core.llm.types import Message, ToolCall
 from context.schema import (
-    WorkingContext, UserMemory, TokenBudget, RoastContext,
+    WorkingContext, UserMemory, TokenBudget, RoastContext, ConversationRecord,
 )
 from agent_config import get_config
 
@@ -81,7 +81,7 @@ class TestWorkingContext:
         wc = WorkingContext(user_id="u1")
         assert wc.summary == ""
         assert wc.summary_end_turn == 0
-        assert wc.raw_turns == []
+        assert wc.raw_records == []
         assert wc.roast is None
         assert wc.user_memory is None
 
@@ -112,12 +112,12 @@ class TestWorkingContext:
         msgs = wc.to_messages()
         assert len(msgs) == 1  # L3 summary only
 
-    def test_to_messages_with_raw_turns(self):
+    def test_to_messages_with_raw_records(self):
         wc = WorkingContext(
             user_id="u1",
-            raw_turns=[
-                Message(role="user", content="hello"),
-                Message(role="assistant", content="hi"),
+            raw_records=[
+                ConversationRecord(turn_number=1, role="user", content="hello", created_at=100.0),
+                ConversationRecord(turn_number=2, role="assistant", content="hi", created_at=101.0),
             ],
         )
         msgs = wc.to_messages()
@@ -131,9 +131,9 @@ class TestWorkingContext:
                 roast_instance_id="r1",
                 summary="Game: trivia challenge\n\n---\n\nEarlier: user answered 3 questions.",
             ),
-            raw_turns=[
-                Message(role="user", content="answer D"),
-                Message(role="assistant", content="correct!"),
+            raw_records=[
+                ConversationRecord(turn_number=1, role="user", content="answer D", created_at=100.0),
+                ConversationRecord(turn_number=2, role="assistant", content="correct!", created_at=101.0),
             ],
         )
         msgs = wc.to_messages()
@@ -149,12 +149,12 @@ class TestWorkingContext:
 
 
 class TestWorkingContextRawTurns:
-    """WorkingContext.to_messages with ConversationRecord in raw_turns."""
+    """WorkingContext.to_messages with ConversationRecord in raw_records."""
 
     def test_to_messages_with_conversation_records(self):
         from context.schema import WorkingContext, ConversationRecord
         cr = ConversationRecord(turn_number=1, role="user", content="hello", created_at=100.0)
-        wc = WorkingContext(user_id="u1", raw_turns=[cr])
+        wc = WorkingContext(user_id="u1", raw_records=[cr])
         msgs = wc.to_messages()
         assert len(msgs) == 1
         assert msgs[0].role == "user"

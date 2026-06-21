@@ -244,8 +244,7 @@ class WorkingContext:
     user_id: str
 
     # L3  -  Session
-    raw_turns: list = field(default_factory=list)    # list[Message] — for LLM
-    raw_records: list = field(default_factory=list)  # list[ConversationRecord] — for compression
+    raw_records: list = field(default_factory=list)  # list[ConversationRecord] — carries turn_number, used for LLM + compression
     summary: str = ""                # recursive conversation summary
     summary_end_turn: int = 0        # anchor: all turns ≤ this are covered
     game_state: dict = field(default_factory=dict)
@@ -285,12 +284,9 @@ class WorkingContext:
         if self.roast and self.roast.summary:
             result.append(Message.user(f"[Game history]\n{self.roast.summary}"))
 
-        # raw_turns are oldest -> newest (RPUSH order)
-        for turn in self.raw_turns:
-            if isinstance(turn, ConversationRecord):
-                result.append(turn.to_message())
-            else:
-                result.append(turn)
+        # raw_records are oldest -> newest (RPUSH order)
+        for record in self.raw_records:
+            result.append(record.to_message())
 
         return validate_tool_calls(result)
 
