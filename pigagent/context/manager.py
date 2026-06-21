@@ -112,12 +112,15 @@ class ContextManager:
                 tool_calls=tool_calls, tool_call_id=tool_call_id,
                 name=name, partial=partial,
             )
+            # Assign roast_instance_id BEFORE pushing to memory.
+            # _assign_roast_instance_id scans recent history for the active
+            # roast. If the current (unassigned) record is already in memory,
+            # it sees itself with roast_instance_id=None and incorrectly
+            # concludes no roast is active.
+            await self._assign_roast_instance_id(user_id, record)
+
             # L1: write to memory immediately (synchronous, sub-ms)
             mem.push_turn(record)
-
-            # Assign roast_instance_id synchronously — both in-memory and persisted
-            # records need it for downstream filtering (Director, assemble).
-            await self._assign_roast_instance_id(user_id, record)
 
             # L2 + L3: fire-and-forget to Redis and PG
             data = json.dumps(record.to_dict(), ensure_ascii=False)
