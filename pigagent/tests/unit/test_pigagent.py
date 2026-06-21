@@ -54,7 +54,7 @@ def _make_agent(**kwargs):
         "tool_handlers": mock_registry.tool_handlers,
     }
     defaults.update(kwargs)
-    return PigAgent(**defaults), ctx, redis, pg_pool
+    return PigAgent("u1", **defaults), ctx, redis, pg_pool
 
 
 def _mock_runner_stream(agent, responses=None):
@@ -89,7 +89,7 @@ class TestGenerateReply:
 
         async def _run():
             chunks = []
-            async for t in agent.generate_reply("u1", ""):
+            async for t in agent.generate_reply(""):
                 chunks.append(t)
             return chunks
 
@@ -107,9 +107,9 @@ class TestGenerateReply:
         ])
 
         import asyncio
-        result = asyncio.run(_run_collect(agent.generate_reply("u1", "hello")))
+        result = asyncio.run(_run_collect(agent.generate_reply("hello")))
 
-        ctx.load.assert_called_once_with(user_id="u1")
+        ctx.load.assert_called_once_with()
         assert result == "Hi there!"
 
     def test_injects_system_prompt(self):
@@ -129,7 +129,7 @@ class TestGenerateReply:
         agent.runner = mock
 
         import asyncio
-        asyncio.run(_run_collect(agent.generate_reply("u1", "hello", persona_id=0)))
+        asyncio.run(_run_collect(agent.generate_reply("hello", persona_id=0)))
 
         assert captured_messages[0].role == "system"
         assert captured_messages[0].content == "You are helpful."
@@ -141,7 +141,7 @@ class TestGenerateReply:
         _mock_runner_stream(agent, ["response text"])
 
         import asyncio
-        result = asyncio.run(_run_collect(agent.generate_reply("u1", "hello")))
+        result = asyncio.run(_run_collect(agent.generate_reply("hello")))
 
         # Agent no longer persists user or assistant messages
         calls = ctx.add_turn.call_args_list
@@ -157,7 +157,7 @@ class TestGenerateReply:
         ctx.load = AsyncMock(side_effect=RuntimeError("redis down"))
 
         import asyncio
-        result = asyncio.run(_run_collect(agent.generate_reply("u1", "hello")))
+        result = asyncio.run(_run_collect(agent.generate_reply("hello")))
         assert result == "ok"
 
     def test_routes_to_roast_when_active(self):
@@ -200,7 +200,7 @@ class TestGenerateReply:
             agent.runner = mock
 
             result = asyncio.run(_run_collect(
-                agent.generate_reply("u1", "hello")
+                agent.generate_reply("hello")
             ))
 
         assert result == "roast reply"
@@ -210,7 +210,7 @@ class TestGenerateReply:
         _mock_runner_stream(agent, ["ok"])
 
         import asyncio
-        asyncio.run(_run_collect(agent.generate_reply("u1", "hello")))
+        asyncio.run(_run_collect(agent.generate_reply("hello")))
         # No persistence without ctx  -  should not crash
 
 
@@ -274,7 +274,7 @@ class TestStartRoast:
         async def _collect():
             chunks = []
             async for t in agent.start_roast(
-                "u1", 1, "r1", "unknown_mode", "prompt",
+                1, "r1", "unknown_mode", "prompt",
             ):
                 chunks.append(t)
             return chunks
@@ -318,7 +318,7 @@ class TestStartRoast:
             mock_registry.get.return_value = game_mode
 
             result = asyncio.run(_run_collect(
-                agent.start_roast("u1", 1, "r1", "roast_together", "prompt")
+                agent.start_roast(1, "r1", "roast_together", "prompt")
             ))
 
         assert result == "Opening line!"
@@ -351,7 +351,7 @@ class TestDefaultTools:
         # _create_default_tools is now an instance method that reads self._pg_pool.
         # Pass empty tools to skip default tool creation in __init__, then
         # call _create_default_tools() inside the patch context.
-        agent = PigAgent(pg_pool=None, redis=MagicMock(), ctx=None, tools=[], tool_handlers={})
+        agent = PigAgent("u1", pg_pool=None, redis=MagicMock(), ctx=None, tools=[], tool_handlers={})
 
         with patch("tools.create_web_search_tool", return_value=search_tool), \
              patch("tools.volume_tool", vol_tool), \
@@ -374,7 +374,7 @@ class TestDefaultTools:
         vol_tool = MagicMock()
         vol_tool.name = "volume_control"
 
-        agent = PigAgent(pg_pool=None, redis=MagicMock(), ctx=None, tools=[], tool_handlers={})
+        agent = PigAgent("u1", pg_pool=None, redis=MagicMock(), ctx=None, tools=[], tool_handlers={})
 
         with patch("tools.create_web_search_tool", return_value=search_tool), \
              patch("tools.volume_tool", vol_tool), \
@@ -396,7 +396,7 @@ class TestDefaultTools:
         vol_tool.name = "volume_control"
         vol_tool.execute = lambda x: None
 
-        agent = PigAgent(pg_pool=None, redis=MagicMock(), ctx=None, tools=[], tool_handlers={})
+        agent = PigAgent("u1", pg_pool=None, redis=MagicMock(), ctx=None, tools=[], tool_handlers={})
 
         with patch("tools.create_web_search_tool", return_value=search_tool), \
              patch("tools.volume_tool", vol_tool), \
@@ -452,7 +452,7 @@ class TestRoastLifecycle:
         redis.get = MagicMock(side_effect=RuntimeError("boom"))
 
         import asyncio
-        result = asyncio.run(agent.get_active_roast("u1"))
+        result = asyncio.run(agent.get_active_roast())
         assert result is None
 
     def test_close_roast_no_active_session(self):
@@ -460,7 +460,7 @@ class TestRoastLifecycle:
         redis.get = AsyncMock(return_value=None)
 
         import asyncio
-        asyncio.run(agent.close_roast("u1"))
+        asyncio.run(agent.close_roast())
         # Should not raise
 
 
@@ -498,25 +498,18 @@ class TestSeedSessionInfo:
     def test_persists_system_message(self):
         agent, ctx, redis, pg = _make_agent()
         import asyncio
-        asyncio.run(agent.seed_session_info("u1"))
+        asyncio.run(agent.seed_session_info())
         ctx.add_turn.assert_called_once()
         call_kwargs = ctx.add_turn.call_args.kwargs
-        assert call_kwargs["user_id"] == "u1"
         assert call_kwargs["role"] == "system"
         assert "[Session Start]" in call_kwargs["content"]
 
     def test_noop_when_no_ctx(self):
         from agent import PigAgent
-        agent = PigAgent(pg_pool=MagicMock(), redis=MagicMock(), ctx=None, tools=[], tool_handlers={})
+        agent = PigAgent("u1", pg_pool=MagicMock(), redis=MagicMock(), ctx=None, tools=[], tool_handlers={})
         import asyncio
-        asyncio.run(agent.seed_session_info("u1"))
+        asyncio.run(agent.seed_session_info())
         # Should not raise
-
-    def test_noop_when_empty_user(self):
-        agent, ctx, redis, pg = _make_agent()
-        import asyncio
-        asyncio.run(agent.seed_session_info(""))
-        ctx.add_turn.assert_not_called()
 
 
 # ── persistence ──────────────────────────────────────────────────────────────
@@ -531,7 +524,7 @@ class TestPersistTurns:
             Message.user("hello"),
         ]
         import asyncio
-        asyncio.run(agent._persist_turns("u1", msgs))
+        asyncio.run(agent._persist_turns(msgs))
         assert ctx.add_turn.call_count == 2
         roles = [c.kwargs["role"] for c in ctx.add_turn.call_args_list]
         assert roles == ["system", "user"]
@@ -539,7 +532,7 @@ class TestPersistTurns:
     def test_empty_messages_returns_zero(self):
         agent, ctx, redis, pg = _make_agent()
         import asyncio
-        result = asyncio.run(agent._persist_turns("u1", []))
+        result = asyncio.run(agent._persist_turns([]))
         assert result == 0
 
 

@@ -6,7 +6,6 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from context.storage.memory import clear_all
 from context.storage.pg import PgStorage
 from context.schema import SummaryRow, ConversationRecord, SummaryRecord, UserMemory
 from context.manager import ContextManager
@@ -174,7 +173,7 @@ class TestPgRecoverTurns:
 
 class TestAssembleFallback:
     def setup_method(self):
-        clear_all()
+        pass
 
     @pytest.mark.asyncio
     async def test_assemble_falls_back_to_pg_when_redis_empty(self):
@@ -191,7 +190,7 @@ class TestAssembleFallback:
 
         pg_pool = "postgresql://test"
 
-        mgr = ContextManager(redis_client=redis, pg_pool=pg_pool)
+        mgr = ContextManager("u1", redis_client=redis, pg_pool=pg_pool)
 
         row_data = {
             "user_id": "u1", "end_turn": 10,
@@ -214,7 +213,7 @@ class TestAssembleFallback:
         pool2 = _mock_conn_fetch(return_rows=turns_data)
 
         with patch("context.storage.pg._connect", side_effect=[pool1, pool2]):
-            wc = await mgr.assemble("u1")
+            wc = await mgr.assemble()
 
             # Summary was consumed once into raw_records — sr/um are cleared
             assert wc.summary == ""
@@ -239,9 +238,9 @@ class TestAssembleFallback:
         redis.hgetall = AsyncMock(return_value={})
         redis.exists = AsyncMock(return_value=0)
 
-        mgr = ContextManager(redis_client=redis, pg_pool=None)
+        mgr = ContextManager("u1", redis_client=redis, pg_pool=None)
 
-        wc = await mgr.assemble("u1")
+        wc = await mgr.assemble()
         assert wc.summary == ""
         assert wc.raw_records == []
         assert wc.user_memory is not None
@@ -259,8 +258,8 @@ class TestAssembleFallback:
         redis.exists = AsyncMock(return_value=0)
         redis.pipeline = MagicMock()
 
-        mgr = ContextManager(redis_client=redis, pg_pool=None)
-        wc = await mgr.assemble("u1")
+        mgr = ContextManager("u1", redis_client=redis, pg_pool=None)
+        wc = await mgr.assemble()
 
         assert len(wc.raw_records) == 1
         assert wc.raw_records[0].role == "user"
@@ -279,7 +278,7 @@ class TestRewarmRedis:
         redis.pipeline.return_value.__aenter__ = AsyncMock(return_value=pipe)
         redis.pipeline.return_value.__aexit__ = AsyncMock()
 
-        mgr = ContextManager(redis_client=redis, pg_pool=None)
+        mgr = ContextManager("u1", redis_client=redis, pg_pool=None)
         data = {"end_turn": 5, "l2_profile": "profile text",
                 "l3_session": "summary text", "l4_roast": "", "roast_id": ""}
         records = [
@@ -287,7 +286,7 @@ class TestRewarmRedis:
             ConversationRecord(turn_number=7, role="assistant", content="hey", created_at=2.0),
         ]
 
-        await mgr._rewarm_redis("u1", data, records)
+        await mgr._rewarm_redis(data, records)
 
         redis.set.assert_called_once()
         assert pipe.rpush.call_count == 2
@@ -304,11 +303,11 @@ class TestRewarmRedis:
         redis.pipeline.return_value.__aenter__ = AsyncMock(return_value=pipe)
         redis.pipeline.return_value.__aexit__ = AsyncMock()
 
-        mgr = ContextManager(redis_client=redis, pg_pool=None)
+        mgr = ContextManager("u1", redis_client=redis, pg_pool=None)
         data = {"end_turn": 0, "l2_profile": "", "l3_session": "", "l4_roast": "", "roast_id": ""}
         records = [ConversationRecord(turn_number=1, role="user", content="hi", created_at=1.0)]
 
-        await mgr._rewarm_redis("u1", data, records)
+        await mgr._rewarm_redis(data, records)
 
         redis.set.assert_called_once()  # write_summaries always writes
         pipe.rpush.assert_called_once()

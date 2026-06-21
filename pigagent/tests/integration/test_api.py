@@ -30,6 +30,7 @@ class TestRoastStartEndpoint:
         game_modes = GameModeRegistry.build_cache()
 
         agent = PigAgent(
+            "int-test",
             ctx=None,
             redis=MagicMock(),
             pg_pool=MagicMock(),
@@ -44,8 +45,9 @@ class TestRoastStartEndpoint:
         )
 
         import api.roast as roast_module
-        original = roast_module.get_pig_agent
-        roast_module.get_pig_agent = lambda: agent
+        original_create = roast_module.create_pig_agent
+        async def _mock_create(uid): return agent
+        roast_module.create_pig_agent = _mock_create
         roast_module.router  # trigger import
 
         try:
@@ -66,7 +68,7 @@ class TestRoastStartEndpoint:
             assert 'data:' in body
             assert '"done"' in body
         finally:
-            roast_module.get_pig_agent = original
+            roast_module.create_pig_agent = original_create
 
     def test_invalid_mode_returns_400(self):
         from api.server import create_app
@@ -76,11 +78,13 @@ class TestRoastStartEndpoint:
         app = create_app()
         client = TestClient(app)
 
-        # Mock get_pig_agent so it doesn't try to init real PG
+        # Mock pig_agent & game_modes so it doesn't try to init real PG
         pig = MagicMock()
-        pig._game_modes = {}
-        original = roast_module.get_pig_agent
-        roast_module.get_pig_agent = lambda: pig
+        original_create = roast_module.create_pig_agent
+        async def _mock_pig(uid): return pig
+        roast_module.create_pig_agent = _mock_pig
+        original_game_modes = roast_module.get_game_modes
+        roast_module.get_game_modes = lambda: {}
         try:
 
             response = client.post("/roast/start", json={
@@ -93,7 +97,8 @@ class TestRoastStartEndpoint:
 
             assert response.status_code == 400
         finally:
-            roast_module.get_pig_agent = original
+            roast_module.create_pig_agent = original_create
+            roast_module.get_game_modes = original_game_modes
 
     def test_missing_fields_returns_422(self):
         from api.server import create_app

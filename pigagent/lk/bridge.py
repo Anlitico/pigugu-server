@@ -27,7 +27,6 @@ class PigAgentVoiceBridge(Agent):
         *,
         pig_agent: Any,
         persona_id: int = 1,
-        user_id: str = "",
         session_id: str | None = None,
     ) -> None:
         super().__init__(
@@ -36,7 +35,6 @@ class PigAgentVoiceBridge(Agent):
         )
         self._pig = pig_agent
         self._persona_id = persona_id
-        self._user_id = user_id
         self._session_id = session_id
         self.current_interrupt_event: asyncio.Event | None = None
 
@@ -48,6 +46,9 @@ class PigAgentVoiceBridge(Agent):
         tools: list[Any],
         model_settings: ModelSettings,
     ) -> AsyncIterator[str | FlushSentinel]:
+        if self._pig is None:
+            logger.warning("[BRIDGE] PigAgent not yet wired — skipping LLM call")
+            return
         user_text = self._extract_user_text(chat_ctx)
         logger.info(f"[BRIDGE] llm_node: user_text='{user_text[:120]}' persona_id={self._persona_id}")
         if not user_text.strip():
@@ -57,7 +58,7 @@ class PigAgentVoiceBridge(Agent):
         self.current_interrupt_event = asyncio.Event()
         first = True
         async for text in self._pig.generate_reply(
-            self._user_id, user_text,
+            user_text,
             persona_id=self._persona_id,
             interrupt_event=self.current_interrupt_event,
             session_id=self._session_id,
