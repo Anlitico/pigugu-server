@@ -63,6 +63,7 @@ def _make_start_tool():
         "postgresql://fake:5432/pigugu",
         redis=mock_redis,
         connect=mock_connect,
+        ctx=MagicMock(),  # required since fix — tool persists roast body
     )
     return tool, mock_conn, mock_redis
 
@@ -179,7 +180,7 @@ class TestStartRoastTool:
         _current_user_id.set("")
 
         mock_redis = MagicMock()
-        tool = create_start_roast_tool("postgresql://fake:5432/pigugu", redis=mock_redis)
+        tool = create_start_roast_tool("postgresql://fake:5432/pigugu", ctx=MagicMock(), redis=mock_redis)
 
         result = await tool.execute({"roast_id": "debate_001"})
         assert "no active user session" in result["message"].lower()

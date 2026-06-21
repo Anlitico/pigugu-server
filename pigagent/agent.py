@@ -99,6 +99,7 @@ class PigAgent:
             registry.register(create_list_roasts_tool(self._pg_pool))
             registry.register(create_start_roast_tool(
                 self._pg_pool,
+                ctx=self.ctx,
                 redis=self._redis,
             ))
         return registry

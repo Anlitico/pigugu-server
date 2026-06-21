@@ -112,6 +112,7 @@ def create_list_roasts_tool(pg_pool: str, *, connect: ConnectFn | None = None) -
 def create_start_roast_tool(
     pg_pool: str,
     *,
+    ctx,  # ContextManager — required, for persisting roast body
     redis=None,
     connect: ConnectFn | None = None,
 ) -> Tool:
@@ -120,7 +121,9 @@ def create_start_roast_tool(
     The handler:
     1. Queries PG for the roast scenario.
     2. Calls activate_roast() to create RoastState (Redis) and build the body.
-    3. Returns _inject to insert the roast body after the tool_result,
+    3. Persists the roast body to agent_conversations via ctx.add_turn() so
+       subsequent turns inherit roast_instance_id.
+    4. Returns _inject to insert the roast body into the LLM context,
        so the context order is: tool_call → tool_result → user(roast body) → assistant(opening).
     """
 
@@ -177,7 +180,19 @@ def create_start_roast_tool(
             f"roast_id={roast_id} user={user_id}"
         )
 
-        # 3. Return with _inject — runner injects roast body after tool_result
+        # 3. Persist roast body to agent_conversations so subsequent turns
+        #    inherit roast_instance_id via _assign_roast_instance_id().
+        try:
+            await ctx.add_turn(
+                user_id=user_id,
+                role="system",
+                content=body,
+                roast_instance_id=instance_id,
+            )
+        except Exception as e:
+            logger.error(f"[start_roast] Failed to persist roast body: {e}")
+
+        # 4. Return with _inject — runner injects roast body after tool_result
         return {
             "message": (
                 f"Roast loaded. The game scenario will be added to the context. "
