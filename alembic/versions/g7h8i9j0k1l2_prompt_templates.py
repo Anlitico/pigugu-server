@@ -469,20 +469,24 @@ def upgrade() -> None:
     ]
 
     import json
+
+    def _sq(s: str) -> str:
+        """SQL-safe escape: double any single quotes."""
+        return s.replace("'", "''")
+
     for p in prompts:
-        conn.execute(
-            sa.text(
-                """INSERT INTO prompt_templates (name, content, category, variables)
-                   VALUES (:name, :content, :category, :variables::jsonb)
-                   ON CONFLICT (name) DO NOTHING"""
-            ),
-            {
-                "name": p["name"],
-                "content": p["content"],
-                "category": p["category"],
-                "variables": json.dumps(p["variables"]),
-            },
+        variables_json = json.dumps(p["variables"])
+        sql = (
+            f"INSERT INTO prompt_templates (name, content, category, variables) "
+            f"VALUES ("
+            f"'{_sq(p['name'])}', "
+            f"'{_sq(p['content'])}', "
+            f"'{_sq(p['category'])}', "
+            f"'{_sq(variables_json)}'::jsonb"
+            f") "
+            f"ON CONFLICT (name) DO NOTHING"
         )
+        conn.execute(sa.text(sql))
 
 
 def downgrade() -> None:
