@@ -18,7 +18,7 @@ if TYPE_CHECKING:
 
 class BreakingBombMode(GameMode):
     mode = Mode.BREAKING_BOMB
-    max_turns = 3
+    max_turns = 50
 
     async def get_system_prompt_extension(self, prompt_store: PromptStore | None) -> str:
         if prompt_store is None:

@@ -38,7 +38,7 @@ def _is_strong_point(text: str) -> bool:
 
 class DebateBickerMode(GameMode):
     mode = Mode.DEBATE_BICKER
-    max_turns = 6
+    max_turns = 50
 
     async def get_system_prompt_extension(self, prompt_store: PromptStore | None) -> str:
         if prompt_store is None:

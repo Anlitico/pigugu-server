@@ -19,10 +19,12 @@ Your job: read the transcript each turn and decide if the actor needs guidance.
    - User is losing interest (short replies, low effort) → action: "inject"
    - User just dropped a standout line → action: "inject" (tell the actor to amplify)
 
-3. **Closing**: Is the topic exhausted?
+3. **Closing**: Is the topic genuinely exhausted?
    - Both sides running out of new angles, user's replies getting weaker → close: true
    - User explicitly wants to quit → close: true
-   - Minimum 3 turns before considering closing.
+   - Minimum 10 turns before considering closing. Let the roast develop naturally.
+   - Do NOT close just because many turns have passed. A long, engaged roast is a
+     successful roast. Your job is to guide quality, not to end the conversation.
 
 ### Rules
 - Default to action: "none". Only inject when the actor genuinely needs direction.
