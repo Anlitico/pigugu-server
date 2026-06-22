@@ -32,8 +32,10 @@ class TestBuildRoastBody:
     def test_prompt_only(self):
         from roast.activate import _build_roast_body
         gm = MagicMock()
-        gm.system_prompt_extension = ""
-        body = _build_roast_body(game_mode_obj=gm, prompt="News text")
+        gm.get_system_prompt_extension = AsyncMock(return_value="")
+        body = asyncio.run(_build_roast_body(
+            game_mode_obj=gm, prompt="News text", prompt_store=MagicMock(),
+        ))
         assert "## News Context" in body
         assert "News text" in body
         assert "## Game Mode" not in body
@@ -41,8 +43,10 @@ class TestBuildRoastBody:
     def test_extension_only(self):
         from roast.activate import _build_roast_body
         gm = MagicMock()
-        gm.system_prompt_extension = "Rules"
-        body = _build_roast_body(game_mode_obj=gm, prompt="")
+        gm.get_system_prompt_extension = AsyncMock(return_value="Rules")
+        body = asyncio.run(_build_roast_body(
+            game_mode_obj=gm, prompt="", prompt_store=MagicMock(),
+        ))
         assert "## Game Mode" in body
         assert "Rules" in body
         assert "## News Context" not in body
@@ -50,16 +54,20 @@ class TestBuildRoastBody:
     def test_both(self):
         from roast.activate import _build_roast_body
         gm = MagicMock()
-        gm.system_prompt_extension = "Rules"
-        body = _build_roast_body(game_mode_obj=gm, prompt="News")
+        gm.get_system_prompt_extension = AsyncMock(return_value="Rules")
+        body = asyncio.run(_build_roast_body(
+            game_mode_obj=gm, prompt="News", prompt_store=MagicMock(),
+        ))
         assert "## News Context" in body
         assert "## Game Mode" in body
 
     def test_empty(self):
         from roast.activate import _build_roast_body
         gm = MagicMock()
-        gm.system_prompt_extension = ""
-        body = _build_roast_body(game_mode_obj=gm, prompt="")
+        gm.get_system_prompt_extension = AsyncMock(return_value="")
+        body = asyncio.run(_build_roast_body(
+            game_mode_obj=gm, prompt="", prompt_store=MagicMock(),
+        ))
         assert body == ""
 
 

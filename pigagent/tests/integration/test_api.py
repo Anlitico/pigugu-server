@@ -26,7 +26,8 @@ class TestRoastStartEndpoint:
         PersonaRegistry.register_defaults()
         GameModeRegistry.register_defaults()
 
-        prompts = PersonaRegistry.build_prompt_cache()
+        from tests.integration.test_pigagent import _make_test_prompt_store
+        prompt_store = _make_test_prompt_store()
         game_modes = GameModeRegistry.build_cache()
 
         agent = PigAgent(
@@ -35,7 +36,7 @@ class TestRoastStartEndpoint:
             redis=MagicMock(),
             pg_pool=MagicMock(),
             model="qwen3.6-flash",
-            prompts=prompts,
+            prompt_store=prompt_store,
             game_modes=game_modes,
             tools=[],
             tool_handlers={},

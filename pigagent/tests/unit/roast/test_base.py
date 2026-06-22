@@ -46,12 +46,10 @@ class _MinimalMode(GameMode):
     mode = Mode.ROAST_TOGETHER
     max_turns = 3
 
-    @property
-    def system_prompt_extension(self) -> str:
+    async def get_system_prompt_extension(self, prompt_store=None) -> str:
         return "minimal rules"
 
-    @property
-    def director_prompt(self) -> str:
+    async def get_director_prompt(self, prompt_store=None) -> str:
         return "You are a test director. Default to action:none."
 
 
@@ -96,7 +94,7 @@ class TestGameModeTick:
         return s
 
     def test_ending_on_max_turns(self):
-        from unittest.mock import MagicMock
+        from unittest.mock import AsyncMock, MagicMock
         from roast.modes.roast_together import RoastTogetherMode
         import asyncio
 
@@ -106,12 +104,14 @@ class TestGameModeTick:
         wc = MagicMock()
         wc.raw_records = []
 
-        result = asyncio.run(mode.tick(state, wc=wc, redis=redis))
+        mock_store = MagicMock()
+        mock_store.get = AsyncMock(return_value="dummy prompt")
+        result = asyncio.run(mode.tick(state, wc=wc, redis=redis, prompt_store=mock_store))
         assert result is not None
         assert state.turn_count == 8
 
     def test_no_transition_mid_game(self):
-        from unittest.mock import MagicMock
+        from unittest.mock import AsyncMock, MagicMock
         from roast.modes.roast_together import RoastTogetherMode
         import asyncio
 
@@ -121,12 +121,14 @@ class TestGameModeTick:
         wc = MagicMock()
         wc.raw_records = []
 
-        result = asyncio.run(mode.tick(state, wc=wc, redis=redis))
+        mock_store = MagicMock()
+        mock_store.get = AsyncMock(return_value="dummy prompt")
+        result = asyncio.run(mode.tick(state, wc=wc, redis=redis, prompt_store=mock_store))
         assert result is None
         assert state.turn_count == 2
 
     def test_skips_if_not_active(self):
-        from unittest.mock import MagicMock
+        from unittest.mock import AsyncMock, MagicMock
         from roast.types import Phase
         from roast.modes.roast_together import RoastTogetherMode
         import asyncio
@@ -137,7 +139,9 @@ class TestGameModeTick:
         wc = MagicMock()
         wc.raw_records = []
 
-        result = asyncio.run(mode.tick(state, wc=wc, redis=redis))
+        mock_store = MagicMock()
+        mock_store.get = AsyncMock(return_value="dummy prompt")
+        result = asyncio.run(mode.tick(state, wc=wc, redis=redis, prompt_store=mock_store))
         assert result is None
         assert state.turn_count == 5  # unchanged
 

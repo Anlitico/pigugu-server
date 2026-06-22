@@ -4,7 +4,7 @@ from pathlib import Path
 
 from jinja2 import Environment, BaseLoader, TemplateNotFound
 
-_TEMPLATES_DIR = Path(__file__).parent / "templates"
+_TEMPLATES_DIR = Path(__file__).parent.parent / "prompts" / "templates"
 
 _env = Environment(loader=BaseLoader())
 
