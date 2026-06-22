@@ -207,13 +207,13 @@ class ContextCompressor:
             l4_task = asyncio.create_task(tasks[2]) if len(tasks) > 2 else None
 
             l2_facts_raw = await l2_fact_task
-            l2_facts = l2_facts_raw if not isinstance(l2_facts_raw, BaseException) else []
+            l2_facts = l2_facts_raw if (l2_facts_raw is not None and not isinstance(l2_facts_raw, BaseException)) else []
             prof_task = asyncio.create_task(self._write_l2(l2_facts))
 
             l3_result = await l3_task if l3_task else existing_l3_text
-            l3_text = l3_result if not isinstance(l3_result, BaseException) else existing_l3_text
+            l3_text = l3_result if (l3_result is not None and not isinstance(l3_result, BaseException)) else existing_l3_text
             l4_result = await l4_task if l4_task else ""
-            l4_text = l4_result if not isinstance(l4_result, BaseException) else ""
+            l4_text = l4_result if (l4_result is not None and not isinstance(l4_result, BaseException)) else ""
             metrics.mark("llm_done")
 
             l2_profile = await prof_task
