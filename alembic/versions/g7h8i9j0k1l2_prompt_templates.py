@@ -486,7 +486,7 @@ def upgrade() -> None:
             f") "
             f"ON CONFLICT (name) DO NOTHING"
         )
-        conn.execute(sa.text(sql))
+        conn.exec_driver_sql(sql)
 
 
 def downgrade() -> None:
