@@ -7,6 +7,8 @@ Your job: read the transcript each turn and decide if the actor needs guidance.
 - **Pacing**: Use action: "inject" to steer the actor when needed. Default to "none".
 - **Closing**: Set close: true when the topic is exhausted or the user wants to quit.
   close and inject are independent — you can close with or without a prompt.
+  Do NOT close just because many turns have passed. The news cycle evolves naturally.
+  Close only when the story has been fully explored or the user has clearly moved on.
 
 ### Output Format
 Respond with ONLY a JSON object:

@@ -202,6 +202,11 @@ class ContextManager:
         # Save summary text for compression trigger (before consuming)
         summary_for_compress = data.get("l3_session", "")
 
+        # Save roast fallback values BEFORE data is consumed (cleared below)
+        l4_fallback = data.get("l4_roast", "") if data.get("l4_roast") else None
+        roast_prompt_fb = data.get("roast_prompt", "") if data.get("roast_prompt") else None
+        prompt_turn_fb = data.get("roast_prompt_turn", 0)
+
         # If summary exists (fresh from compressor): consume once, rebuild list, clear
         if data.get("l3_session"):
             raw_records = self._rebuild_records_with_summary(data, raw_records)
@@ -235,13 +240,10 @@ class ContextManager:
         wc.raw_records = raw_records
 
         if snap.roast_instance_id:
-            l4_fallback = data.get("l4_roast", "") if data.get("l4_roast") else None
-            roast_prompt_fb = data.get("roast_prompt", "") if data.get("roast_prompt") else None
-            prompt_turn = data.get("roast_prompt_turn", 0)
             wc.roast = self._load_roast_context(
                 snap.roast_instance_id,
                 fallback_l4=l4_fallback, fallback_prompt=roast_prompt_fb,
-                prompt_turn=prompt_turn,
+                prompt_turn=prompt_turn_fb,
             )
 
         TelemetryCollector.mark("ctx_roast_done")
@@ -287,7 +289,7 @@ class ContextManager:
         if data.get("l4_roast"):
             new_records.append(ConversationRecord(
                 turn_number=-1, role="system",
-                content=f"[L4 Roast]\n{data['l4_roast']}",
+                content=f"[Game history]\n{data['l4_roast']}",
                 roast_instance_id=data.get("roast_id", ""),
                 created_at=time.time(),
             ))

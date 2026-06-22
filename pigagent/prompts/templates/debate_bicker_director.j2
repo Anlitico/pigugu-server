@@ -7,6 +7,8 @@ Your job: read the transcript each turn and decide if the actor needs guidance.
 - **Pacing**: Use action: "inject" to steer the actor when needed. Default to "none".
 - **Closing**: Set close: true when the debate has run its course or the user wants to quit.
   close and inject are independent — you can close with or without a prompt.
+  Do NOT close just because many turns have passed. A long, engaged debate is fine.
+  Close only when the topic is genuinely exhausted or the user has clearly checked out.
 
 ### Output Format
 Respond with ONLY a JSON object:

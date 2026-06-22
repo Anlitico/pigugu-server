@@ -19,7 +19,7 @@ if TYPE_CHECKING:
 
 class RoastTogetherMode(GameMode):
     mode = Mode.ROAST_TOGETHER
-    max_turns = 8
+    max_turns = 50
 
     async def get_system_prompt_extension(self, prompt_store: PromptStore | None) -> str:
         if prompt_store is None:

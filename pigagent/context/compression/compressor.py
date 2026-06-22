@@ -172,6 +172,18 @@ class ContextCompressor:
                 prompt_text = r.content
                 break
 
+        # If the real prompt turn was discarded by a previous summary
+        # boundary, recover it from the stored summary so L3/L4 splitting
+        # still uses the correct anchor.
+        if prompt_rid:
+            stored = await self._store.read_summaries()
+            stored_rid = stored.get("roast_id", "")
+            stored_pt = stored.get("roast_prompt_turn", 0)
+            stored_ptext = stored.get("roast_prompt", "")
+            if stored_rid == prompt_rid and stored_pt > 0 and (prompt_turn == 0 or stored_pt < prompt_turn):
+                prompt_turn = stored_pt
+                prompt_text = stored_ptext
+
         # L3: real turns before prompt_turn (pre-roast, regardless of rid)
         l3_real = [r for r in real_turns if r.turn_number < prompt_turn]
         existing_l3 = virtual.get(-2)
@@ -194,7 +206,18 @@ class ContextCompressor:
             else:
                 tasks.extend([asyncio.sleep(0), asyncio.sleep(0)])
 
-            if l4_real and await snap.should_compress_l4(model=model):
+            # L4: compress roast turns. First compression waits for >= 20 turns
+            # so the LLM has enough context to produce a meaningful summary.
+            # Subsequent compressions use the existing token-based threshold.
+            if l4_real:
+                if not existing_l4_text and len(l4_real) < 20:
+                    l4_should = False
+                else:
+                    l4_should = await snap.should_compress_l4(model=model)
+            else:
+                l4_should = False
+
+            if l4_should:
                 l4_msgs = snap.to_messages(l4_real)
                 tasks.append(compress_roast(l4_msgs, existing_summary=existing_l4_text,
                                             model=model))
@@ -207,13 +230,13 @@ class ContextCompressor:
             l4_task = asyncio.create_task(tasks[2]) if len(tasks) > 2 else None
 
             l2_facts_raw = await l2_fact_task
-            l2_facts = l2_facts_raw if not isinstance(l2_facts_raw, BaseException) else []
+            l2_facts = l2_facts_raw if (l2_facts_raw is not None and not isinstance(l2_facts_raw, BaseException)) else []
             prof_task = asyncio.create_task(self._write_l2(l2_facts))
 
             l3_result = await l3_task if l3_task else existing_l3_text
-            l3_text = l3_result if not isinstance(l3_result, BaseException) else existing_l3_text
+            l3_text = l3_result if (l3_result is not None and not isinstance(l3_result, BaseException)) else existing_l3_text
             l4_result = await l4_task if l4_task else ""
-            l4_text = l4_result if not isinstance(l4_result, BaseException) else ""
+            l4_text = l4_result if (l4_result is not None and not isinstance(l4_result, BaseException)) else ""
             metrics.mark("llm_done")
 
             l2_profile = await prof_task
