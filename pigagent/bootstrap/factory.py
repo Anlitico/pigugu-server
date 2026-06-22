@@ -23,30 +23,23 @@ from agent import PigAgent
 
 # ── Shared caches (built once) ────────────────────────────────────────────
 
-_prompts_cache: dict[int, str] | None = None
 _game_modes_cache: dict | None = None
 
 
-def _ensure_caches():
-    """Build prompt and game mode caches once. Idempotent."""
-    global _prompts_cache, _game_modes_cache
-    if _prompts_cache is None:
-        from system_prompts import PersonaRegistry
-        PersonaRegistry.register_defaults()
-        _prompts_cache = PersonaRegistry.build_prompt_cache()
-        logger.info(f"[Factory] Prompt cache built: {list(_prompts_cache.keys())}")
+def _ensure_game_mode_cache():
+    """Build game mode cache once. Idempotent."""
+    global _game_modes_cache
     if _game_modes_cache is None:
         from roast import GameModeRegistry
         GameModeRegistry.register_defaults()
         _game_modes_cache = GameModeRegistry.build_cache()
         logger.info(f"[Factory] Game mode cache built: {list(_game_modes_cache.keys())}")
-    return _prompts_cache, _game_modes_cache
+    return _game_modes_cache
 
 
 def get_game_modes() -> dict:
     """Return the shared game modes cache (built once)."""
-    _, game_modes = _ensure_caches()
-    return game_modes
+    return _ensure_game_mode_cache()
 
 
 # ── Global singletons ──────────────────────────────────────────────────────
@@ -136,18 +129,26 @@ async def get_pg_pool():
 async def create_pig_agent(user_id: str, config=None) -> PigAgent:
     """Create a new PigAgent instance for a specific user/session.
 
-    Each call creates a fresh PigAgent + ContextManager. Shared resources
-    (Redis, PG pool, prompts, game modes, model config) are reused.
+    Each call creates a fresh PigAgent + ContextManager + PromptStore.
+    Shared resources (Redis, PG pool, game modes, model config) are reused.
+
+    PromptStore is per-agent — its cache starts empty, and prompts are
+    lazily loaded from PG on first access. When a prompt is updated in
+    PG, restarting the session (new PigAgent → new PromptStore) picks
+    up the change without a redeploy.
     """
     if config is None:
         config = get_config()
 
     model = config.resolve_model()
 
-    prompts, game_modes = _ensure_caches()
+    game_modes = _ensure_game_mode_cache()
 
     redis = get_redis()
     pg_pool = await get_pg_pool()
+
+    from prompts import PromptStore
+    prompt_store = PromptStore(pg_pool)
 
     from context.manager import ContextManager
     ctx = ContextManager(user_id, redis_client=redis, pg_pool=pg_pool)
@@ -159,7 +160,7 @@ async def create_pig_agent(user_id: str, config=None) -> PigAgent:
         redis=redis,
         pg_pool=pg_pool,
         model=model,
-        prompts=prompts,
+        prompt_store=prompt_store,
         game_modes=game_modes,
         temperature=config.LLM_TEMPERATURE,
         max_tokens=config.LLM_MAX_TOKENS,

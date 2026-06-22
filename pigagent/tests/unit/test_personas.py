@@ -46,22 +46,6 @@ class TestPersonaRegistry:
         assert isinstance(p, Persona)
         assert p.persona_id == 1
 
-    def test_build_prompt_cache_includes_global_prompt(self):
-        from system_prompts import PersonaRegistry
-        PersonaRegistry.register_defaults()
-        cache = PersonaRegistry.build_prompt_cache()
-        for pid, prompt in cache.items():
-            assert "Pigugu" in prompt
-            assert "web_search" in prompt
-            assert "list_active_roasts" in prompt
-            assert "start_roast" in prompt
-
-    def test_build_prompt_cache_includes_persona_prompt(self):
-        from system_prompts import PersonaRegistry
-        PersonaRegistry.register_defaults()
-        cache = PersonaRegistry.build_prompt_cache()
-        assert "Trump" in cache[1]
-
 
 class TestTrumpPersona:
     def test_basic_fields(self):

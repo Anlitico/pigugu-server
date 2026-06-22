@@ -20,6 +20,7 @@ from typing import Any, TYPE_CHECKING
 
 if TYPE_CHECKING:
     from livekit.agents.types import FlushSentinel
+    from prompts import PromptStore
 
 from loguru import logger
 from metrics.turn import TelemetryCollector
@@ -46,7 +47,7 @@ class PigAgent:
         redis,
         pg_pool,
         model: str = "qwen-plus-us",
-        prompts: dict[int, str] | None = None,
+        prompt_store: PromptStore | None = None,
         game_modes: dict[str, Any] | None = None,
         tools: list | None = None,
         tool_handlers: dict | None = None,
@@ -59,7 +60,7 @@ class PigAgent:
         self.ctx = ctx
         self._redis = redis
         self._pg_pool = pg_pool
-        self._prompts: dict[int, str] = prompts or {}
+        self._prompt_store = prompt_store  # PromptStore — per-agent lazy cache
         self._game_modes: dict[str, Any] = game_modes or {}
         self._session_seeded: bool = False
 
@@ -149,14 +150,19 @@ class PigAgent:
 
         messages.append(new_msg)
 
-        # 3. Prepend system prompt
-        prompt = self._prompts.get(persona_id, "")
+        # 3. Prepend system prompt (lazy load from PG)
+        if self._prompt_store:
+            prompt = await self._prompt_store.build_persona_prompt(
+                persona_id, today=datetime.now().date().isoformat(),
+            )
+        else:
+            prompt = ""
         if prompt:
             messages.insert(0, Message.system(prompt))
 
         # 4. Seed session info on first turn — after history, before user message
         if not self._session_seeded:
-            session_msg = Message.system(self.build_session_info())
+            session_msg = Message.system(await self.build_session_info())
             messages.insert(-1, session_msg)  # before user message, after history
             if self.ctx:
                 asyncio.create_task(self._persist_turns([session_msg]))
@@ -171,7 +177,7 @@ class PigAgent:
                 await self.close_roast()
                 roast_state = None
                 # Inject free chat mode marker
-                free_chat_marker = self._build_free_chat_marker()
+                free_chat_marker = await self._build_free_chat_marker()
                 messages.append(Message.system(free_chat_marker))
                 if self.ctx:
                     asyncio.create_task(
@@ -249,22 +255,26 @@ class PigAgent:
 
     # ── Session ────────────────────────────────────────────────────────
 
-    def build_session_info(self) -> str:
+    async def build_session_info(self) -> str:
         """Build a one-time system message injected at conversation start."""
         now = datetime.now(ZoneInfo("America/Los_Angeles")).strftime("%Y-%m-%d %H:%M:%S %Z")
-        marker = self._build_free_chat_marker()
+        marker = await self._build_free_chat_marker()
         return f"[Session Start]\nCurrent time: {now}\n\n{marker}"
 
-    @staticmethod
-    def _build_free_chat_marker() -> str:
-        from system_prompts.loader import render
-        return f"{FREE_CHAT_MODE_PREFIX}\n{render('free_chat_marker.j2')}"
+    async def _build_free_chat_marker(self) -> str:
+        if self._prompt_store:
+            marker = await self._prompt_store.get("free_chat_marker")
+        else:
+            # Fallback to file-based loader when no PromptStore is configured
+            from system_prompts.loader import render
+            marker = render("free_chat_marker.j2")
+        return f"{FREE_CHAT_MODE_PREFIX}\n{marker}"
 
     async def seed_session_info(self) -> None:
         """Persist session-info system message at the start of a new conversation."""
         if not self.ctx:
             return
-        msg = self.build_session_info()
+        msg = await self.build_session_info()
         try:
             await self.ctx.add_turn(role="system", content=msg)
         except Exception as e:
@@ -281,7 +291,12 @@ class PigAgent:
         interrupt_event: asyncio.Event | None = None,
     ) -> AsyncIterator[str | FlushSentinel]:
         """Low-level ReAct loop. No context loading, no persistence."""
-        prompt = self._prompts.get(persona_id, "")
+        if self._prompt_store:
+            prompt = await self._prompt_store.build_persona_prompt(
+                persona_id, today=datetime.now().date().isoformat(),
+            )
+        else:
+            prompt = ""
         if prompt:
             messages = [Message.system(prompt)] + messages
 
@@ -321,6 +336,7 @@ class PigAgent:
                 source=source,
                 redis=self._redis,
                 pg_pool=self._pg_pool,
+                prompt_store=self._prompt_store,
             )
         except Exception as e:
             logger.error(f"[PigAgent] activate_roast failed: {e}")
@@ -417,6 +433,7 @@ class PigAgent:
                 roast_state,
                 wc=wc, current_msg=current_msg,
                 redis=self._redis, pg_pool=self._pg_pool,
+                prompt_store=self._prompt_store,
             )
             if triggered:
                 logger.info(f"[PigAgent] Trigger fired: {triggered[:80]}...")

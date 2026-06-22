@@ -7,7 +7,10 @@ then passing the data here.
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from prompts import PromptStore
 
 from loguru import logger
 
@@ -48,6 +51,7 @@ async def activate_roast(
     source: str = "",
     redis,
     pg_pool=None,
+    prompt_store: PromptStore | None = None,
 ) -> tuple[str, str]:
     """Start a roast game session and build the context body.
 
@@ -63,6 +67,7 @@ async def activate_roast(
         prompt: Full English game scenario prompt.
         redis: Redis client.
         pg_pool: Optional PG pool for RoastState history persistence.
+        prompt_store: PromptStore for lazy prompt loading.
 
     Returns:
         (roast_instance_id, formatted_roast_body)
@@ -83,7 +88,7 @@ async def activate_roast(
         pg_pool=pg_pool,
     )
 
-    body = f"{ROAST_BODY_PREFIX}\n{_build_roast_body(game_mode_obj=mode, prompt=prompt)}"
+    body = f"{ROAST_BODY_PREFIX}\n{await _build_roast_body(game_mode_obj=mode, prompt=prompt, prompt_store=prompt_store)}"
 
     logger.info(
         f"[activate_roast] Started: {state.roast_instance_id} "
@@ -93,11 +98,14 @@ async def activate_roast(
     return state.roast_instance_id, body
 
 
-def _build_roast_body(*, game_mode_obj: Any, prompt: str = "") -> str:
+async def _build_roast_body(*, game_mode_obj: Any, prompt: str = "", prompt_store: PromptStore | None = None) -> str:
     parts: list[str] = []
     if prompt.strip():
         parts.append(f"## News Context\n{prompt.strip()}")
-    ext = getattr(game_mode_obj, "system_prompt_extension", "")
+    if prompt_store:
+        ext = await game_mode_obj.get_system_prompt_extension(prompt_store)
+    else:
+        ext = ""
     if ext:
         parts.append(f"## Game Mode\n{ext}")
     return "\n\n".join(parts)

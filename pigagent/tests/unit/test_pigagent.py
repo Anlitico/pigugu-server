@@ -11,6 +11,19 @@ from core.llm.types import Message
 # ── Helpers ────────────────────────────────────────────────────────────────
 
 
+def _make_test_prompt_store(overrides: dict[str, str] | None = None):
+    """Build a PromptStore preloaded with test prompt data."""
+    from prompts import PromptStore
+    store = PromptStore()  # no PG pool
+    store.preload("global", "You are Pigugu.")
+    store.preload("trump", "You are Trump.")
+    store.preload("free_chat_marker", "Free Chat mode active.")
+    if overrides:
+        for name, content in overrides.items():
+            store.preload(name, content)
+    return store
+
+
 def _make_agent(**kwargs):
     """Create a PigAgent with all required dependencies mocked."""
     from agent import PigAgent
@@ -44,11 +57,13 @@ def _make_agent(**kwargs):
         "volume_control": mock_volume,
     }.get(name)
 
+    prompt_store = _make_test_prompt_store()
+
     defaults = {
         "ctx": ctx,
         "redis": redis,
         "pg_pool": pg_pool,
-        "prompts": {1: "You are Trump."},
+        "prompt_store": prompt_store,
         "game_modes": {},
         "tools": mock_registry.tools,
         "tool_handlers": mock_registry.tool_handlers,
@@ -113,9 +128,9 @@ class TestGenerateReply:
         assert result == "Hi there!"
 
     def test_injects_system_prompt(self):
-        agent, ctx, redis, pg = _make_agent(
-            prompts={0: "You are helpful."},
-        )
+        # Override global to empty so the system prompt is just the persona prompt
+        store = _make_test_prompt_store({"global": "", "trump": "You are helpful."})
+        agent, ctx, redis, pg = _make_agent(prompt_store=store)
         captured_messages = []
 
         async def _stream(messages, search=None, interrupt_event=None, session_id=None):
@@ -129,7 +144,7 @@ class TestGenerateReply:
         agent.runner = mock
 
         import asyncio
-        asyncio.run(_run_collect(agent.generate_reply("hello", persona_id=0)))
+        asyncio.run(_run_collect(agent.generate_reply("hello", persona_id=1)))
 
         assert captured_messages[0].role == "system"
         assert captured_messages[0].content == "You are helpful."
@@ -229,9 +244,8 @@ class TestStream:
         assert result == "abc"
 
     def test_prepends_system_prompt(self):
-        agent, ctx, redis, pg = _make_agent(
-            prompts={0: "SYSTEM"},
-        )
+        store = _make_test_prompt_store({"global": "", "trump": "SYSTEM"})
+        agent, ctx, redis, pg = _make_agent(prompt_store=store)
         captured = []
 
         async def _stream(messages, search=None, interrupt_event=None, session_id=None):
@@ -244,14 +258,15 @@ class TestStream:
 
         import asyncio
         asyncio.run(_run_collect(
-            agent.stream([Message.user("hi")], persona_id=0)
+            agent.stream([Message.user("hi")], persona_id=1)
         ))
 
         assert captured[0].role == "system"
         assert captured[0].content == "SYSTEM"
 
     def test_no_prompt_when_persona_unknown(self):
-        agent, ctx, redis, pg = _make_agent(prompts={})
+        # No PromptStore at all → empty prompt
+        agent, ctx, redis, pg = _make_agent(prompt_store=None)
         _mock_runner_stream(agent, ["x"])
 
         import asyncio
@@ -292,7 +307,7 @@ class TestStartRoast:
         game_mode.mode.__str__ = MagicMock(return_value="roast_together")
         game_mode.tick = AsyncMock()
         game_mode.init_extra = MagicMock(return_value={"key": "val"})
-        game_mode.system_prompt_extension = "Game rules here"
+        game_mode.get_system_prompt_extension = AsyncMock(return_value="Game rules here")
 
         agent, ctx, redis, pg = _make_agent()
         _mock_runner_stream(agent, ["Opening line!"])
@@ -351,7 +366,8 @@ class TestDefaultTools:
         # _create_default_tools is now an instance method that reads self._pg_pool.
         # Pass empty tools to skip default tool creation in __init__, then
         # call _create_default_tools() inside the patch context.
-        agent = PigAgent("u1", pg_pool=None, redis=MagicMock(), ctx=None, tools=[], tool_handlers={})
+        agent = PigAgent("u1", pg_pool=None, redis=MagicMock(), ctx=None,
+                         prompt_store=None, tools=[], tool_handlers={})
 
         with patch("tools.create_web_search_tool", return_value=search_tool), \
              patch("tools.volume_tool", vol_tool), \
@@ -374,7 +390,8 @@ class TestDefaultTools:
         vol_tool = MagicMock()
         vol_tool.name = "volume_control"
 
-        agent = PigAgent("u1", pg_pool=None, redis=MagicMock(), ctx=None, tools=[], tool_handlers={})
+        agent = PigAgent("u1", pg_pool=None, redis=MagicMock(), ctx=None,
+                         prompt_store=None, tools=[], tool_handlers={})
 
         with patch("tools.create_web_search_tool", return_value=search_tool), \
              patch("tools.volume_tool", vol_tool), \
@@ -396,7 +413,8 @@ class TestDefaultTools:
         vol_tool.name = "volume_control"
         vol_tool.execute = lambda x: None
 
-        agent = PigAgent("u1", pg_pool=None, redis=MagicMock(), ctx=None, tools=[], tool_handlers={})
+        agent = PigAgent("u1", pg_pool=None, redis=MagicMock(), ctx=None,
+                         prompt_store=None, tools=[], tool_handlers={})
 
         with patch("tools.create_web_search_tool", return_value=search_tool), \
              patch("tools.volume_tool", vol_tool), \
@@ -410,36 +428,52 @@ class TestDefaultTools:
 
 class TestBuildRoastBody:
     def test_prompt_only(self):
+        import asyncio
         from roast.activate import _build_roast_body
         game_mode = MagicMock()
-        game_mode.system_prompt_extension = ""
-        body = _build_roast_body(game_mode_obj=game_mode, prompt="News text")
+        game_mode.get_system_prompt_extension = AsyncMock(return_value="")
+        body = asyncio.run(_build_roast_body(
+            game_mode_obj=game_mode, prompt="News text",
+            prompt_store=_make_test_prompt_store(),
+        ))
         assert "## News Context" in body
         assert "News text" in body
         assert "## Game Mode" not in body
 
     def test_extension_only(self):
+        import asyncio
         from roast.activate import _build_roast_body
         game_mode = MagicMock()
-        game_mode.system_prompt_extension = "Rules"
-        body = _build_roast_body(game_mode_obj=game_mode, prompt="")
+        game_mode.get_system_prompt_extension = AsyncMock(return_value="Rules")
+        body = asyncio.run(_build_roast_body(
+            game_mode_obj=game_mode, prompt="",
+            prompt_store=_make_test_prompt_store(),
+        ))
         assert "## Game Mode" in body
         assert "Rules" in body
         assert "## News Context" not in body
 
     def test_both(self):
+        import asyncio
         from roast.activate import _build_roast_body
         game_mode = MagicMock()
-        game_mode.system_prompt_extension = "Rules"
-        body = _build_roast_body(game_mode_obj=game_mode, prompt="News")
+        game_mode.get_system_prompt_extension = AsyncMock(return_value="Rules")
+        body = asyncio.run(_build_roast_body(
+            game_mode_obj=game_mode, prompt="News",
+            prompt_store=_make_test_prompt_store(),
+        ))
         assert "## News Context" in body
         assert "## Game Mode" in body
 
     def test_empty(self):
+        import asyncio
         from roast.activate import _build_roast_body
         game_mode = MagicMock()
-        game_mode.system_prompt_extension = ""
-        body = _build_roast_body(game_mode_obj=game_mode, prompt="")
+        game_mode.get_system_prompt_extension = AsyncMock(return_value="")
+        body = asyncio.run(_build_roast_body(
+            game_mode_obj=game_mode, prompt="",
+            prompt_store=_make_test_prompt_store(),
+        ))
         assert body == ""
 
 
@@ -478,18 +512,21 @@ class TestModelProperty:
 
 class TestBuildSessionInfo:
     def test_has_session_start_tag(self):
+        import asyncio
         agent, ctx, redis, pg = _make_agent()
-        info = agent.build_session_info()
+        info = asyncio.run(agent.build_session_info())
         assert "[Session Start]" in info
 
     def test_has_current_time(self):
+        import asyncio
         agent, ctx, redis, pg = _make_agent()
-        info = agent.build_session_info()
+        info = asyncio.run(agent.build_session_info())
         assert "Current time:" in info
 
     def test_includes_timezone(self):
+        import asyncio
         agent, ctx, redis, pg = _make_agent()
-        info = agent.build_session_info()
+        info = asyncio.run(agent.build_session_info())
         # Pacific timezone (PDT or PST)
         assert any(tz in info for tz in ("PDT", "PST", "-07", "-08"))
 
@@ -506,7 +543,8 @@ class TestSeedSessionInfo:
 
     def test_noop_when_no_ctx(self):
         from agent import PigAgent
-        agent = PigAgent("u1", pg_pool=MagicMock(), redis=MagicMock(), ctx=None, tools=[], tool_handlers={})
+        agent = PigAgent("u1", pg_pool=MagicMock(), redis=MagicMock(), ctx=None,
+                         prompt_store=None, tools=[], tool_handlers={})
         import asyncio
         asyncio.run(agent.seed_session_info())
         # Should not raise

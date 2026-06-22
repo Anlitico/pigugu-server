@@ -14,6 +14,7 @@ from roast import pending
 
 if TYPE_CHECKING:
     from roast.state import RoastState
+    from prompts import PromptStore
 
 
 @dataclass(frozen=True)
@@ -23,8 +24,8 @@ class Trigger:
     When check returns True, the prompt is injected into the next turn.
     Evaluated in order; first match wins.
 
-    prompt can be a static str or a Callable[[RoastState], str] for
-    dynamic templates (e.g. referencing state.extra fields).
+    prompt can be a static str or a Callable[[RoastState, PromptStore], str]
+    for dynamic templates (e.g. referencing state.extra fields).
 
     If affects_phase is True, the state phase is updated to CLOSING
     when this trigger fires. Used for game-ending triggers.
@@ -32,7 +33,7 @@ class Trigger:
 
     name: str
     check: Callable[[RoastState, list], bool] = field(repr=False)
-    prompt: str | Callable[[RoastState], str] = field(repr=False)
+    prompt: str | Callable[..., str] = field(repr=False)
     affects_phase: bool = False
 
 
@@ -46,14 +47,20 @@ class GameMode(ABC):
 
     mode: Mode
 
-    @property
     @abstractmethod
-    def system_prompt_extension(self) -> str: ...
+    async def get_system_prompt_extension(self, prompt_store: PromptStore | None) -> str:
+        """Return the game mode system prompt extension.
 
-    @property
+        *prompt_store* is a :class:`~prompts.PromptStore` instance.
+        """
+        ...
+
     @abstractmethod
-    def director_prompt(self) -> str:
-        """System prompt for the director LLM. Each mode writes its own."""
+    async def get_director_prompt(self, prompt_store: PromptStore | None) -> str:
+        """System prompt for the director LLM. Each mode writes its own.
+
+        *prompt_store* is a :class:`~prompts.PromptStore` instance.
+        """
         ...
 
     @staticmethod
@@ -67,6 +74,7 @@ class GameMode(ABC):
 
     async def _direct(
         self, state: RoastState, *, wc, current_msg=None,
+        prompt_store: PromptStore | None = None,
     ) -> dict:
         """Run the director LLM to evaluate the conversation.
 
@@ -89,7 +97,16 @@ class GameMode(ABC):
         director_model = get_config().DIRECTOR_MODEL
 
         # Build director messages: system prompt + current roast conversation only
-        messages = [LLMMessage.system(self.director_prompt)]
+        if prompt_store is None:
+            # Fallback: no PromptStore available — skip director (degraded mode).
+            # In production, create_pig_agent() always provides a PromptStore.
+            logger.warning(
+                f"[{self.mode}] No PromptStore — director degraded"
+            )
+            return {"action": "none", "best_take": None, "prompt": None, "close": False}
+
+        director_prompt = await self.get_director_prompt(prompt_store)
+        messages = [LLMMessage.system(director_prompt)]
         roast_id = state.roast_instance_id
         has_roast_body = False
 
@@ -177,7 +194,7 @@ class GameMode(ABC):
             # to avoid (roast_instance_id, 0) collision.
             if turn_number == 0:
                 turn_number = state.turn_count
-            asyncio.ensure_future(_write_director_log(
+            asyncio.create_task(_write_director_log(
                 state.roast_instance_id, turn_number, result,
             ))
             return result
@@ -212,6 +229,7 @@ class GameMode(ABC):
         redis,
         pg_pool=None,
         current_msg=None,  # current user Message (may not be in wc snapshot yet)
+        prompt_store: PromptStore | None = None,
     ) -> str | None:
         """Advance state after one user turn.
 
@@ -231,7 +249,7 @@ class GameMode(ABC):
         director_prompt: str | None = None
         try:
             director_result = await self._direct(
-                state, wc=wc, current_msg=current_msg,
+                state, wc=wc, current_msg=current_msg, prompt_store=prompt_store,
             )
 
             if director_result.get("best_take"):
@@ -269,7 +287,12 @@ class GameMode(ABC):
         for trigger in self.triggers:
             try:
                 if trigger.check(state, wc.raw_records):
-                    prompt = trigger.prompt(state) if callable(trigger.prompt) else trigger.prompt
+                    if callable(trigger.prompt):
+                        prompt = trigger.prompt(state, prompt_store)
+                        if asyncio.iscoroutine(prompt):
+                            prompt = await prompt
+                    else:
+                        prompt = trigger.prompt
                     await self._emit(state, trigger, prompt, redis)
                     await state.save(redis, pg_pool)
                     return prompt
