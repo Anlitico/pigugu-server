@@ -15,6 +15,7 @@ new PromptStore) → new prompt takes effect. No redeploy needed.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 from pathlib import Path
 
 import asyncpg  # type: ignore[import-untyped]
@@ -134,8 +135,13 @@ class PromptStore:
                             name,
                         )
                         if row:
-                            self._cache[name] = row["content"]
-                            logger.debug(f"[PromptStore] Loaded '{name}' from PG")
+                            content = row["content"]
+                            self._cache[name] = content
+                            h = hashlib.md5(content.encode()).hexdigest()[:8]
+                            logger.info(
+                                f"[PromptStore] Loaded '{name}' from PG "
+                                f"({len(content)} chars, md5={h})"
+                            )
                             return
                         logger.warning(
                             f"[PromptStore] Prompt '{name}' not found in PG"
