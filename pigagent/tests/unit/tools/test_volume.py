@@ -10,9 +10,10 @@ import tools.volume as _mod
 
 
 def _reset_state():
-    """Reset global volume state before tests that depend on it."""
-    _mod._current_volume = 50
-    _mod._muted = False
+    """Reset per-session volume state before tests that depend on it."""
+    _mod._current_volume.set(50)
+    _mod._muted.set(False)
+    _mod._current_hw_id.set("")
 
 
 class TestVolumeTool:
@@ -84,7 +85,7 @@ class TestVolumeIncrease:
 
     def test_increase_hits_max(self):
         _reset_state()
-        _mod._current_volume = 95
+        _mod._current_volume.set(95)
         result = asyncio.run(_volume_handler({"action": "increase", "value": 10}))
         assert result["success"]
         assert result["level"] == 100
@@ -92,7 +93,7 @@ class TestVolumeIncrease:
 
     def test_increase_already_at_max_fails(self):
         _reset_state()
-        _mod._current_volume = 100
+        _mod._current_volume.set(100)
         result = asyncio.run(_volume_handler({"action": "increase", "value": 5}))
         assert not result["success"]
         assert "already at maximum" in result["message"]
@@ -107,7 +108,7 @@ class TestVolumeDecrease:
 
     def test_decrease_hits_min(self):
         _reset_state()
-        _mod._current_volume = 8
+        _mod._current_volume.set(8)
         result = asyncio.run(_volume_handler({"action": "decrease", "value": 10}))
         assert result["success"]
         assert result["level"] == 0
@@ -115,7 +116,7 @@ class TestVolumeDecrease:
 
     def test_decrease_already_at_min_fails(self):
         _reset_state()
-        _mod._current_volume = 0
+        _mod._current_volume.set(0)
         result = asyncio.run(_volume_handler({"action": "decrease", "value": 5}))
         assert not result["success"]
         assert "already at minimum" in result["message"]
@@ -130,14 +131,14 @@ class TestVolumeMute:
 
     def test_unmute(self):
         _reset_state()
-        _mod._current_volume = 60
+        _mod._current_volume.set(60)
         result = asyncio.run(_volume_handler({"action": "unmute"}))
         assert result["success"]
         assert result["level"] == 60
 
     def test_mute_then_unmute(self):
         _reset_state()
-        _mod._current_volume = 70
+        _mod._current_volume.set(70)
         asyncio.run(_volume_handler({"action": "mute"}))
         result = asyncio.run(_volume_handler({"action": "unmute"}))
         assert result["level"] == 70
@@ -159,3 +160,59 @@ class TestVolumeEdgeCases:
         result = asyncio.run(_volume_handler({"action": "set", "value": 100}))
         assert result["success"]
         assert result["level"] == 100
+
+
+class TestVolumeContextVars:
+    """ContextVar isolation — each session gets independent state."""
+
+    def test_isolated_per_session(self):
+        token_a = _mod._current_volume.set(30)
+        assert _mod._current_volume.get() == 30
+        _mod._current_volume.reset(token_a)
+        assert _mod._current_volume.get() == 50
+
+
+class TestVolumeHandlerMqtt:
+    """MQTT publish path when hw_id is set."""
+
+    @pytest.mark.asyncio
+    async def test_publishes_mqtt_when_hw_id_set(self):
+        from unittest.mock import AsyncMock, patch
+
+        _reset_state()
+        token = _mod._current_hw_id.set("80b54ee09ae0")
+        try:
+            with patch("tools.volume._publish_mqtt", new_callable=AsyncMock) as mock_pub:
+                result = await _mod._volume_handler({"action": "set", "value": 60})
+        finally:
+            _mod._current_hw_id.reset(token)
+
+        assert result["success"] is True
+        assert "warning" not in result["message"]
+        mock_pub.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_mqtt_failure_reports_unreachable(self):
+        from unittest.mock import AsyncMock, patch
+
+        _reset_state()
+        token = _mod._current_hw_id.set("80b54ee09ae0")
+        try:
+            with patch("tools.volume._publish_mqtt", side_effect=RuntimeError("boom")):
+                result = await _mod._volume_handler({"action": "set", "value": 50})
+        finally:
+            _mod._current_hw_id.reset(token)
+
+        assert result["success"] is True
+        assert "warning" in result["message"]
+
+    @pytest.mark.asyncio
+    async def test_no_mqtt_when_hw_id_empty(self):
+        from unittest.mock import AsyncMock, patch
+
+        _reset_state()
+        with patch("tools.volume._publish_mqtt", new_callable=AsyncMock) as mock_pub:
+            result = await _mod._volume_handler({"action": "set", "value": 70})
+
+        assert result["success"] is True
+        mock_pub.assert_not_called()

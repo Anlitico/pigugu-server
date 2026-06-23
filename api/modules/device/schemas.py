@@ -64,5 +64,3 @@ class MqttCredentialResponse(BaseModel):
     broker_uri: str
     client_cert: str
     client_key: str
-
-

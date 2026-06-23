@@ -126,7 +126,7 @@ async def get_pg_pool():
     return await _ensure_pg_pool()
 
 
-async def create_pig_agent(user_id: str, config=None) -> PigAgent:
+async def create_pig_agent(user_id: str, config=None, *, hw_id: str = "") -> PigAgent:
     """Create a new PigAgent instance for a specific user/session.
 
     Each call creates a fresh PigAgent + ContextManager + PromptStore.
@@ -136,6 +136,9 @@ async def create_pig_agent(user_id: str, config=None) -> PigAgent:
     lazily loaded from PG on first access. When a prompt is updated in
     PG, restarting the session (new PigAgent → new PromptStore) picks
     up the change without a redeploy.
+
+    hw_id is the hardware_id of the connected device, used by tools
+    (e.g. volume_control) to send C2D MQTT messages.
     """
     if config is None:
         config = get_config()
@@ -165,8 +168,9 @@ async def create_pig_agent(user_id: str, config=None) -> PigAgent:
         temperature=config.LLM_TEMPERATURE,
         max_tokens=config.LLM_MAX_TOKENS,
         max_iterations=config.AGENT_MAX_STEPS,
+        hw_id=hw_id,
     )
-    logger.info(f"[Factory] PigAgent created for user={user_id} model={model}")
+    logger.info("[Factory] PigAgent created for user=%s hw_id=%s model=%s", user_id, hw_id, model)
     return pig_agent
 
 
