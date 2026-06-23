@@ -1,6 +1,7 @@
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from core.config import settings
 from core.database import get_db
 from core.deps import get_current_user
 from models.user import User
@@ -126,22 +127,18 @@ async def report_state(body: DeviceStateRequest, db: AsyncSession = Depends(get_
 
 @router.get("/livekit-token", response_model=LiveKitTokenResponse)
 async def get_livekit_token(
-    device_id: str,
+    hw_id: str = Query(..., description="Hardware MAC address"),
     current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db)
 ):
-    import uuid
-    try:
-        d_id = uuid.UUID(device_id)
-    except ValueError:
-        raise HTTPException(status_code=400, detail="Invalid device ID")
-    
-    token, room_name = await service.generate_livekit_token(d_id)
-    from core.config import settings
+    """Return a long-lived (365d) token + room info. Hardware stores this
+    during provisioning and uses it for all future wake-word joins."""
+    token, room_name = await service.generate_livekit_token(
+        hw_id=hw_id, user_id=str(current_user.id),
+    )
     return LiveKitTokenResponse(
         token=token,
         room_name=room_name,
-        livekit_url=settings.livekit_url
+        livekit_url=settings.livekit_url,
     )
 
 
@@ -184,6 +181,46 @@ async def connectivity_check(
         raise HTTPException(status_code=400, detail="Invalid device ID")
     
     return await service.connectivity_check(db, current_user.id, d_id)
+
+
+@router.post("/join-room", status_code=204)
+async def join_room(
+    hw_id: str = Query(..., description="Hardware MAC address"),
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Fallback: ensure room + agent ready. Only the active device can join."""
+    try:
+        await service.join_room(db=db, user_id=current_user.id, hw_id=hw_id)
+    except ValueError as e:
+        error_msg = str(e)
+        if error_msg == "DEVICE_NOT_FOUND":
+            raise HTTPException(status_code=404, detail=error_msg)
+        if error_msg == "DEVICE_NOT_ACTIVE":
+            raise HTTPException(status_code=403, detail=error_msg)
+        raise
+
+
+@router.get("/room-status")
+async def room_status(
+    hw_id: str = Query(..., description="Hardware MAC address"),
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Check if the user's LiveKit room is alive.
+
+    Returns {room_name, alive} where alive=true means the room exists
+    and the agent is present. Only the active device can query.
+    """
+    try:
+        return await service.room_status(db=db, user_id=current_user.id, hw_id=hw_id)
+    except ValueError as e:
+        error_msg = str(e)
+        if error_msg == "DEVICE_NOT_FOUND":
+            raise HTTPException(status_code=404, detail=error_msg)
+        if error_msg == "DEVICE_NOT_ACTIVE":
+            raise HTTPException(status_code=403, detail=error_msg)
+        raise
 
 
 @router.patch("/{device_id}/name", response_model=DeviceResponse)

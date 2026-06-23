@@ -166,6 +166,10 @@ class AgentConfig(BaseSettings):
     # Policy Search Backend: "built_in" (default) or "perplexity"
     POLICY_SEARCH_BACKEND: str = Field(default_factory=lambda: get_config_value("POLICY_SEARCH_BACKEND", "built_in"))
     
+    # AWS IoT (MQTT publish for device communication)
+    AWS_REGION: str = Field(default_factory=lambda: get_config_value("AWS_REGION", "us-west-1"))
+    AWS_IOT_ENDPOINT: str = Field(default_factory=lambda: get_config_value("AWS_IOT_ENDPOINT", ""))
+
     # Logging
     LOG_LEVEL: str = Field(default_factory=lambda: get_config_value("LOG_LEVEL", "INFO"))
     LOG_TO_FILE: bool = Field(default_factory=lambda: get_bool_config_value("LOG_TO_FILE", True))

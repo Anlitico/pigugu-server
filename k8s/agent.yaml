@@ -12,6 +12,7 @@ data:
   ENDPOINTING_DELAY: "0.5"
   ENABLE_POLICY_SEARCH: "true"
   FORCE_POLICY_SEARCH: "false"
+  AWS_REGION: "us-west-1"
   LOG_LEVEL: "INFO"
   LOG_TO_FILE: "false"
 ---
@@ -105,6 +106,11 @@ spec:
             secretKeyRef:
               name: pigugu-secrets
               key: REDIS_URL
+        - name: AWS_IOT_ENDPOINT
+          valueFrom:
+            secretKeyRef:
+              name: pigugu-secrets
+              key: AWS_IOT_ENDPOINT
         - name: DATABASE_URL
           valueFrom:
             secretKeyRef:

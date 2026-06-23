@@ -406,10 +406,112 @@ async def rename_device(db: AsyncSession, user_id: uuid.UUID, device_id: uuid.UU
     return device
 
 
-async def generate_livekit_token(device_id: uuid.UUID) -> tuple[str, str]:
-    """Returns (token, room_name)."""
-    # Placeholder for actual LiveKit implementation
-    return "token", f"room_{device_id}"
+async def generate_livekit_token(
+    hw_id: str, *, user_id: str
+) -> tuple[str, str]:
+    """Generate a long-lived LiveKit token for hardware.
+
+    Token is valid for 365 days, includes RoomConfiguration with agent
+    dispatch. Hardware stores it during provisioning and uses it for all
+    future wake-word joins.
+
+    Returns (token, room_name).
+    """
+    from livekit import api as lk_api
+    from modules.device.room import build_room_name, AGENT_NAME
+
+    hw_id = hw_id.strip().lower()
+    room_name = build_room_name(user_id)
+
+    api_key = settings.livekit_api_key
+    api_secret = settings.livekit_api_secret
+
+    import datetime as _dt
+    at = lk_api.AccessToken(api_key=api_key, api_secret=api_secret)
+    at.ttl = _dt.timedelta(days=365)
+    token = (
+        at.with_identity(f"hw-{hw_id}")
+        .with_grants(
+            lk_api.VideoGrants(
+                room_join=True,
+                room=room_name,
+                can_publish=True,
+                can_subscribe=True,
+            )
+        )
+        .with_room_config(
+            lk_api.RoomConfiguration(
+                agents=[
+                    lk_api.RoomAgentDispatch(
+                        agent_name=AGENT_NAME,
+                        metadata=json.dumps({
+                            "user_id": user_id,
+                            "hw_id": hw_id,
+                        }),
+                    )
+                ],
+            )
+        )
+        .to_jwt()
+    )
+
+    logger.info("Token issued: user=%s hw=%s room=%s", user_id, hw_id, room_name)
+    return token, room_name
+
+
+async def join_room(db: AsyncSession, user_id: uuid.UUID, hw_id: str) -> None:
+    """Ensure a LiveKit room exists with agent dispatched.
+
+    Only the active device can trigger room creation. If the device is not
+    the user's active device, raises ValueError("DEVICE_NOT_ACTIVE").
+    """
+    from sqlalchemy import select
+    from models.device import Device
+    from modules.device.room import ensure_room
+
+    hw_id = hw_id.strip().lower()
+    result = await db.execute(
+        select(Device).where(
+            Device.user_id == user_id,
+            Device.hardware_id.ilike(hw_id),
+        )
+    )
+    device = result.scalar_one_or_none()
+    if not device:
+        raise ValueError("DEVICE_NOT_FOUND")
+    if device.active_state != "active":
+        raise ValueError("DEVICE_NOT_ACTIVE")
+
+    await ensure_room(user_id=str(user_id))
+
+
+async def room_status(db: AsyncSession, user_id: uuid.UUID, hw_id: str) -> dict:
+    """Check if the user's LiveKit room is alive.
+
+    Only the active device can query. Returns {room_name, alive}.
+    """
+    from sqlalchemy import select
+    from models.device import Device
+    from modules.device.room import build_room_name, check_room_alive
+
+    hw_id = hw_id.strip().lower()
+    result = await db.execute(
+        select(Device).where(
+            Device.user_id == user_id,
+            Device.hardware_id.ilike(hw_id),
+        )
+    )
+    device = result.scalar_one_or_none()
+    if not device:
+        raise ValueError("DEVICE_NOT_FOUND")
+    if device.active_state != "active":
+        raise ValueError("DEVICE_NOT_ACTIVE")
+
+    room_name = build_room_name(str(user_id))
+    return {
+        "room_name": room_name,
+        "alive": await check_room_alive(room_name),
+    }
 
 
 async def update_device_state(device_id: str, state: str) -> None:

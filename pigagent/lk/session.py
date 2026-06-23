@@ -145,6 +145,7 @@ async def run(ctx: JobContext) -> None:
 
     # Resolve user_id: metadata (app) > device_id > participant identity
     user_id = metadata.get("user_id", "") or metadata.get("device_id", "")
+    hw_id = metadata.get("hw_id", "")
 
     from lk.pigllm import PigAgentLLM
     pigllm = PigAgentLLM()
@@ -387,9 +388,9 @@ async def run(ctx: JobContext) -> None:
     logger.info(f"User ID resolved: {user_id}")
 
     # ── Create PigAgent now that user_id is known ─────────────────────
-    pig_agent = await create_pig_agent(user_id, config)
+    pig_agent = await create_pig_agent(user_id, config, hw_id=hw_id)
     bridge._pig = pig_agent
-    logger.info(f"[DEBUG] LLM: PigAgent with {pig_agent.model} wired for user={user_id}")
+    logger.info("[DEBUG] LLM: PigAgent with %s wired for user=%s hw_id=%s", pig_agent.model, user_id, hw_id)
 
     # Accept TrackSource.UNKNOWN (0) in addition to SOURCE_MICROPHONE (2).
     # LiveKit JS client's LocalAudioTrack may report source="unknown" instead
