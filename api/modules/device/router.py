@@ -126,17 +126,9 @@ async def report_state(body: DeviceStateRequest, db: AsyncSession = Depends(get_
 
 @router.get("/livekit-token", response_model=LiveKitTokenResponse)
 async def get_livekit_token(
-    device_id: str,
     current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db)
 ):
-    import uuid
-    try:
-        d_id = uuid.UUID(device_id)
-    except ValueError:
-        raise HTTPException(status_code=400, detail="Invalid device ID")
-    
-    token, room_name = await service.generate_livekit_token(d_id)
+    token, room_name = await service.generate_livekit_token(current_user.id)
     from core.config import settings
     return LiveKitTokenResponse(
         token=token,
