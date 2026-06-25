@@ -127,14 +127,12 @@ async def report_state(body: DeviceStateRequest, db: AsyncSession = Depends(get_
 
 @router.get("/livekit-token", response_model=LiveKitTokenResponse)
 async def get_livekit_token(
-    hw_id: str = Query(..., description="Hardware MAC address"),
     current_user: User = Depends(get_current_user),
 ):
     """Return a long-lived (365d) token + room info. Hardware stores this
     during provisioning and uses it for all future wake-word joins."""
-    token, room_name = await service.generate_livekit_token(
-        hw_id=hw_id, user_id=str(current_user.id),
-    )
+    token, room_name = await service.generate_livekit_token(str(current_user.id))
+    from core.config import settings
     return LiveKitTokenResponse(
         token=token,
         room_name=room_name,

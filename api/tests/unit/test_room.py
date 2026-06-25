@@ -162,7 +162,6 @@ class TestGenerateLivekitToken:
 
             from modules.device.service import generate_livekit_token
             token, room_name = await generate_livekit_token(
-                hw_id="80b54ee09ae0",
                 user_id="a1b2c3d4-e5f6-7890-abcd-ef1234567890",
             )
 
@@ -172,7 +171,7 @@ class TestGenerateLivekitToken:
     @pytest.mark.asyncio
 
     @pytest.mark.asyncio
-    async def test_token_identity_is_hw_prefixed(self):
+    async def test_token_identity_is_dev_prefixed(self):
         from unittest.mock import patch
 
         with patch("modules.device.service.settings") as mock_cfg:
@@ -182,11 +181,10 @@ class TestGenerateLivekitToken:
 
             from modules.device.service import generate_livekit_token
             token, _ = await generate_livekit_token(
-                hw_id="80b54ee09ae0",
                 user_id="a1b2c3d4-e5f6-7890-abcd-ef1234567890",
             )
 
         import base64, json as _json
         payload_b64 = token.split(".")[1] + "=="
         payload = _json.loads(base64.urlsafe_b64decode(payload_b64))
-        assert payload.get("sub") == "hw-80b54ee09ae0"
+        assert payload.get("sub") == "dev-a1b2c3d4-e5f6-7890-abcd-ef1234567890"
