@@ -52,7 +52,7 @@ async def test_handle_online_with_session_publishes_ping(
         })
 
     # WS pushes: online + verifying
-    events = [call[0][1]["event"] for call in mock_push.call_args_list]
+    events = [call[0][1]["type"] for call in mock_push.call_args_list]
     assert "online" in events
     assert "verifying" in events
     # Ping was published
@@ -81,7 +81,7 @@ async def test_handle_online_expired_session_no_ping(
         await _handle_online("test-hw", {"session_id": str(session.id)})
 
     # online push still happens, but no verifying and no ping
-    events = [call[0][1]["event"] for call in mock_push.call_args_list]
+    events = [call[0][1]["type"] for call in mock_push.call_args_list]
     assert "online" in events
     assert "verifying" not in events
     mock_publish.assert_not_called()
@@ -123,7 +123,7 @@ async def test_handle_register_new_device(db_session: AsyncSession, test_user: U
 
     # WS bound
     bound = mock_push.call_args[0][1]
-    assert bound["event"] == "bound"
+    assert bound["type"] == "bound"
 
 
 @pytest.mark.asyncio
@@ -193,7 +193,7 @@ async def test_handle_register_already_bound_other_user(
         await _handle_register("TEST-HW-9999", {"session_id": str(session.id)})
 
     err = mock_push.call_args[0][1]
-    assert err["event"] == "error"
+    assert err["type"] == "error"
     assert err["error_code"] == "DEVICE_ALREADY_BOUND"
 
 
