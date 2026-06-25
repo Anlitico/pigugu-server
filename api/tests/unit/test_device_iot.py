@@ -16,15 +16,15 @@ import pytest
 async def test_push_ws_broadcasts():
     from modules.device.iot import _push_ws
     with patch("modules.ws.manager.ws_manager.broadcast", new_callable=AsyncMock) as m:
-        await _push_ws("hw", {"event": "online"})
-        m.assert_called_once_with("hw", json.dumps({"event": "online"}))
+        await _push_ws("hw", {"type": "online"})
+        m.assert_called_once_with("hw", json.dumps({"type": "online"}))
 
 
 @pytest.mark.asyncio
 async def test_push_ws_suppresses_errors():
     from modules.device.iot import _push_ws
     with patch("modules.ws.manager.ws_manager.broadcast", side_effect=RuntimeError("boom")):
-        await _push_ws("hw", {"event": "online"})  # does not raise
+        await _push_ws("hw", {"type": "online"})  # does not raise
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -52,7 +52,7 @@ async def test_wait_for_pong_timeout_pushes_error(mock_sleep, mock_exists):
         await _wait_for_pong("hw", "req", "sess")
     mock_push.assert_called_once()
     assert mock_push.call_args[0][1] == {
-        "event": "error",
+        "type": "error",
         "error_code": "PROVISION_VERIFY_TIMEOUT",
         "error_msg": "设备无法连接到服务器",
     }
@@ -97,14 +97,14 @@ async def test_handle_online_no_session_id(*_):
 
     # Online event still pushed via WS
     mock_push.assert_called_once()
-    assert mock_push.call_args[0][1]["event"] == "online"
+    assert mock_push.call_args[0][1]["type"] == "online"
     # Ping published
     mock_pub.assert_called_once()
     assert "session_id" not in mock_pub.call_args[0][1]
     # FCM push: device ready (title + body + data)
     mock_send.assert_called_once()
     assert mock_send.call_args[0][1] == "设备已就绪"  # title
-    assert mock_send.call_args[0][3]["event"] == "device_ready"  # data
+    assert mock_send.call_args[0][3]["type"] == "device_ready"  # data
 
 
 @pytest.mark.asyncio
@@ -208,7 +208,7 @@ async def test_handle_online_invalid_uuid_pushes_error(mock_redis):
     from modules.device.iot import _handle_online
     with patch("modules.device.iot._push_ws") as mock_push:
         await _handle_online("hw", {"session_id": "not-a-uuid"})
-    events = [c[0][1]["event"] for c in mock_push.call_args_list]
+    events = [c[0][1]["type"] for c in mock_push.call_args_list]
     assert "online" in events
     assert "error" in events
 
@@ -240,7 +240,7 @@ async def test_handle_pong_full_params():
         await _handle_pong("hw", {"ts": 1234567890}, "sess", "req")
     assert mock_redis.call_count == 2  # provision:verify + device:connectivity
     mock_push.assert_called_once()
-    assert mock_push.call_args[0][1]["event"] == "verified"
+    assert mock_push.call_args[0][1]["type"] == "verified"
 
 
 @pytest.mark.asyncio
@@ -274,7 +274,7 @@ async def test_handle_pong_rtt_persist_failure_is_graceful():
          patch("modules.device.iot._push_ws") as mock_push, \
          patch("core.database.AsyncSessionLocal", side_effect=RuntimeError("DB down")):
         await _handle_pong("hw", {"ts": 1}, "sess", "req")
-    assert mock_push.call_args[0][1]["event"] == "verified"
+    assert mock_push.call_args[0][1]["type"] == "verified"
     assert mock_push.call_args[0][1]["rtt_ms"] is None
 
 
@@ -296,7 +296,7 @@ async def test_handle_register_invalid_uuid_pushes_error():
     with patch("modules.device.iot._push_ws") as mock_push:
         await _handle_register("hw", {"session_id": "bad-uuid"})
     mock_push.assert_called_once()
-    assert mock_push.call_args[0][1]["event"] == "error"
+    assert mock_push.call_args[0][1]["type"] == "error"
 
 
 @pytest.mark.asyncio
@@ -306,7 +306,7 @@ async def test_handle_register_db_exception_pushes_error():
          patch("core.database.AsyncSessionLocal", side_effect=RuntimeError("DB gone")):
         await _handle_register("hw", {"session_id": str(uuid.uuid4())})
     mock_push.assert_called_once()
-    assert mock_push.call_args[0][1]["event"] == "error"
+    assert mock_push.call_args[0][1]["type"] == "error"
 
 
 @pytest.mark.asyncio
