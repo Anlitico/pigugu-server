@@ -54,6 +54,21 @@ spec:
             secretKeyRef:
               name: pigugu-secrets
               key: AWS_IOT_WEBHOOK_SECRET
+        - name: LIVEKIT_API_KEY
+          valueFrom:
+            secretKeyRef:
+              name: pigugu-secrets
+              key: LIVEKIT_API_KEY
+        - name: LIVEKIT_API_SECRET
+          valueFrom:
+            secretKeyRef:
+              name: pigugu-secrets
+              key: LIVEKIT_API_SECRET
+        - name: LIVEKIT_URL
+          valueFrom:
+            secretKeyRef:
+              name: pigugu-secrets
+              key: LIVEKIT_URL
         volumeMounts:
         - name: firebase-config
           mountPath: /api/config
