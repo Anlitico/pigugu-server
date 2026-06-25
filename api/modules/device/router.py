@@ -1,8 +1,12 @@
+import logging
+
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from core.config import settings
 from core.database import get_db
+
+logger = logging.getLogger(__name__)
 from core.deps import get_current_user
 from models.user import User
 from modules.device import service
@@ -88,13 +92,24 @@ async def issue_mqtt_creds(
             import json
             await ws_manager.broadcast(
                 body.hardware_id.strip().lower(),
-                json.dumps({"event": "credentials_ready", "hardware_id": body.hardware_id.strip().lower()}),
+                json.dumps({"type": "credentials_ready", "hardware_id": body.hardware_id.strip().lower()}),
             )
         except Exception:
             pass  # best-effort
         return result
     except ValueError as e:
         error_msg = str(e)
+        # Push error via WS so the App knows provisioning failed
+        try:
+            from modules.ws.manager import ws_manager
+            import json
+            await ws_manager.broadcast_to_user(
+                str(current_user.id),
+                json.dumps({"type": "error", "error_code": error_msg,
+                            "error_msg": f"MQTT 凭证获取失败: {error_msg}"}),
+            )
+        except Exception:
+            pass
         if error_msg == "PROVISION_SESSION_NOT_FOUND":
             raise HTTPException(status_code=404, detail=error_msg)
         if error_msg == "PROVISION_SESSION_EXPIRED":
@@ -129,9 +144,24 @@ async def report_state(body: DeviceStateRequest, db: AsyncSession = Depends(get_
 async def get_livekit_token(
     current_user: User = Depends(get_current_user),
 ):
-    """Return a long-lived (365d) token + room info. Hardware stores this
+    """Return a long-lived (3650d) token + room info. Hardware stores this
     during provisioning and uses it for all future wake-word joins."""
-    token, room_name = await service.generate_livekit_token(str(current_user.id))
+    try:
+        token, room_name = await service.generate_livekit_token(str(current_user.id))
+    except Exception as e:
+        logger.exception("LiveKit token generation failed for user=%s", current_user.id)
+        try:
+            from modules.ws.manager import ws_manager
+            import json
+            await ws_manager.broadcast_to_user(
+                str(current_user.id),
+                json.dumps({"type": "error", "error_code": "LIVEKIT_TOKEN_FAILED",
+                            "error_msg": "LiveKit token 获取失败"}),
+            )
+        except Exception:
+            pass
+        raise HTTPException(status_code=500, detail="Failed to generate LiveKit token")
+
     from core.config import settings
     return LiveKitTokenResponse(
         token=token,
