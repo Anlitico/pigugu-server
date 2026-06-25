@@ -407,9 +407,9 @@ async def rename_device(db: AsyncSession, user_id: uuid.UUID, device_id: uuid.UU
 
 
 async def generate_livekit_token(
-    hw_id: str, *, user_id: str
+    user_id: str,
 ) -> tuple[str, str]:
-    """Generate a long-lived LiveKit token for hardware.
+    """Generate a long-lived LiveKit token for the user's hardware.
 
     Token is valid for 365 days, includes RoomConfiguration with agent
     dispatch. Hardware stores it during provisioning and uses it for all
@@ -420,7 +420,6 @@ async def generate_livekit_token(
     from livekit import api as lk_api
     from modules.device.room import build_room_name, AGENT_NAME
 
-    hw_id = hw_id.strip().lower()
     room_name = build_room_name(user_id)
 
     api_key = settings.livekit_api_key
@@ -428,9 +427,9 @@ async def generate_livekit_token(
 
     import datetime as _dt
     at = lk_api.AccessToken(api_key=api_key, api_secret=api_secret)
-    at.ttl = _dt.timedelta(days=365)
+    at.ttl = _dt.timedelta(days=3650)
     token = (
-        at.with_identity(f"hw-{hw_id}")
+        at.with_identity(f"dev-{user_id}")
         .with_grants(
             lk_api.VideoGrants(
                 room_join=True,
@@ -446,7 +445,6 @@ async def generate_livekit_token(
                         agent_name=AGENT_NAME,
                         metadata=json.dumps({
                             "user_id": user_id,
-                            "hw_id": hw_id,
                         }),
                     )
                 ],
@@ -455,7 +453,7 @@ async def generate_livekit_token(
         .to_jwt()
     )
 
-    logger.info("Token issued: user=%s hw=%s room=%s", user_id, hw_id, room_name)
+    logger.info("Token issued: user=%s room=%s", user_id, room_name)
     return token, room_name
 
 
