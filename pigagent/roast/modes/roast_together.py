@@ -11,23 +11,25 @@ from typing import TYPE_CHECKING
 
 from roast.types import Mode
 from roast.base import GameMode, Trigger
-from roast.prompts import render
 
 if TYPE_CHECKING:
     from roast.state import RoastState
+    from prompts import PromptStore
 
 
 class RoastTogetherMode(GameMode):
     mode = Mode.ROAST_TOGETHER
-    max_turns = 8
+    max_turns = 50
 
-    @property
-    def system_prompt_extension(self) -> str:
-        return render("roast_together_system")
+    async def get_system_prompt_extension(self, prompt_store: PromptStore | None) -> str:
+        if prompt_store is None:
+            return ""
+        return await prompt_store.get("roast_together_system")
 
-    @property
-    def director_prompt(self) -> str:
-        return render("roast_together_director")
+    async def get_director_prompt(self, prompt_store: PromptStore | None) -> str:
+        if prompt_store is None:
+            return ""
+        return await prompt_store.get("roast_together_director")
 
     @staticmethod
     def init_extra() -> dict:
@@ -41,7 +43,7 @@ class RoastTogetherMode(GameMode):
             Trigger(
                 name="ending_max_turns",
                 check=lambda s, r: s.turn_count >= self.max_turns,
-                prompt=lambda s: render(
+                prompt=lambda s, ps: ps.render(
                     "roast_together_ending",
                     best_take=s.extra.get("best_take", ""),
                 ),

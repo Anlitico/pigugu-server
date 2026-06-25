@@ -30,9 +30,14 @@ class TestGameModeRegistry:
         assert m.mode == Mode.BREAKING_BOMB
 
     def test_all_have_extensions(self):
+        import asyncio
+        from unittest.mock import MagicMock, AsyncMock
         for mode in [Mode.ROAST_TOGETHER, Mode.DEBATE_BICKER, Mode.BREAKING_BOMB]:
             m = get_game_mode(mode)
-            assert m.system_prompt_extension, f"{mode} has no prompt extension"
+            mock_store = MagicMock()
+            mock_store.get = AsyncMock(return_value="prompt content")
+            ext = asyncio.run(m.get_system_prompt_extension(mock_store))
+            assert ext, f"{mode} has no prompt extension"
 
     def test_all_have_max_turns(self):
         for mode in [Mode.ROAST_TOGETHER, Mode.DEBATE_BICKER, Mode.BREAKING_BOMB]:

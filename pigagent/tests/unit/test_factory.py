@@ -78,26 +78,6 @@ class TestValidateConfiguration:
             assert not result
 
 
-class TestGetPigAgent:
-    @pytest.mark.asyncio
-    async def test_returns_singleton(self):
-        from bootstrap.factory import get_pig_agent, _pig_agent
-        # Reset singleton for test
-        import bootstrap.factory as f
-        f._pig_agent = None
-
-        with patch("bootstrap.factory._build_pig_agent") as mock_build:
-            mock_agent = MagicMock()
-            async def _async_build(*args, **kwargs):
-                return mock_agent
-            mock_build.side_effect = _async_build
-
-            a1 = await get_pig_agent()
-            a2 = await get_pig_agent()
-            assert a1 is a2
-            mock_build.assert_called_once()
-
-
 class TestGetRedis:
     def test_requires_env_var(self, monkeypatch):
         monkeypatch.delenv("REDIS_URL", raising=False)

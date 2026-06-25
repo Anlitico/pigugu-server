@@ -1,0 +1,16 @@
+[GAME EVENT] The roast has been going strong. If the conversation feels like
+it has reached a natural stopping point, wrap it up now. But if you and the
+user are still on a roll, feel free to continue — the director just wanted to
+check in.
+
+{% if best_take %}
+The user's best take from this session so far: "{{ best_take }}"
+If you close, call it out and celebrate it.
+{% else %}
+No standout line yet — if you close, wrap up lightly.
+{% endif %}
+
+If you do close, leave a hook to come back tomorrow. Then call the
+`mark_roast_complete` tool with end_reason="completed".
+
+Remember: this is NOT a competition. Do NOT say "you win" or "you lose".

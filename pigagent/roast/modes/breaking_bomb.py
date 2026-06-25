@@ -10,23 +10,25 @@ from typing import TYPE_CHECKING
 
 from roast.types import Mode
 from roast.base import GameMode, Trigger
-from roast.prompts import render
 
 if TYPE_CHECKING:
     from roast.state import RoastState
+    from prompts import PromptStore
 
 
 class BreakingBombMode(GameMode):
     mode = Mode.BREAKING_BOMB
-    max_turns = 3
+    max_turns = 50
 
-    @property
-    def system_prompt_extension(self) -> str:
-        return render("breaking_bomb_system")
+    async def get_system_prompt_extension(self, prompt_store: PromptStore | None) -> str:
+        if prompt_store is None:
+            return ""
+        return await prompt_store.get("breaking_bomb_system")
 
-    @property
-    def director_prompt(self) -> str:
-        return render("breaking_bomb_director")
+    async def get_director_prompt(self, prompt_store: PromptStore | None) -> str:
+        if prompt_store is None:
+            return ""
+        return await prompt_store.get("breaking_bomb_director")
 
     # ── State helpers ──────────────────────────────────────────────────
 
@@ -40,13 +42,18 @@ class BreakingBombMode(GameMode):
         self,
         state: RoastState,
         *,
-        records: list,
+        wc,
         redis,
         pg_pool=None,
+        current_msg=None,
+        prompt_store: PromptStore | None = None,
     ) -> str | None:
         """Record the user's reaction, then run base trigger checks."""
-        self._update_state(state, records)
-        return await super().tick(state, records=records, redis=redis, pg_pool=pg_pool)
+        self._update_state(state, wc.raw_records)
+        return await super().tick(
+            state, wc=wc, redis=redis, pg_pool=pg_pool,
+            current_msg=current_msg, prompt_store=prompt_store,
+        )
 
     def _update_state(self, state: RoastState, records: list) -> None:
         """Record the latest user reaction."""
@@ -69,7 +76,7 @@ class BreakingBombMode(GameMode):
             Trigger(
                 name="ending_max_turns",
                 check=lambda s, r: s.turn_count >= self.max_turns,
-                prompt=render("breaking_bomb_ending"),
+                prompt=lambda _s, ps: ps.get("breaking_bomb_ending"),
                 affects_phase=True,
             ),
         ]

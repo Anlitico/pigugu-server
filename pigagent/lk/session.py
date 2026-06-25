@@ -14,7 +14,7 @@ from livekit.agents.types import NOT_GIVEN
 from livekit.agents.voice import room_io
 from agent_config import get_config
 from system_prompts import get_persona
-from bootstrap.factory import create_agent_components, get_pg_pool, get_redis, get_vad
+from bootstrap.factory import create_agent_components, create_pig_agent, get_pg_pool, get_redis, get_vad
 from lk.bridge import PigAgentVoiceBridge
 from metrics.turn import TelemetryCollector
 
@@ -71,6 +71,53 @@ async def run(ctx: JobContext) -> None:
     def on_track_subscribed(track: rtc.Track, publication: rtc.RemoteTrackPublication, participant: rtc.RemoteParticipant):
         logger.info(f"[AUDIO] Track subscribed: kind={track.kind} source={participant.identity}")
 
+    # ── Handle injected start_roast from App via LiveKit data channel ────
+    # Defined BEFORE session.start() so data_received can call it immediately.
+    # Uses bridge._pig (set after user_id resolved) with a None guard.
+    async def _handle_inject_start_roast(msg: dict) -> None:
+        """Called when the API server sends a start_roast command through the
+        LiveKit room data channel (topic="roast_inject").
+
+        Runs the full pig_agent.start_roast() pipeline: activate roast,
+        persist context, generate opening lines, then speak via TTS.
+        """
+        try:
+            pig = bridge._pig
+            if pig is None:
+                logger.warning("[Inject] PigAgent not yet wired — retry later")
+                return
+            logger.info(
+                f"[Inject] start_roast: roast_id={msg.get('roast_id')} "
+                f"mode={msg.get('mode_id')}"
+            )
+            full_text: str = ""
+            async for text in pig.start_roast(
+                persona_id=msg.get("persona_id", persona_id),
+                roast_id=msg["roast_id"],
+                mode_id=msg["mode_id"],
+                prompt=msg["prompt"],
+                headline=msg.get("headline", ""),
+                source=msg.get("source", ""),
+            ):
+                if isinstance(text, str):
+                    full_text += text
+
+            if full_text.strip():
+                await session.say(
+                    full_text.strip(),
+                    add_to_chat_ctx=False,
+                )
+                # session.say with add_to_chat_ctx=False doesn't fire
+                # conversation_item_added — write opening manually.
+                asyncio.create_task(
+                    _write_roast_conversation(user_id, "assistant", full_text.strip())
+                )
+                logger.info(
+                    f"[Inject] start_roast spoken: {len(full_text)} chars"
+                )
+        except Exception as exc:
+            logger.error(f"[Inject] start_roast failed: {exc}")
+
     # ── Injected commands via LiveKit data channel (API server → agent) ──
     @ctx.room.on("data_received")
     def on_data_received(packet: rtc.DataPacket) -> None:
@@ -87,23 +134,25 @@ async def run(ctx: JobContext) -> None:
         except Exception as exc:
             logger.error(f"[Inject] Failed to parse data_received: {exc}")
 
-    # ── Components ────────────────────────────────────────────────────
-    stt, pig_agent, tts = await create_agent_components(config, persona=persona)
+    # ── STT + TTS (created early, no user_id needed) ──────────────────
+    stt, tts = await create_agent_components(config, persona=persona)
     stt_plugin = stt.get_plugin()
     tts_plugin = tts.get_plugin()
+
     vad = get_vad()
 
     logger.info(f"[DEBUG] STT: {type(stt_plugin).__name__}, TTS: {type(tts_plugin).__name__}")
-    logger.info(f"[DEBUG] LLM: PigAgent with {pig_agent.model}")
 
     # Resolve user_id: metadata (app) > device_id > participant identity
     user_id = metadata.get("user_id", "") or metadata.get("device_id", "")
+    hw_id = metadata.get("hw_id", "")
 
     from lk.pigllm import PigAgentLLM
     pigllm = PigAgentLLM()
 
+    # ── Bridge (placeholder — PigAgent wired after user_id resolved) ──
     bridge = PigAgentVoiceBridge(
-        pig_agent=pig_agent,
+        pig_agent=None,
         persona_id=persona_id,
         session_id=ctx.job.id,
     )
@@ -153,7 +202,8 @@ async def run(ctx: JobContext) -> None:
         if event.old_state != "speaking" and event.new_state == "speaking":
             logger.info("[DEBUG] User started speaking")
             TelemetryCollector.start_turn(user_id=user_id, persona_id=persona_id)
-            TelemetryCollector.set_meta("llm_model", pig_agent.model)
+            if bridge._pig:
+                TelemetryCollector.set_meta("llm_model", bridge._pig.model)
             TelemetryCollector.mark("vad_start")
             if bridge.current_interrupt_event:
                 logger.info("[Interrupt] Triggering")
@@ -173,9 +223,10 @@ async def run(ctx: JobContext) -> None:
         user/assistant during active roast → roast_conversations
         """
         try:
-            if pig_agent.ctx:
-                await pig_agent.ctx.add_turn(
-                    user_id=uid, role=role, content=content,
+            pig = bridge._pig
+            if pig and pig.ctx:
+                await pig.ctx.add_turn(
+                    role=role, content=content,
                 )
             # Dual-write to roast_conversations for App display
             if role in ("user", "assistant"):
@@ -188,7 +239,10 @@ async def run(ctx: JobContext) -> None:
     async def _write_roast_conversation(uid: str, role: str, content: str) -> None:
         """Write user/assistant message to roast_conversations table + push to App WS."""
         try:
-            state = await pig_agent.get_active_roast(uid)
+            pig = bridge._pig
+            if not pig:
+                return
+            state = await pig.get_active_roast()
             if not state:
                 return  # Not in a roast — skip
             # Only write during active roast. During CLOSING, only allow
@@ -231,7 +285,7 @@ async def run(ctx: JobContext) -> None:
             TelemetryCollector.mark("stt_final")
             logger.info(f"[STT] Final transcript: '{event.transcript.strip()}'")
             # Persist user message to context (memory + Redis + PG)
-            if pig_agent.ctx:
+            if bridge._pig and bridge._pig.ctx:
                 asyncio.create_task(
                     _safe_add_turn(user_id, "user", event.transcript.strip())
                 )
@@ -268,7 +322,7 @@ async def run(ctx: JobContext) -> None:
         if text and hasattr(item, "role"):
             if item.role == "assistant":
                 # Persist assistant message to context (memory + Redis + PG)
-                if pig_agent.ctx:
+                if bridge._pig and bridge._pig.ctx:
                     asyncio.create_task(
                         _safe_add_turn(user_id, "assistant", text.strip())
                     )
@@ -331,50 +385,12 @@ async def run(ctx: JobContext) -> None:
             await session.aclose()
             return
         logger.info(f"User ID resolved from joined participant: {user_id}")
-    bridge._user_id = user_id
     logger.info(f"User ID resolved: {user_id}")
 
-    # ── Handle injected start_roast from App via LiveKit data channel ────
-    async def _handle_inject_start_roast(msg: dict) -> None:
-        """Called when the API server sends a start_roast command through the
-        LiveKit room data channel (topic="roast_inject").
-
-        Runs the full pig_agent.start_roast() pipeline: activate roast,
-        persist context, generate opening lines, then speak via TTS.
-        """
-        try:
-            logger.info(
-                f"[Inject] start_roast: roast_id={msg.get('roast_id')} "
-                f"mode={msg.get('mode_id')}"
-            )
-            full_text: str = ""
-            async for text in pig_agent.start_roast(
-                user_id=user_id,
-                persona_id=msg.get("persona_id", persona_id),
-                roast_id=msg["roast_id"],
-                mode_id=msg["mode_id"],
-                prompt=msg["prompt"],
-                headline=msg.get("headline", ""),
-                source=msg.get("source", ""),
-            ):
-                if isinstance(text, str):
-                    full_text += text
-
-            if full_text.strip():
-                await session.say(
-                    full_text.strip(),
-                    add_to_chat_ctx=False,
-                )
-                # session.say with add_to_chat_ctx=False doesn't fire
-                # conversation_item_added — write opening manually.
-                asyncio.create_task(
-                    _write_roast_conversation(user_id, "assistant", full_text.strip())
-                )
-                logger.info(
-                    f"[Inject] start_roast spoken: {len(full_text)} chars"
-                )
-        except Exception as exc:
-            logger.error(f"[Inject] start_roast failed: {exc}")
+    # ── Create PigAgent now that user_id is known ─────────────────────
+    pig_agent = await create_pig_agent(user_id, config, hw_id=hw_id)
+    bridge._pig = pig_agent
+    logger.info("[DEBUG] LLM: PigAgent with %s wired for user=%s hw_id=%s", pig_agent.model, user_id, hw_id)
 
     # Accept TrackSource.UNKNOWN (0) in addition to SOURCE_MICROPHONE (2).
     # LiveKit JS client's LocalAudioTrack may report source="unknown" instead

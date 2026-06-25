@@ -14,20 +14,46 @@ load_dotenv(dotenv_path=Path(__file__).parent.parent.parent / ".env", override=T
 # ── Helpers ────────────────────────────────────────────────────────────────
 
 
+def _make_test_prompt_store():
+    """Build a PromptStore pre-populated from ``prompts/templates/*.j2`` files.
+
+    Reads from the single consolidated template directory. Each test agent
+    gets a fresh PromptStore with all 14 prompts preloaded — no PG needed.
+    """
+    from pathlib import Path
+    from prompts import PromptStore
+
+    templates_dir = Path(__file__).parent.parent.parent / "prompts" / "templates"
+
+    store = PromptStore()  # no PG pool
+    for name in (
+        "global", "trump", "free_chat_marker",
+        "roast_together_system", "roast_together_director", "roast_together_ending",
+        "debate_bicker_system", "debate_bicker_director",
+        "debate_bicker_ending", "debate_bicker_user_won", "debate_bicker_repeat",
+        "breaking_bomb_system", "breaking_bomb_director", "breaking_bomb_ending",
+    ):
+        path = templates_dir / f"{name}.j2"
+        if path.is_file():
+            store.preload(name, path.read_text(encoding="utf-8"))
+    return store
+
+
 def _make_test_agent():
     """Create a PigAgent with real LLM, mocked storage."""
     from agent import PigAgent
     from system_prompts import PersonaRegistry
 
     PersonaRegistry.register_defaults()
-    prompts = PersonaRegistry.build_prompt_cache()
+    prompt_store = _make_test_prompt_store()
 
     return PigAgent(
+        "int-test",
         ctx=None,
         redis=MagicMock(),
         pg_pool=MagicMock(),
         model="qwen3.6-flash",
-        prompts=prompts,
+        prompt_store=prompt_store,
         game_modes={},
         tools=[],
         tool_handlers={},
@@ -57,7 +83,7 @@ class TestGenerateReply:
 
         import asyncio
         result = asyncio.run(_collect(
-            agent.generate_reply("integration-test-user", "Hello! How are you?")
+            agent.generate_reply("Hello! How are you?")
         ))
         assert len(result) > 0, "Empty response from LLM"
 
@@ -69,7 +95,7 @@ class TestGenerateReply:
 
         import asyncio
         result = asyncio.run(_collect(
-            agent.generate_reply("u1", "What is your opinion on technology?",
+            agent.generate_reply("What is your opinion on technology?",
                                  persona_id=1)
         ))
         assert len(result) > 0
@@ -110,17 +136,18 @@ class TestStartRoast:
         from agent import PigAgent
         from system_prompts import PersonaRegistry
         PersonaRegistry.register_defaults()
-        prompts = PersonaRegistry.build_prompt_cache()
+        prompt_store = _make_test_prompt_store()
 
         from context.manager import ContextManager
-        ctx = ContextManager(redis_client=redis_client, pg_pool=None)
+        ctx = ContextManager("integration-test", redis_client=redis_client, pg_pool=None)
 
         agent = PigAgent(
+            "integration-test",
             ctx=ctx,
             redis=redis_client,
             pg_pool=None,
             model="qwen3.6-flash",
-            prompts=prompts,
+            prompt_store=prompt_store,
             game_modes=game_modes,
             tools=[],
             tool_handlers={},
@@ -132,11 +159,11 @@ class TestStartRoast:
         import asyncio
         result = asyncio.run(_collect(
             agent.start_roast(
-                "integration-test", 1, "test-roast-id", "roast_together",
+                1, "test-roast-id", "roast_together",
                 "Donald Trump tweeted about AI today. Share your thoughts.",
             )
         ))
         assert len(result) > 0, "Empty roast reply"
 
         # Cleanup
-        asyncio.run(agent.close_roast("integration-test"))
+        asyncio.run(agent.close_roast())

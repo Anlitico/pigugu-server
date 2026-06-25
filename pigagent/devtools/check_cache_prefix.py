@@ -21,18 +21,18 @@ async def main(user_id: str, rounds: int = 10):
 
     r = redis_client.from_url("redis://localhost:6379/0")
     pg_pool = "postgresql://pigugu:pigugu@localhost:5432/pigugu"
-    ctx = ContextManager(redis_client=r, pg_pool=pg_pool)
+    ctx = ContextManager(user_id, redis_client=r, pg_pool=pg_pool)
 
     prev_key = None
     prev_n = None
 
     for i in range(rounds):
         # Simulate user + assistant turn (as agent does in _persist_turns)
-        await ctx.add_turn(user_id=user_id, role="user", content=f"Test question number {i}")
-        await ctx.add_turn(user_id=user_id, role="assistant", content=f"Test answer number {i}")
+        await ctx.add_turn(role="user", content=f"Test question number {i}")
+        await ctx.add_turn(role="assistant", content=f"Test answer number {i}")
 
         # Now load context — same as what agent sends to LLM next turn
-        wc = await ctx.assemble(user_id)
+        wc = await ctx.assemble()
         msgs = wc.to_messages()
         key = _prefix_key(msgs)
         n = len(msgs)

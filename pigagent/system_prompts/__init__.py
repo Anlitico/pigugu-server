@@ -1,4 +1,4 @@
-﻿# pigagent/personas/__init__.py
+﻿# pigagent/system_prompts/__init__.py
 """Persona registry for Pigugu AI personas."""
 
 from loguru import logger
@@ -57,20 +57,8 @@ class PersonaRegistry:
         cls.register(TrumpPersona())
         cls._initialized = True
 
-    @classmethod
-    def build_prompt_cache(cls) -> dict[int, str]:
-        """Pre-build {persona_id: system_prompt} for all registered personas.
-
-        Each entry is: global system prompt + persona-specific prompt.
-        """
-        if not cls._initialized:
-            cls.register_defaults()
-        from system_prompts.global_prompt import get_global_prompt
-        global_prompt = get_global_prompt()
-        return {
-            pid: f"{global_prompt}\n\n{p.get_full_prompt()}"
-            for pid, p in cls._personas.items()
-        }
+    # build_prompt_cache() removed — prompts now live in PostgreSQL.
+    # Use prompts.PromptStore.build_persona_prompt(persona_id) instead.
 
 
 def get_persona(persona_id: int = 1) -> Persona:

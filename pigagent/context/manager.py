@@ -1,5 +1,5 @@
-﻿# pigagent/context/manager.py
-"""ContextManager  -  global orchestrator. Data-driven, no meta hash.
+# pigagent/context/manager.py
+"""ContextManager  -  per-session orchestrator. Data-driven, no meta hash.
 
 All position info is embedded in the data:
   - turn_count  ->  last ConversationRecord.turn_number
@@ -7,6 +7,8 @@ All position info is embedded in the data:
   - roast start/end  ->  inferred from roast_instance_id transitions
   - anchor      ->  SummaryRecord.end_turn
   - compressing  ->  ctx:u1:compressing (independent key)
+
+One ContextManager per LiveKit session — no cross-user state sharing.
 """
 
 from __future__ import annotations
@@ -30,74 +32,72 @@ from .roast import RoastState
 
 
 class ContextManager:
-    """Global context orchestrator. One instance for the entire app."""
+    """Per-session context orchestrator. One instance per LiveKit session."""
 
-    def __init__(self, *, redis_client=None, pg_pool=None):
+    def __init__(self, user_id: str, *, redis_client=None, pg_pool=None):
+        self._user_id = user_id
         self._redis = redis_client
         self._pg_pool = pg_pool
-        self._compressor = ContextCompressor(redis_client=redis_client, pg_pool=pg_pool)
+        self._compressor = ContextCompressor(user_id, redis_client=redis_client, pg_pool=pg_pool)
         self._turn_lock = asyncio.Lock()
+        self._last_wc: WorkingContext | None = None
+        self._mem = MemoryStore()
 
-    def _store(self, user_id: str) -> RedisStorage:
-        return RedisStorage(user_id, self._redis)
+    def _store(self) -> RedisStorage:
+        return RedisStorage(self._user_id, self._redis)
 
-    def _pg(self, user_id: str) -> PgStorage:
-        return PgStorage(user_id, self._pg_pool)
-
-    def _mem(self, user_id: str) -> MemoryStore:
-        return MemoryStore(user_id)
+    def _pg(self) -> PgStorage:
+        return PgStorage(self._user_id, self._pg_pool)
 
     # ── Session Lifecycle ─────────────────────────────────────────────
 
-    async def end_roast(self, user_id: str) -> None:
-        logger.info(f"[Context] Roast ended user={user_id}")
+    async def end_roast(self) -> None:
+        logger.info(f"[Context] Roast ended user={self._user_id}")
 
     # ── Public Entry Points ───────────────────────────────────────────
 
-    async def load(self, *, user_id: str) -> list:
+    async def load(self) -> list:
         """Assemble context and return messages (no system prompt  -  caller injects)."""
-        wc = await self.assemble(user_id)
+        wc = await self.assemble()
         return wc.to_messages()
 
-    async def write_game_state(self, *, user_id: str, state: dict) -> None:
-        mem = self._mem(user_id)
-        mem.write_game_state(state)
+    async def write_game_state(self, *, state: dict) -> None:
+        self._mem.write_game_state(state)
         if self._redis:
             try:
-                asyncio.create_task(self._write_game_state_redis(user_id, state))
+                asyncio.create_task(self._write_game_state_redis(state))
             except Exception:
                 pass
 
-    async def _write_game_state_redis(self, user_id: str, state: dict) -> None:
+    async def _write_game_state_redis(self, state: dict) -> None:
         redis = self._redis
         if redis is None:
             return
         await redis.hset(
-            RedisKeys.game_state(user_id),
+            RedisKeys.game_state(self._user_id),
             mapping={k: str(v) for k, v in state.items()},
         )
-        await redis.expire(RedisKeys.game_state(user_id), _USER_TTL)
-        await _refresh_user_ttl(redis, user_id)
+        await redis.expire(RedisKeys.game_state(self._user_id), _USER_TTL)
+        await _refresh_user_ttl(redis, self._user_id)
 
     # ── Turn Recording ────────────────────────────────────────────────
 
     async def add_turn(
-        self, user_id: str, role: str, content: str, *,
+        self, role: str, content: str, *,
         tool_calls: list | None = None,
         tool_call_id: str | None = None,
         name: str | None = None,
         partial: bool = False,
         roast_instance_id: str | None = None,
     ) -> int:
-        mem = self._mem(user_id)
-        store = self._store(user_id)
-        pg = self._pg(user_id)
+        store = self._store()
+        pg = self._pg()
 
         # Serialise turn writes — prevents concurrent add_turn from
         # session.py events (e.g. interrupt) getting the same turn number.
         async with self._turn_lock:
             # Resolve turn number — memory first, then Redis, then PG
-            current = mem.get_last_turn_number()
+            current = self._mem.get_last_turn_number()
             if current == 0:
                 current = await store.get_last_turn_number()
             if current == 0:
@@ -111,12 +111,15 @@ class ContextManager:
                 tool_calls=tool_calls, tool_call_id=tool_call_id,
                 name=name, partial=partial,
             )
-            # L1: write to memory immediately (synchronous, sub-ms)
-            mem.push_turn(record)
+            # Assign roast_instance_id BEFORE pushing to memory.
+            # _assign_roast_instance_id scans recent history for the active
+            # roast. If the current (unassigned) record is already in memory,
+            # it sees itself with roast_instance_id=None and incorrectly
+            # concludes no roast is active.
+            await self._assign_roast_instance_id(record)
 
-            # Assign roast_instance_id synchronously — both in-memory and persisted
-            # records need it for downstream filtering (Director, assemble).
-            await self._assign_roast_instance_id(user_id, record)
+            # L1: write to memory immediately (synchronous, sub-ms)
+            self._mem.push_turn(record)
 
             # L2 + L3: fire-and-forget to Redis and PG
             data = json.dumps(record.to_dict(), ensure_ascii=False)
@@ -134,25 +137,23 @@ class ContextManager:
         except Exception:
             pass
 
-    async def _assign_roast_instance_id(self, user_id: str, current: ConversationRecord) -> None:
-        mem = self._mem(user_id)
-        history = mem.get_hot_turns(20)
+    async def _assign_roast_instance_id(self, current: ConversationRecord) -> None:
+        history = self._mem.get_hot_turns(20)
         if not history:
-            history = await self._store(user_id).get_hot_turns(20)
+            history = await self._store().get_hot_turns(20)
         RoastState.assign_roast_instance_id(history, current)
 
     # ── Context Assembly ──────────────────────────────────────────────
 
-    async def assemble(self, user_id: str) -> WorkingContext:
-        mem = self._mem(user_id)
-        store = self._store(user_id)
-        pg = self._pg(user_id)
+    async def assemble(self) -> WorkingContext:
+        store = self._store()
+        pg = self._pg()
 
         _cfg = get_config()
 
         # L1: read from memory
-        data = mem.read_summaries()
-        raw_records = mem.get_hot_turns(_cfg.CONTEXT_HOT_WINDOW_SIZE)
+        data = self._mem.read_summaries()
+        raw_records = self._mem.get_hot_turns(_cfg.CONTEXT_HOT_WINDOW_SIZE)
         source = "memory"
         TelemetryCollector.mark("ctx_l1_done")
 
@@ -160,12 +161,12 @@ class ContextManager:
         if not data and not raw_records:
             data = await store.read_summaries()
             if data:
-                mem.write_summaries(data.get("end_turn", 0), **{k: v for k, v in data.items() if k != "end_turn"})
+                self._mem.write_summaries(data.get("end_turn", 0), **{k: v for k, v in data.items() if k != "end_turn"})
         if not raw_records:
             anchor = data.get("end_turn", 0)
             raw_records = await store.get_hot_turns(_cfg.CONTEXT_HOT_WINDOW_SIZE, after_anchor=anchor)
             if raw_records:
-                mem.load_all(raw_records, data)
+                self._mem.load_all(raw_records, data)
                 source = "redis"
         TelemetryCollector.mark("ctx_l2_done")
 
@@ -189,39 +190,44 @@ class ContextManager:
             anchor = data.get("end_turn", 0)
             raw_records = await pg.recover_turns(after_turn=anchor, limit=_cfg.CONTEXT_HOT_WINDOW_SIZE)
             if raw_records:
-                mem.load_all(raw_records, data)
-                asyncio.create_task(self._rewarm_redis(user_id, data, raw_records))
+                self._mem.load_all(raw_records, data)
+                asyncio.create_task(self._rewarm_redis(data, raw_records))
                 source = "pg"
 
         logger.info(
-            f"[Context] assemble user={user_id} source={source} "
+            f"[Context] assemble user={self._user_id} source={source} "
             f"records={len(raw_records)} summary={'yes' if data else 'no'}"
         )
 
         # Save summary text for compression trigger (before consuming)
         summary_for_compress = data.get("l3_session", "")
 
+        # Save roast fallback values BEFORE data is consumed (cleared below)
+        l4_fallback = data.get("l4_roast", "") if data.get("l4_roast") else None
+        roast_prompt_fb = data.get("roast_prompt", "") if data.get("roast_prompt") else None
+        prompt_turn_fb = data.get("roast_prompt_turn", 0)
+
         # If summary exists (fresh from compressor): consume once, rebuild list, clear
         if data.get("l3_session"):
             raw_records = self._rebuild_records_with_summary(data, raw_records)
-            mem.load_all(raw_records, {})
+            self._mem.load_all(raw_records, {})
             # data is consumed — set empty so sr/um won't inject again
             data = {}
 
         sr = SummaryRecord(text=data["l3_session"], end_turn=data["end_turn"]) if data.get("l3_session") else None
-        um = UserMemory(user_id=user_id, profile_summary=data.get("l2_profile", "")) if data.get("l2_profile") else None
-        um = um or UserMemory(user_id=user_id)
+        um = UserMemory(user_id=self._user_id, profile_summary=data.get("l2_profile", "")) if data.get("l2_profile") else None
+        um = um or UserMemory(user_id=self._user_id)
 
         snap = ContextSnapshot(raw_records)
 
-        game_state = mem.read_game_state()
+        game_state = self._mem.read_game_state()
         if not game_state:
             game_state = await store.read_game_state()
             if game_state:
-                mem.write_game_state(game_state)
+                self._mem.write_game_state(game_state)
 
         wc = WorkingContext(
-            user_id=user_id,
+            user_id=self._user_id,
             game_state=game_state,
             meta={"turn_count": raw_records[0].turn_number if raw_records else 0},
             user_memory=um,
@@ -231,32 +237,30 @@ class ContextManager:
             wc.summary = sr.text
             wc.summary_end_turn = sr.end_turn
 
-        wc.raw_turns = [_record_to_msg(r) for r in raw_records]
         wc.raw_records = raw_records
 
         if snap.roast_instance_id:
-            l4_fallback = data.get("l4_roast", "") if data.get("l4_roast") else None
-            roast_prompt_fb = data.get("roast_prompt", "") if data.get("roast_prompt") else None
-            prompt_turn = data.get("roast_prompt_turn", 0)
             wc.roast = self._load_roast_context(
-                user_id, snap.roast_instance_id,
+                snap.roast_instance_id,
                 fallback_l4=l4_fallback, fallback_prompt=roast_prompt_fb,
-                prompt_turn=prompt_turn,
+                prompt_turn=prompt_turn_fb,
             )
 
         TelemetryCollector.mark("ctx_roast_done")
 
         # Compression trigger — fire-and-forget with unified record list
-        if not mem.is_compressing() and raw_records:
+        if not self._mem.is_compressing() and raw_records:
             unified = wc.to_records()
             asyncio.create_task(
                 self._compressor.run(
-                    user_id=user_id,
                     records=unified,
                     existing_summary=summary_for_compress,
                 )
             )
 
+        # Cache for downstream consumers (Director, compression, etc.)
+        # so they don't need their own assemble() call.
+        self._last_wc = wc
         return wc
 
     @staticmethod
@@ -285,7 +289,7 @@ class ContextManager:
         if data.get("l4_roast"):
             new_records.append(ConversationRecord(
                 turn_number=-1, role="system",
-                content=f"[L4 Roast]\n{data['l4_roast']}",
+                content=f"[Game history]\n{data['l4_roast']}",
                 roast_instance_id=data.get("roast_id", ""),
                 created_at=time.time(),
             ))
@@ -295,7 +299,7 @@ class ContextManager:
     # ── Layer 4: Roast Context ────────────────────────────────────────
 
     def _load_roast_context(
-        self, user_id: str, roast_instance_id: str,
+        self, roast_instance_id: str,
         fallback_l4: str | None = None,
         fallback_prompt: str | None = None,
         prompt_turn: int = 0,
@@ -306,11 +310,10 @@ class ContextManager:
         records list. The roast prompt is the first real record with this
         roast_instance_id.
         """
-        mem = self._mem(user_id)
         rc = RoastContext(roast_instance_id=roast_instance_id)
 
         # L4 summary: from virtual record (turn=-1) with matching roast_instance_id
-        records = mem.get_hot_turns(9999)
+        records = self._mem.get_hot_turns(9999)
         for r in records:
             if r.turn_number == -1 and r.roast_instance_id == roast_instance_id:
                 rc.summary = r.content.split("\n", 1)[1] if "\n" in r.content else r.content
@@ -334,12 +337,12 @@ class ContextManager:
     # ── Redis Re-warming ───────────────────────────────────────────────
 
     async def _rewarm_redis(
-        self, user_id: str,
+        self,
         data: dict,
         records: list[ConversationRecord],
     ) -> None:
         """Re-populate Redis from PG-recovered data. Fire-and-forget."""
-        store = self._store(user_id)
+        store = self._store()
         try:
             await store.write_summaries(
                 data.get("end_turn", 0),
@@ -352,13 +355,7 @@ class ContextManager:
             )
             for r in records:
                 await store.push_turn(json.dumps(r.to_dict(), ensure_ascii=False))
-            logger.info(f"[Context] Re-warmed Redis for user={user_id}: "
+            logger.info(f"[Context] Re-warmed Redis for user={self._user_id}: "
                         f"turns={len(records)}")
         except Exception as e:
-            logger.warning(f"[Context] Re-warm Redis failed for {user_id}: {e}")
-
-
-# ── Helpers ──────────────────────────────────────────────────────────────
-
-def _record_to_msg(r: ConversationRecord):
-    return r.to_message()
+            logger.warning(f"[Context] Re-warm Redis failed for {self._user_id}: {e}")
