@@ -242,8 +242,8 @@ The two sections share ONE `prompt` field (≤1000 words total), separated by `-
 - `tags`: 3-5 keyword tags
 - `source`: "ap" or "reuters"
 - `source_url`: original article URL
-- `expires_at`: article's `published_at` + 7 days (ISO 8601). 3-day fetch window
-  guarantees every article gets at least 4 days of display time before expiry.
+- `expires_at`: NOW (pipeline run time) + 7 days (ISO 8601). Every scenario gets a full
+  7-day display window regardless of when the article was originally published.
 
 **debate:**
 - `roast_id`: `"debate_{YYYY-MM-DD}_{3-digit-seq}"`
