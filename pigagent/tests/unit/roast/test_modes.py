@@ -34,7 +34,9 @@ class TestRoastTogetherState:
     def test_init_extra(self):
         from roast.modes.roast_together import RoastTogetherMode
         extra = RoastTogetherMode.init_extra()
-        assert extra == {"settled": False, "best_take": ""}
+        assert extra["settled"] is False
+        assert extra["best_take"] == ""
+        assert extra["scores"] == []
 
 
 class TestRoastTogetherTriggers:
@@ -206,6 +208,13 @@ class TestDebateBickerState:
         assert extra["strong_points"] == 0
         assert extra["fart_type"] == ""
         assert extra["debate_history"] == []
+        assert extra["best_take"] == ""
+        assert extra["support_history"] == []
+
+    def test_max_turns_is_8(self):
+        from roast.modes.debate_bicker import DebateBickerMode
+        mode = DebateBickerMode()
+        assert mode.max_turns == 8
 
     def test_is_strong_point_detects_data(self):
         from roast.modes.debate_bicker import _is_strong_point
@@ -259,29 +268,391 @@ class TestDebateBickerTriggers:
 
 
 # -------------------------------------------------------------------
-# BreakingBombMode
+# Director Schema
 # -------------------------------------------------------------------
 
-class TestBreakingBombState:
-    def test_init_extra(self):
-        from roast.modes.breaking_bomb import BreakingBombMode
-        extra = BreakingBombMode.init_extra()
-        assert extra == {"reactions": [], "best_take": ""}
+class TestRoastTogetherDirectorSchema:
+    def test_schema_has_all_fields(self):
+        from roast.modes.roast_together import RoastTogetherMode
+        mode = RoastTogetherMode()
+        schema = mode.get_director_schema()
+        props = schema["schema"]["properties"]
+        required = schema["schema"]["required"]
+        # Base fields
+        assert "action" in props
+        assert "best_take" in props
+        assert "prompt" in props
+        assert "close" in props
+        # New scoring fields
+        assert "score" in props
+        assert "rating" in props
+        assert "highlighted_quote" in props
+        assert "score" in required
+        assert "rating" in required
+        assert "highlighted_quote" in required
+        assert props["score"]["minimum"] == 1
+        assert props["score"]["maximum"] == 12
+        assert props["rating"]["enum"] == ["meh", "decent", "spicy", "fire", "superb", "godlike"]
 
-    def test_update_state_records_reaction(self):
-        from roast.modes.breaking_bomb import BreakingBombMode
-        mode = BreakingBombMode()
-        state = _state(turn_count=1, mode=Mode.BREAKING_BOMB,
-                       extra={"reactions": []})
-        records = [_FakeTurn("user", "Wow this is HUGE!!!")]
-        mode._update_state(state, records)
-        assert len(state.extra["reactions"]) == 1
-        assert state.extra["reactions"][0]["turn"] == 1
-        assert "HUGE" in state.extra["reactions"][0]["text"]
+    def test_schema_strict(self):
+        from roast.modes.roast_together import RoastTogetherMode
+        mode = RoastTogetherMode()
+        schema = mode.get_director_schema()
+        assert schema["strict"] is True
+        assert schema["name"] == "director_output"
 
-    def test_single_trigger(self):
-        from roast.modes.breaking_bomb import BreakingBombMode
-        mode = BreakingBombMode()
-        triggers = mode.triggers
-        assert len(triggers) == 1
-        assert triggers[0].name == "ending_max_turns"
+
+class TestDebateBickerDirectorSchema:
+    def test_schema_has_all_fields(self):
+        from roast.modes.debate_bicker import DebateBickerMode
+        mode = DebateBickerMode()
+        schema = mode.get_director_schema()
+        props = schema["schema"]["properties"]
+        required = schema["schema"]["required"]
+        # Base fields
+        assert "action" in props
+        assert "best_take" in props
+        assert "prompt" in props
+        assert "close" in props
+        # New polling fields
+        assert "user_support" in props
+        assert "opponent_support" in props
+        assert "shift" in props
+        assert "judge_comment" in props
+        assert "user_support" in required
+        assert "opponent_support" in required
+        assert "shift" in required
+        assert "judge_comment" in required
+        assert props["user_support"]["minimum"] == 0.0
+        assert props["user_support"]["maximum"] == 100.0
+
+    def test_schema_strict(self):
+        from roast.modes.debate_bicker import DebateBickerMode
+        mode = DebateBickerMode()
+        schema = mode.get_director_schema()
+        assert schema["strict"] is True
+
+
+# -------------------------------------------------------------------
+# Real-time Push (_on_director_result)
+# -------------------------------------------------------------------
+
+class TestRoastTogetherDirectorPush:
+    def _state(self, **kw):
+        s = RoastState.__new__(RoastState)
+        s.user_id = "u1"
+        s.persona_id = 1
+        s.roast_id = "n1"
+        s.mode = Mode.ROAST_TOGETHER
+        s.roast_instance_id = "rid-1"
+        s.phase = Phase.ACTIVE
+        s.turn_count = kw.pop("turn_count", 3)
+        s.started_at = 0.0
+        s.extra = kw.pop("extra", {"scores": []})
+        return s
+
+    def test_publishes_roast_score(self):
+        import asyncio, json
+        from unittest.mock import AsyncMock, MagicMock
+        from roast.modes.roast_together import RoastTogetherMode
+
+        redis = MagicMock()
+        redis.publish = AsyncMock()
+        mode = RoastTogetherMode()
+        state = self._state(turn_count=3)
+        director_result = {
+            "score": 9, "rating": "fire",
+            "highlighted_quote": "Bezos has no soul",
+            "prompt": None,
+        }
+
+        asyncio.run(mode._on_director_result(state, director_result, redis))
+        redis.publish.assert_called_once()
+        args = redis.publish.call_args[0]
+        assert args[0] == "ws:user:u1"
+        event = json.loads(args[1])
+        assert event["type"] == "roast_score"
+        assert event["score"] == 9
+        assert event["rating"] == "fire"
+        assert event["highlighted_quote"] == "Bezos has no soul"
+        assert event["round"] == 3
+        assert event["roast_instance_id"] == "rid-1"
+
+    def test_null_quote_below_fire(self):
+        import asyncio, json
+        from unittest.mock import AsyncMock, MagicMock
+        from roast.modes.roast_together import RoastTogetherMode
+
+        redis = MagicMock()
+        redis.publish = AsyncMock()
+        mode = RoastTogetherMode()
+        state = self._state()
+        director_result = {"score": 5, "rating": "decent", "highlighted_quote": None}
+
+        asyncio.run(mode._on_director_result(state, director_result, redis))
+        event = json.loads(redis.publish.call_args[0][1])
+        assert event["highlighted_quote"] is None
+
+    def test_accumulates_scores_in_state(self):
+        import asyncio
+        from unittest.mock import AsyncMock, MagicMock
+        from roast.modes.roast_together import RoastTogetherMode
+
+        redis = MagicMock()
+        redis.publish = AsyncMock()
+        mode = RoastTogetherMode()
+        state = self._state()
+
+        director_result = {"score": 8, "rating": "spicy", "highlighted_quote": None}
+        asyncio.run(mode._on_director_result(state, director_result, redis))
+        assert len(state.extra["scores"]) == 1
+        assert state.extra["scores"][0]["score"] == 8
+
+        director_result = {"score": 11, "rating": "superb", "highlighted_quote": "Genius!"}
+        asyncio.run(mode._on_director_result(state, director_result, redis))
+        assert len(state.extra["scores"]) == 2
+        assert state.extra["scores"][1]["rating"] == "superb"
+
+    def test_no_redis_no_push(self):
+        import asyncio
+        from roast.modes.roast_together import RoastTogetherMode
+
+        mode = RoastTogetherMode()
+        state = self._state()
+        # Should not raise
+        asyncio.run(mode._on_director_result(state, {"score": 5, "rating": "decent"}, None))
+
+
+class TestDebateBickerDirectorPush:
+    def _state(self, **kw):
+        s = RoastState.__new__(RoastState)
+        s.user_id = "u1"
+        s.roast_id = "d1"
+        s.mode = Mode.DEBATE_BICKER
+        s.roast_instance_id = "rid-2"
+        s.phase = Phase.ACTIVE
+        s.turn_count = kw.pop("turn_count", 2)
+        s.started_at = 0.0
+        s.extra = kw.pop("extra", {"support_history": []})
+        return s
+
+    def test_publishes_debate_judge(self):
+        import asyncio, json
+        from unittest.mock import AsyncMock, MagicMock
+        from roast.modes.debate_bicker import DebateBickerMode
+
+        redis = MagicMock()
+        redis.publish = AsyncMock()
+        mode = DebateBickerMode()
+        state = self._state(turn_count=2)
+        director_result = {
+            "user_support": 55.0, "opponent_support": 45.0,
+            "shift": 5.0, "judge_comment": "用户引用了数据",
+            "prompt": None,
+        }
+
+        asyncio.run(mode._on_director_result(state, director_result, redis))
+        redis.publish.assert_called_once()
+        event = json.loads(redis.publish.call_args[0][1])
+        assert event["type"] == "debate_judge"
+        assert event["user_support"] == 55.0
+        assert event["opponent_support"] == 45.0
+        assert event["shift"] == 5.0
+        assert event["judge_comment"] == "用户引用了数据"
+        assert event["round"] == 2
+
+    def test_accumulates_support_history(self):
+        import asyncio
+        from unittest.mock import AsyncMock, MagicMock
+        from roast.modes.debate_bicker import DebateBickerMode
+
+        redis = MagicMock()
+        redis.publish = AsyncMock()
+        mode = DebateBickerMode()
+        state = self._state()
+
+        asyncio.run(mode._on_director_result(state, {
+            "user_support": 52.0, "opponent_support": 48.0, "shift": 2.0, "judge_comment": "ok"
+        }, redis))
+        assert len(state.extra["support_history"]) == 1
+        assert state.extra["support_history"][0]["user"] == 52.0
+
+    def test_ko_triggers_at_75(self):
+        import asyncio
+        from unittest.mock import AsyncMock, MagicMock, patch
+        from roast.modes.debate_bicker import DebateBickerMode
+        from roast.types import Phase
+
+        redis = MagicMock()
+        redis.publish = AsyncMock()
+        mode = DebateBickerMode()
+        state = self._state(turn_count=5)
+
+        with patch("roast.pending.write", new_callable=AsyncMock) as mock_pending:
+            asyncio.run(mode._on_director_result(state, {
+                "user_support": 78.0, "opponent_support": 22.0, "shift": 8.0, "judge_comment": "KO"
+            }, redis))
+            assert state.phase == Phase.CLOSING
+            assert state.extra["ko"] is True
+            mock_pending.assert_called_once()
+
+    def test_ko_triggers_at_25(self):
+        import asyncio
+        from unittest.mock import AsyncMock, MagicMock, patch
+        from roast.modes.debate_bicker import DebateBickerMode
+        from roast.types import Phase
+
+        redis = MagicMock()
+        redis.publish = AsyncMock()
+        mode = DebateBickerMode()
+        state = self._state(turn_count=4)
+
+        with patch("roast.pending.write", new_callable=AsyncMock) as mock_pending:
+            asyncio.run(mode._on_director_result(state, {
+                "user_support": 20.0, "opponent_support": 80.0, "shift": -10.0, "judge_comment": "lost"
+            }, redis))
+            assert state.phase == Phase.CLOSING
+            assert state.extra["ko"] is True
+
+    def test_no_ko_in_middle(self):
+        import asyncio
+        from unittest.mock import AsyncMock, MagicMock
+        from roast.modes.debate_bicker import DebateBickerMode
+        from roast.types import Phase
+
+        redis = MagicMock()
+        redis.publish = AsyncMock()
+        mode = DebateBickerMode()
+        state = self._state()
+
+        asyncio.run(mode._on_director_result(state, {
+            "user_support": 55.0, "opponent_support": 45.0, "shift": 5.0, "judge_comment": "fine"
+        }, redis))
+        assert state.phase == Phase.ACTIVE  # unchanged
+        assert state.extra.get("ko") is None
+
+
+# -------------------------------------------------------------------
+# Score computation
+# -------------------------------------------------------------------
+
+class TestRoastTogetherScore:
+    def _state(self, **kw):
+        s = RoastState.__new__(RoastState)
+        s.user_id = "u1"
+        s.roast_id = "n1"
+        s.mode = Mode.ROAST_TOGETHER
+        s.roast_instance_id = "rid-1"
+        s.turn_count = kw.pop("turn_count", 4)
+        s.phase = Phase.ACTIVE
+        s.started_at = 0.0
+        s.extra = kw.pop("extra", {})
+        return s
+
+    def test_score_aggregates(self):
+        from roast.modes.roast_together import RoastTogetherMode
+        mode = RoastTogetherMode()
+        state = self._state(extra={
+            "scores": [
+                {"round": 1, "score": 3, "rating": "meh", "quote": None},
+                {"round": 2, "score": 7, "rating": "spicy", "quote": None},
+                {"round": 3, "score": 9, "rating": "fire", "quote": "Great line!"},
+                {"round": 4, "score": 5, "rating": "decent", "quote": None},
+            ]
+        })
+        result = mode.score(state)
+        assert result["total_score"] == 24
+        assert result["avg_score"] == 6.0
+        assert result["best_rating"] == "fire"
+        assert result["best_quote"] == "Great line!"
+        assert result["turns"] == 4
+
+    def test_score_empty(self):
+        from roast.modes.roast_together import RoastTogetherMode
+        mode = RoastTogetherMode()
+        state = self._state(extra={"scores": []})
+        result = mode.score(state)
+        assert result["total_score"] == 0
+        assert result["avg_score"] == 0.0
+        assert result["best_rating"] == "meh"
+        assert result["best_quote"] == ""
+
+
+class TestDebateBickerScore:
+    def _state(self, **kw):
+        s = RoastState.__new__(RoastState)
+        s.user_id = "u1"
+        s.roast_id = "d1"
+        s.mode = Mode.DEBATE_BICKER
+        s.roast_instance_id = "rid-2"
+        s.turn_count = kw.pop("turn_count", 3)
+        s.phase = Phase.ACTIVE
+        s.started_at = 0.0
+        s.extra = kw.pop("extra", {})
+        return s
+
+    def test_landslide_win(self):
+        from roast.modes.debate_bicker import DebateBickerMode
+        mode = DebateBickerMode()
+        state = self._state(extra={
+            "strong_points": 3,
+            "support_history": [{"round": 3, "user": 80.0, "opponent": 20.0, "shift": 10.0}],
+        })
+        result = mode.score(state)
+        assert result["final_user_support"] == 80.0
+        assert result["debate_result"] == "landslide_win"
+
+    def test_narrow_win(self):
+        from roast.modes.debate_bicker import DebateBickerMode
+        mode = DebateBickerMode()
+        state = self._state(extra={
+            "strong_points": 2,
+            "support_history": [{"round": 3, "user": 62.0, "opponent": 38.0, "shift": 5.0}],
+        })
+        result = mode.score(state)
+        assert result["debate_result"] == "narrow_win"
+
+    def test_draw(self):
+        from roast.modes.debate_bicker import DebateBickerMode
+        mode = DebateBickerMode()
+        state = self._state(extra={
+            "strong_points": 1,
+            "support_history": [{"round": 3, "user": 50.0, "opponent": 50.0, "shift": 0.0}],
+        })
+        result = mode.score(state)
+        assert result["debate_result"] == "draw"
+
+    def test_narrow_loss(self):
+        from roast.modes.debate_bicker import DebateBickerMode
+        mode = DebateBickerMode()
+        state = self._state(extra={
+            "strong_points": 0,
+            "support_history": [{"round": 3, "user": 35.0, "opponent": 65.0, "shift": -5.0}],
+        })
+        result = mode.score(state)
+        assert result["debate_result"] == "narrow_loss"
+
+    def test_landslide_loss(self):
+        from roast.modes.debate_bicker import DebateBickerMode
+        mode = DebateBickerMode()
+        state = self._state(extra={
+            "strong_points": 0,
+            "support_history": [{"round": 3, "user": 18.0, "opponent": 82.0, "shift": -12.0}],
+        })
+        result = mode.score(state)
+        assert result["debate_result"] == "landslide_loss"
+
+    def test_default_50_when_no_history(self):
+        from roast.modes.debate_bicker import DebateBickerMode
+        mode = DebateBickerMode()
+        state = self._state(extra={"strong_points": 0, "support_history": []})
+        result = mode.score(state)
+        assert result["final_user_support"] == 50.0
+
+    def test_debate_result_helper(self):
+        from roast.modes.debate_bicker import _debate_result
+        assert _debate_result(80.0) == "landslide_win"
+        assert _debate_result(60.0) == "narrow_win"
+        assert _debate_result(50.0) == "draw"
+        assert _debate_result(30.0) == "narrow_loss"
+        assert _debate_result(15.0) == "landslide_loss"

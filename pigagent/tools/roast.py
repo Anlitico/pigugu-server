@@ -91,7 +91,7 @@ def create_list_roasts_tool(pg_pool: str, *, connect: ConnectFn | None = None) -
                 },
                 "game_mode": {
                     "type": "string",
-                    "enum": ["poison_opinion", "debate", "prediction", "breaking_bomb"],
+                    "enum": ["poison_opinion", "debate"],
                     "description": "Filter by game mode. Omit to return all modes.",
                 },
                 "start_date": {
@@ -250,7 +250,8 @@ def create_roast_complete_tool(
 
     async def _handler(args: dict) -> dict[str, Any]:
         from roast.state import RoastState
-        from roast.types import Phase
+        from roast.types import Phase, Mode
+        from roast.registry import GameModeRegistry
 
         user_id = _current_user_id.get()
         if not user_id:
@@ -273,21 +274,68 @@ def create_roast_complete_tool(
 
         await state.save(redis, pg_pool)
 
-        # Build settlement event for the App
-        settlement_event = {
-            "type": "roast_settled",
-            "roast_instance_id": state.roast_instance_id,
-            "roast_id": state.roast_id,
-            "mode": str(state.mode),
-            "headline": state.extra.get("headline", ""),
-            "source": state.extra.get("source", ""),
-            "turn_count": state.turn_count,
-            "best_take": best_take or None,
-            "end_reason": end_reason,
-            "started_at": state.started_at,
-        }
+        # Compute mode-specific summary for the App settlement push
+        game_mode = GameModeRegistry.get(state.mode)
+        score_data = game_mode.score(state)
 
-        # Write roast_history directly (PG, no Redis round-trip)
+        if state.mode == Mode.ROAST_TOGETHER:
+            settlement_event = {
+                "type": "roast_end",
+                "roast_instance_id": state.roast_instance_id,
+                "roast_id": state.roast_id,
+                "mode_id": "poison_opinion",
+                "headline": state.extra.get("headline", ""),
+                "source": state.extra.get("source", ""),
+                "total_score": score_data.get("total_score", 0),
+                "avg_score": score_data.get("avg_score", 0.0),
+                "total_rounds": state.turn_count,
+                "best_quote": score_data.get("best_quote") or None,
+                "best_rating": score_data.get("best_rating", "meh"),
+                "achievement_unlocked": None,
+                "end_reason": end_reason,
+                "started_at": state.started_at,
+            }
+            public_mode_id = "poison_opinion"
+        elif state.mode == Mode.DEBATE_BICKER:
+            settlement_event = {
+                "type": "debate_end",
+                "roast_instance_id": state.roast_instance_id,
+                "roast_id": state.roast_id,
+                "mode_id": "debate",
+                "headline": state.extra.get("headline", ""),
+                "source": state.extra.get("source", ""),
+                "final_user_support": score_data.get("final_user_support", 50.0),
+                "result": score_data.get("debate_result", "draw"),
+                "total_rounds": state.turn_count,
+                "achievement_unlocked": None,
+                "end_reason": end_reason,
+                "started_at": state.started_at,
+            }
+            public_mode_id = "debate"
+        else:
+            # Unknown/legacy mode — fall back to generic settlement event.
+            # The mode-specific data (total_score, final_user_support, etc.)
+            # won't be available, but the App still receives the settlement
+            # notification with the basic fields it already handles.
+            logger.warning(
+                f"[mark_roast_complete] Unknown mode: {state.mode} — "
+                f"falling back to generic roast_settled event"
+            )
+            settlement_event = {
+                "type": "roast_settled",
+                "roast_instance_id": state.roast_instance_id,
+                "roast_id": state.roast_id,
+                "mode": str(state.mode),
+                "headline": state.extra.get("headline", ""),
+                "source": state.extra.get("source", ""),
+                "turn_count": state.turn_count,
+                "best_take": best_take or None,
+                "end_reason": end_reason,
+                "started_at": state.started_at,
+            }
+            public_mode_id = str(state.mode)
+
+        # Write roast_history (basic metadata only — per-round detail is in director_logs)
         try:
             if pg_pool is not None:
                 from bootstrap.factory import get_pg_pool as _get_pool
@@ -297,22 +345,23 @@ def create_roast_complete_tool(
                         """INSERT INTO roast_history
                            (roast_instance_id, user_id, roast_id, mode, headline, source,
                             turn_count, best_take, interrupted, started_at, settled_at)
-                           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, to_timestamp($10), NOW())
+                           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9,
+                                   to_timestamp($10), NOW())
                            ON CONFLICT (roast_instance_id) DO UPDATE SET
                             turn_count = EXCLUDED.turn_count,
                             best_take = EXCLUDED.best_take,
                             interrupted = EXCLUDED.interrupted,
                             settled_at = NOW()""",
                         state.roast_instance_id, user_id, state.roast_id,
-                        str(state.mode), state.extra.get("headline", ""),
+                        public_mode_id, state.extra.get("headline", ""),
                         state.extra.get("source", ""), state.turn_count,
-                        settlement_event["best_take"], end_reason == "quit",
+                        best_take or None, end_reason == "quit",
                         state.started_at,
                     )
         except Exception as e:
             logger.warning(f"[mark_roast_complete] roast_history write failed: {e}")
 
-        # Push card to App via WS (Redis → ws_manager → all user devices).
+        # Push settlement summary to App via WS (Redis → ws_manager → all user devices).
         # Only for completed roasts — quit/interrupted does NOT send a card.
         if end_reason == "completed":
             import json as _json
@@ -327,7 +376,8 @@ def create_roast_complete_tool(
 
         logger.info(
             f"[mark_roast_complete] Roast settled: {state.roast_instance_id} "
-            f"turns={state.turn_count} end_reason={end_reason} user={user_id}"
+            f"type={settlement_event['type']} turns={state.turn_count} "
+            f"end_reason={end_reason} user={user_id}"
         )
 
         return {"settled": True, "end_reason": end_reason}

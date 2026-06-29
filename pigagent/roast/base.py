@@ -63,6 +63,26 @@ class GameMode(ABC):
         """
         ...
 
+    @abstractmethod
+    def get_director_schema(self) -> dict:
+        """JSON Schema for the director LLM output. Each mode defines its own.
+
+        Returns a dict suitable for use as the ``json_schema`` in
+        ``response_format``.  Must include ``name``, ``strict``, and
+        ``schema`` keys.
+        """
+        ...
+
+    @abstractmethod
+    def score(self, state: RoastState) -> dict:
+        """Compute the final score summary for this game mode.
+
+        Called at settlement time. Returns a dict with mode-specific
+        scoring data (total_score, avg_score, best_rating, etc. for Hot
+        Take; final_user_support, result, etc. for Debate).
+        """
+        ...
+
     @staticmethod
     def init_extra() -> dict:
         """Optional initial extra state. Override to set mode-specific defaults."""
@@ -143,31 +163,7 @@ class GameMode(ABC):
                 model=director_model,
                 response_format={
                     "type": "json_schema",
-                    "json_schema": {
-                        "name": "director_output",
-                        "strict": True,
-                        "schema": {
-                            "type": "object",
-                            "properties": {
-                                "action": {"type": "string", "enum": ["none", "inject"]},
-                                "best_take": {
-                                    "anyOf": [
-                                        {"type": "string"},
-                                        {"type": "null"},
-                                    ]
-                                },
-                                "prompt": {
-                                    "anyOf": [
-                                        {"type": "string"},
-                                        {"type": "null"},
-                                    ]
-                                },
-                                "close": {"type": "boolean"},
-                            },
-                            "required": ["action", "best_take", "prompt", "close"],
-                            "additionalProperties": False,
-                        },
-                    },
+                    "json_schema": self.get_director_schema(),
                 },
             )
 
@@ -201,6 +197,18 @@ class GameMode(ABC):
         except Exception as e:
             logger.error(f"[{self.mode}] Director failed: {e}")
             return {"action": "none", "best_take": None, "prompt": None, "close": False}
+
+    # ── Director result hook ─────────────────────────────────────────────
+
+    async def _on_director_result(
+        self, state: RoastState, director_result: dict, redis,
+    ) -> None:
+        """Hook called after director evaluation completes.
+
+        Override in subclasses to publish real-time scoring events
+        (e.g. ``roast_score``, ``debate_judge``) to the App via Redis.
+        """
+        pass
 
     @property
     def triggers(self) -> list[Trigger]:
@@ -262,11 +270,21 @@ class GameMode(ABC):
 
             # Close: Director signals the game should end (→ phase=CLOSING
             # persisted in RoastState, affects all future turns).
+            # Push real-time scoring event to App via Redis (mode-specific).
+            # Must run BEFORE the close check so the hook (e.g. debate KO)
+            # can set CLOSING phase and write its own pending prompt first.
+            hook_closed = False
+            try:
+                await self._on_director_result(state, director_result, redis)
+                hook_closed = (state.phase == Phase.CLOSING)
+            except Exception as e:
+                logger.error(f"[{self.mode}] _on_director_result failed: {e}")
+
             if director_result.get("close"):
                 state.phase = Phase.CLOSING
-                # Ensure a closing prompt is always injected so the Agent
-                # sees [Game Event] and knows to wrap up.
-                if not director_prompt:
+                # Only set generic closing prompt if the hook didn't already
+                # trigger a mode-specific close (e.g. debate KO verdict).
+                if not director_prompt and not hook_closed:
                     director_prompt = (
                         "THE GAME IS OVER. Wrap up now with a closing thought. "
                         "Stay in character. Call mark_roast_complete when done."
@@ -323,26 +341,33 @@ async def _write_director_log(
     When multiple director evaluations happen for the same turn_number
     (e.g. STT splits one user utterance into fragments, each triggers its
     own LLM → director cycle), only the LAST one is kept via UPSERT.
+
+    The full LLM output is stored as JSONB in ``raw_result`` so that
+    mode-specific fields (score, rating, user_support, etc.) are preserved
+    without requiring schema changes.
     """
     try:
+        import json as _json
         from bootstrap.factory import get_pg_pool
         pool = await get_pg_pool()
         async with pool.acquire() as conn:
             await conn.execute(
                 """INSERT INTO roast_director_logs
-                   (roast_instance_id, turn_number, action, best_take, prompt, close)
-                   VALUES ($1, $2, $3, $4, $5, $6)
+                   (roast_instance_id, turn_number, action, best_take, prompt, close, raw_result)
+                   VALUES ($1, $2, $3, $4, $5, $6, $7)
                    ON CONFLICT (roast_instance_id, turn_number) DO UPDATE SET
                        action = EXCLUDED.action,
                        best_take = EXCLUDED.best_take,
                        prompt = EXCLUDED.prompt,
-                       close = EXCLUDED.close""",
+                       close = EXCLUDED.close,
+                       raw_result = EXCLUDED.raw_result""",
                 roast_instance_id,
                 turn_number,
                 result.get("action"),
                 result.get("best_take"),
                 result.get("prompt"),
                 result.get("close", False),
+                _json.dumps(result),
             )
     except Exception as e:
         logger.warning(f"[Director] Failed to write director log: {e}")

@@ -1,19 +1,21 @@
-"""DebateBicker — Pigugu picks a controversial side; the user argues back.
+"""DebateBicker (Debate) — Pigugu picks a controversial side; the user argues back.
 
-State (extra):
-    strong_points   -  count of data-backed arguments from the user
-    fart_type       -  concede | grudging | impressed (set on ending)
-    debate_history  -  [{turn, length, has_data}, ...]
+Director outputs per-round polling data (user_support / opponent_support /
+shift / judge_comment), pushed to the App in real time via Redis Pub/Sub.
 
-Per PRD §6.2: user MUST have the last word. Pigugu responds with a fart sound.
+KO is triggered when support crosses the 75%/25% thresholds.
 """
 
 from __future__ import annotations
 
+import json
 from typing import TYPE_CHECKING
 
-from roast.types import Mode
+from loguru import logger
+
+from roast.types import Mode, Phase
 from roast.base import GameMode, Trigger
+from roast import pending
 
 if TYPE_CHECKING:
     from roast.state import RoastState
@@ -36,9 +38,23 @@ def _is_strong_point(text: str) -> bool:
     return any(kw in lower for kw in _DATA_KEYWORDS)
 
 
+def _debate_result(final_user_support: float) -> str:
+    """Map final user support percentage to a debate result enum."""
+    if final_user_support >= 75:
+        return "landslide_win"
+    elif final_user_support >= 55:
+        return "narrow_win"
+    elif final_user_support >= 45:
+        return "draw"
+    elif final_user_support >= 26:
+        return "narrow_loss"
+    else:
+        return "landslide_loss"
+
+
 class DebateBickerMode(GameMode):
     mode = Mode.DEBATE_BICKER
-    max_turns = 50
+    max_turns = 8
 
     async def get_system_prompt_extension(self, prompt_store: PromptStore | None) -> str:
         if prompt_store is None:
@@ -50,6 +66,57 @@ class DebateBickerMode(GameMode):
             return ""
         return await prompt_store.get("debate_bicker_director")
 
+    def get_director_schema(self) -> dict:
+        """Debate director output: base fields + polling/commentary fields."""
+        return {
+            "name": "director_output",
+            "strict": True,
+            "schema": {
+                "type": "object",
+                "properties": {
+                    "action": {"type": "string", "enum": ["none", "inject"]},
+                    "best_take": {
+                        "anyOf": [
+                            {"type": "string"},
+                            {"type": "null"},
+                        ]
+                    },
+                    "prompt": {
+                        "anyOf": [
+                            {"type": "string"},
+                            {"type": "null"},
+                        ]
+                    },
+                    "close": {"type": "boolean"},
+                    "user_support": {
+                        "type": "number",
+                        "minimum": 0.0,
+                        "maximum": 100.0,
+                        "description": "Current public support percentage for the user (0-100).",
+                    },
+                    "opponent_support": {
+                        "type": "number",
+                        "minimum": 0.0,
+                        "maximum": 100.0,
+                        "description": "Current support for Pigugu (= 100 - user_support).",
+                    },
+                    "shift": {
+                        "type": "number",
+                        "description": "Support change this round (positive = user gained, negative = Pigugu gained).",
+                    },
+                    "judge_comment": {
+                        "type": "string",
+                        "description": "Director's 1-2 sentence commentary on this round.",
+                    },
+                },
+                "required": [
+                    "action", "best_take", "prompt", "close",
+                    "user_support", "opponent_support", "shift", "judge_comment",
+                ],
+                "additionalProperties": False,
+            },
+        }
+
     # ── State helpers ──────────────────────────────────────────────────
 
     @staticmethod
@@ -59,6 +126,7 @@ class DebateBickerMode(GameMode):
             "fart_type": "",
             "debate_history": [],
             "best_take": "",
+            "support_history": [],
         }
 
     # ── Advance ────────────────────────────────────────────────────────
@@ -100,6 +168,73 @@ class DebateBickerMode(GameMode):
             "length": length,
             "has_data": has_data,
         })
+
+    # ── Real-time judging push ──────────────────────────────────────────
+
+    async def _on_director_result(
+        self, state: RoastState, director_result: dict, redis,
+    ) -> None:
+        """Publish debate_judge event and check KO thresholds."""
+        if not redis:
+            return
+
+        user_support = director_result.get("user_support", 50.0)
+        opponent_support = director_result.get("opponent_support", 50.0)
+        shift = director_result.get("shift", 0.0)
+        judge_comment = director_result.get("judge_comment", "")
+
+        # Persist to state for later settlement
+        support_history: list = state.extra.setdefault("support_history", [])
+        support_history.append({
+            "round": state.turn_count,
+            "user": user_support,
+            "opponent": opponent_support,
+            "shift": shift,
+        })
+
+        # Build the debate_judge event (per TD §3.2.3)
+        event = {
+            "type": "debate_judge",
+            "roast_instance_id": state.roast_instance_id,
+            "roast_id": state.roast_id,
+            "mode_id": "debate",
+            "round": state.turn_count,
+            "user_support": user_support,
+            "opponent_support": opponent_support,
+            "shift": shift,
+            "judge_comment": judge_comment,
+        }
+
+        try:
+            await redis.publish(
+                f"ws:user:{state.user_id}",
+                json.dumps(event),
+            )
+            logger.info(
+                f"[{self.mode}] debate_judge pushed: round={state.turn_count} "
+                f"user={user_support:.1f}% opponent={opponent_support:.1f}% "
+                f"shift={shift:+.1f}%"
+            )
+        except Exception as e:
+            logger.error(f"[{self.mode}] Failed to publish debate_judge: {e}")
+
+        # ── KO detection ──────────────────────────────────────────────
+        if user_support >= 75.0 or user_support <= 25.0:
+            state.phase = Phase.CLOSING
+            state.extra["ko"] = True
+            closing_prompt = (
+                "THE DEBATE IS OVER — public opinion has reached a decisive verdict. "
+                "Wrap up with a closing statement acknowledging the result. "
+                "Call mark_roast_complete when done."
+            )
+            try:
+                await pending.write(state.roast_instance_id, closing_prompt, redis)
+            except Exception as e:
+                logger.error(f"[{self.mode}] Failed to write KO closing prompt: {e}")
+            logger.info(
+                f"[{self.mode}] KO triggered: user_support={user_support:.1f}% "
+                f"roast={state.roast_instance_id} turn={state.turn_count}"
+            )
 
     # ── Triggers ───────────────────────────────────────────────────────
 
@@ -153,7 +288,21 @@ class DebateBickerMode(GameMode):
             result = "draw"
         else:
             result = "agent_win"
-        return {"mode": str(self.mode), "result": result, "strong_points": strong}
+
+        # Compute debate result from final support
+        support_history: list = state.extra.get("support_history", [])
+        final_support = 50.0
+        if support_history:
+            final_support = support_history[-1].get("user", 50.0)
+
+        return {
+            "mode": str(self.mode),
+            "result": result,
+            "strong_points": strong,
+            "final_user_support": final_support,
+            "debate_result": _debate_result(final_support),
+            "support_history": support_history,
+        }
 
 
 def _detect_repeat(records: list) -> bool:

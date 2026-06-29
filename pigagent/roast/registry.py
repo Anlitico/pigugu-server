@@ -44,11 +44,9 @@ class GameModeRegistry:
             return
         from roast.modes.roast_together import RoastTogetherMode
         from roast.modes.debate_bicker import DebateBickerMode
-        from roast.modes.breaking_bomb import BreakingBombMode
 
         cls.register(RoastTogetherMode())
         cls.register(DebateBickerMode())
-        cls.register(BreakingBombMode())
         cls._initialized = True
 
 

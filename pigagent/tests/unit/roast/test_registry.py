@@ -10,7 +10,6 @@ class TestGameModeRegistry:
         GameModeRegistry.register_defaults()
         assert Mode.ROAST_TOGETHER in GameModeRegistry._modes
         assert Mode.DEBATE_BICKER in GameModeRegistry._modes
-        assert Mode.BREAKING_BOMB in GameModeRegistry._modes
 
     def test_get_default(self):
         m = get_game_mode("roast_together")
@@ -25,14 +24,10 @@ class TestGameModeRegistry:
         m = get_game_mode("nonexistent")
         assert m.mode == Mode.ROAST_TOGETHER
 
-    def test_get_via_enum(self):
-        m = get_game_mode(Mode.BREAKING_BOMB)
-        assert m.mode == Mode.BREAKING_BOMB
-
     def test_all_have_extensions(self):
         import asyncio
         from unittest.mock import MagicMock, AsyncMock
-        for mode in [Mode.ROAST_TOGETHER, Mode.DEBATE_BICKER, Mode.BREAKING_BOMB]:
+        for mode in [Mode.ROAST_TOGETHER, Mode.DEBATE_BICKER]:
             m = get_game_mode(mode)
             mock_store = MagicMock()
             mock_store.get = AsyncMock(return_value="prompt content")
@@ -40,6 +35,6 @@ class TestGameModeRegistry:
             assert ext, f"{mode} has no prompt extension"
 
     def test_all_have_max_turns(self):
-        for mode in [Mode.ROAST_TOGETHER, Mode.DEBATE_BICKER, Mode.BREAKING_BOMB]:
+        for mode in [Mode.ROAST_TOGETHER, Mode.DEBATE_BICKER]:
             m = get_game_mode(mode)
             assert m.max_turns > 0, f"{mode} has no max_turns"

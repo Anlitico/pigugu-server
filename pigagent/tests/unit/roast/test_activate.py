@@ -17,10 +17,10 @@ class TestResolveGameMode:
         mode = _resolve_game_mode("debate")
         assert str(mode.mode) == "debate_bicker"
 
-    def test_maps_breaking_bomb_directly(self):
+    def test_maps_breaking_bomb_falls_back(self):
         from roast.activate import _resolve_game_mode
         mode = _resolve_game_mode("breaking_bomb")
-        assert str(mode.mode) == "breaking_bomb"
+        assert str(mode.mode) == "roast_together"  # falls back: breaking_bomb no longer registered
 
     def test_unknown_mode_falls_back(self):
         from roast.activate import _resolve_game_mode

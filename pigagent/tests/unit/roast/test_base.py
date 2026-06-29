@@ -52,6 +52,26 @@ class _MinimalMode(GameMode):
     async def get_director_prompt(self, prompt_store=None) -> str:
         return "You are a test director. Default to action:none."
 
+    def get_director_schema(self) -> dict:
+        return {
+            "name": "director_output",
+            "strict": True,
+            "schema": {
+                "type": "object",
+                "properties": {
+                    "action": {"type": "string", "enum": ["none", "inject"]},
+                    "best_take": {"anyOf": [{"type": "string"}, {"type": "null"}]},
+                    "prompt": {"anyOf": [{"type": "string"}, {"type": "null"}]},
+                    "close": {"type": "boolean"},
+                },
+                "required": ["action", "best_take", "prompt", "close"],
+                "additionalProperties": False,
+            },
+        }
+
+    def score(self, state) -> dict:
+        return {"mode": str(self.mode), "turns": state.turn_count}
+
 
 class TestGameModeBase:
     def test_default_triggers_has_ending(self):
@@ -99,6 +119,7 @@ class TestGameModeTick:
         import asyncio
 
         redis = MagicMock()
+        redis.publish = AsyncMock()
         state = self._state(turn_count=7)
         mode = RoastTogetherMode()
         wc = MagicMock()
@@ -116,6 +137,7 @@ class TestGameModeTick:
         import asyncio
 
         redis = MagicMock()
+        redis.publish = AsyncMock()
         state = self._state(turn_count=1)
         mode = RoastTogetherMode()
         wc = MagicMock()
@@ -134,6 +156,7 @@ class TestGameModeTick:
         import asyncio
 
         redis = MagicMock()
+        redis.publish = AsyncMock()
         state = self._state(phase=Phase.CLOSING, turn_count=5)
         mode = RoastTogetherMode()
         wc = MagicMock()
@@ -172,6 +195,7 @@ class TestGameModeTickDirector:
 
         redis = MagicMock()
         redis.setex = AsyncMock()
+        redis.publish = AsyncMock()  # required by _on_director_result hook
         state = self._state(turn_count=3)
         mode = RoastTogetherMode()
         wc = MagicMock()
@@ -201,6 +225,7 @@ class TestGameModeTickDirector:
 
         redis = MagicMock()
         redis.setex = AsyncMock()
+        redis.publish = AsyncMock()  # required by _on_director_result hook
         state = self._state(turn_count=5)
         mode = RoastTogetherMode()
         wc = MagicMock()
@@ -230,6 +255,7 @@ class TestGameModeTickDirector:
 
         redis = MagicMock()
         redis.setex = AsyncMock()
+        redis.publish = AsyncMock()  # required by _on_director_result hook
         state = self._state(turn_count=2)
         mode = RoastTogetherMode()
         wc = MagicMock()
@@ -251,6 +277,7 @@ class TestWriteDirectorLog:
     """Tests for _write_director_log — fire-and-forget PG write for Director decisions."""
 
     def test_writes_row_via_pg_pool(self):
+        import json as _json
         import asyncio; from roast.base import _write_director_log
         from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -269,6 +296,7 @@ class TestWriteDirectorLog:
         mock_conn.execute.assert_called_once()
         sql = mock_conn.execute.call_args[0][0]
         assert "ON CONFLICT" in sql
+        assert "raw_result" in sql
         args = mock_conn.execute.call_args[0][1:]
         assert args[0] == "rid-1"
         assert args[1] == 5
@@ -276,6 +304,7 @@ class TestWriteDirectorLog:
         assert args[3] == "That's gold!"
         assert args[4] == "Amplify it."
         assert args[5] is False
+        assert args[6] == _json.dumps(result)  # raw_result JSONB
 
     def test_handles_pg_failure_gracefully(self):
         import asyncio; from roast.base import _write_director_log
