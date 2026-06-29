@@ -7,25 +7,20 @@ import pytest
 
 
 class TestResolveGameMode:
-    def test_resolves_poison_opinion(self):
+    def test_resolves_roast_together(self):
         from roast.activate import _resolve_game_mode
-        mode = _resolve_game_mode("poison_opinion")
-        assert str(mode.mode) == "poison_opinion"
+        mode = _resolve_game_mode("roast_together")
+        assert str(mode.mode) == "roast_together"
 
     def test_maps_debate_directly(self):
         from roast.activate import _resolve_game_mode
         mode = _resolve_game_mode("debate")
         assert str(mode.mode) == "debate"
 
-    def test_maps_breaking_bomb_falls_back(self):
-        from roast.activate import _resolve_game_mode
-        mode = _resolve_game_mode("breaking_bomb")
-        assert str(mode.mode) == "poison_opinion"
-
     def test_unknown_mode_falls_back(self):
         from roast.activate import _resolve_game_mode
-        mode = _resolve_game_mode("prediction")
-        assert str(mode.mode) == "poison_opinion"
+        mode = _resolve_game_mode("unknown_mode")
+        assert str(mode.mode) == "roast_together"
 
 
 class TestBuildRoastBody:
@@ -78,7 +73,7 @@ class TestActivateRoast:
         mock_state = MagicMock()
         mock_state.roast_instance_id = "inst-123"
         mock_state.mode = MagicMock()
-        mock_state.mode.__str__ = MagicMock(return_value="poison_opinion")
+        mock_state.mode.__str__ = MagicMock(return_value="roast_together")
 
         redis = MagicMock()
         redis.setex = AsyncMock()
@@ -89,7 +84,7 @@ class TestActivateRoast:
                 user_id="u1",
                 persona_id=1,
                 roast_id="r1",
-                game_mode="poison_opinion",
+                game_mode="roast_together",
                 prompt="test prompt",
                 redis=redis,
             )

@@ -1,4 +1,4 @@
-"""RoastTogether (Hot Take) — roast a hot topic together with the user.
+"""Poison Opinion (Hot Take) — roast a hot topic together with the user.
 
 Director outputs per-round scoring (score / rating / highlighted_quote),
 which is pushed to the App in real time via Redis Pub/Sub.
@@ -20,7 +20,7 @@ if TYPE_CHECKING:
 
 
 class RoastTogetherMode(GameMode):
-    mode = Mode.POISON_OPINION
+    mode = Mode.ROAST_TOGETHER
     max_turns = 8
 
     async def get_system_prompt_extension(self, prompt_store: PromptStore | None) -> str:

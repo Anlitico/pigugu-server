@@ -6,7 +6,7 @@ from enum import StrEnum
 
 
 class Mode(StrEnum):
-    POISON_OPINION = "poison_opinion"
+    ROAST_TOGETHER = "roast_together"
     DEBATE = "debate"
 
 

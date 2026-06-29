@@ -35,11 +35,6 @@ async def list_active_scenarios(
         )
         .where(RoastScenario.created_at > cutoff)
         .order_by(
-            text(
-                "CASE game_mode "
-                "WHEN 'breaking_bomb' THEN 0 "
-                "ELSE 1 END"
-            ),
             RoastScenario.created_at.desc(),
         )
     )

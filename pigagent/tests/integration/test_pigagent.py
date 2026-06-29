@@ -31,7 +31,6 @@ def _make_test_prompt_store():
         "roast_together_system", "roast_together_director", "roast_together_ending",
         "debate_bicker_system", "debate_bicker_director",
         "debate_bicker_ending", "debate_bicker_user_won", "debate_bicker_repeat",
-        "breaking_bomb_system", "breaking_bomb_director", "breaking_bomb_ending",
     ):
         path = templates_dir / f"{name}.j2"
         if path.is_file():
@@ -159,7 +158,7 @@ class TestStartRoast:
         import asyncio
         result = asyncio.run(_collect(
             agent.start_roast(
-                1, "test-roast-id", "poison_opinion",
+                1, "test-roast-id", "roast_together",
                 "Donald Trump tweeted about AI today. Share your thoughts.",
             )
         ))
