@@ -10,14 +10,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # Install uv
 COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
 
-# Copy dependency manifests
+# Copy everything needed for sync
 COPY pyproject.toml uv.lock ./
-
-# Install deps (no package yet — src not copied)
-RUN uv sync --frozen --no-dev --no-install-project
-
-# Copy application code, then install the package
 COPY src/ src/
+
+# Install deps + project in one step
 RUN uv sync --frozen --no-dev
 
 # Run as non-root
