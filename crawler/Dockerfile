@@ -21,4 +21,4 @@ RUN uv sync --frozen --no-dev
 RUN useradd --create-home --shell /bin/bash crawler
 USER crawler
 
-CMD ["uv", "run", "python", "-m", "src.main"]
+CMD ["uv", "run", "--no-sync", "python", "-m", "src.main"]
