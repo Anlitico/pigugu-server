@@ -138,8 +138,7 @@ jobs:
         for key in (
             "DATABASE_URL",
             "REDIS_URL",
-            "BRIGHTDATA_API_KEY",
-            "DEEPSEEK_API_KEY",
+            "ANTHROPIC_API_KEY",
             "JWT_SECRET_KEY",
             "LIVEKIT_URL",
             "LIVEKIT_API_KEY",
