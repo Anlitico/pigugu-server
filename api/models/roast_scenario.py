@@ -44,4 +44,5 @@ class RoastScenario(Base):
 
     __table_args__ = (
         Index("idx_roast_scenarios_mode", "game_mode", "status"),
+        Index("idx_roast_scenarios_active_expires", "status", "expires_at"),
     )

@@ -1,0 +1,43 @@
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: news-crawler
+spec:
+  schedule: "0 9 * * *"           # 09:00 UTC daily (PRD §7)
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          restartPolicy: OnFailure
+          containers:
+            - name: crawler
+              image: 537557168531.dkr.ecr.us-west-1.amazonaws.com/pigugu-crawler:latest
+              command:
+                - python
+                - -m
+                - src.main
+              env:
+                - name: DATABASE_URL
+                  valueFrom:
+                    secretKeyRef:
+                      name: pigugu-secrets
+                      key: DATABASE_URL
+                - name: ANTHROPIC_API_KEY
+                  valueFrom:
+                    secretKeyRef:
+                      name: pigugu-secrets
+                      key: ANTHROPIC_API_KEY
+                - name: ANTHROPIC_BASE_URL
+                  value: "https://api.deepseek.com/anthropic"
+                - name: ANTHROPIC_MODEL
+                  value: "deepseek-v4-pro[1m]"
+              resources:
+                requests:
+                  memory: "256Mi"
+                  cpu: "250m"
+                limits:
+                  memory: "512Mi"
+                  cpu: "500m"
