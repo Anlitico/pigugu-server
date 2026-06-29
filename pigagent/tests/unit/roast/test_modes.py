@@ -11,7 +11,7 @@ def _state(**kw):
     s.user_id = "u1"
     s.persona_id = 1
     s.roast_id = "n1"
-    s.mode = kw.pop("mode", Mode.ROAST_TOGETHER)
+    s.mode = kw.pop("mode", Mode.POISON_OPINION)
     s.roast_instance_id = "test-id"
     s.phase = kw.pop("phase", Phase.ACTIVE)
     s.turn_count = kw.pop("turn_count", 0)
@@ -120,7 +120,7 @@ class TestMarkRoastComplete:
             "user_id": "u1",
             "persona_id": 1,
             "roast_id": "n1",
-            "mode": "roast_together",
+            "mode": "poison_opinion",
             "phase": Phase.CLOSED,
             "turn_count": 5,
             "extra": {},
@@ -149,7 +149,7 @@ class TestMarkRoastComplete:
             "user_id": "u1",
             "persona_id": 1,
             "roast_id": "n1",
-            "mode": "roast_together",
+            "mode": "poison_opinion",
             "phase": Phase.ACTIVE,
             "turn_count": 3,
             "extra": {},
@@ -178,7 +178,7 @@ class TestMarkRoastComplete:
             "user_id": "u1",
             "persona_id": 1,
             "roast_id": "n2",
-            "mode": "roast_together",
+            "mode": "poison_opinion",
             "phase": Phase.CLOSING,
             "turn_count": 6,
             "extra": {},
@@ -225,7 +225,7 @@ class TestDebateBickerState:
     def test_update_state_increments_strong(self):
         from roast.modes.debate_bicker import DebateBickerMode
         mode = DebateBickerMode()
-        state = _state(turn_count=1, mode=Mode.DEBATE_BICKER,
+        state = _state(turn_count=1, mode=Mode.DEBATE,
                        extra={"strong_points": 0, "fart_type": "", "debate_history": []})
         records = [_FakeTurn("user", "According to the latest research, this policy has a 25% approval rating based on data from Pew.")]
         mode._update_state(state, records)
@@ -234,7 +234,7 @@ class TestDebateBickerState:
     def test_update_state_skips_weak(self):
         from roast.modes.debate_bicker import DebateBickerMode
         mode = DebateBickerMode()
-        state = _state(turn_count=1, mode=Mode.DEBATE_BICKER,
+        state = _state(turn_count=1, mode=Mode.DEBATE,
                        extra={"strong_points": 0})
         records = [_FakeTurn("user", "nah")]
         mode._update_state(state, records)
@@ -253,7 +253,7 @@ class TestDebateBickerTriggers:
     def test_user_won_fires(self):
         from roast.modes.debate_bicker import DebateBickerMode
         mode = DebateBickerMode()
-        state = _state(turn_count=4, mode=Mode.DEBATE_BICKER,
+        state = _state(turn_count=4, mode=Mode.DEBATE,
                        extra={"strong_points": 3})
         trigger = [t for t in mode.triggers if t.name == "user_won"][0]
         assert trigger.check(state, [])
@@ -343,7 +343,7 @@ class TestRoastTogetherDirectorPush:
         s.user_id = "u1"
         s.persona_id = 1
         s.roast_id = "n1"
-        s.mode = Mode.ROAST_TOGETHER
+        s.mode = Mode.POISON_OPINION
         s.roast_instance_id = "rid-1"
         s.phase = Phase.ACTIVE
         s.turn_count = kw.pop("turn_count", 3)
@@ -428,7 +428,7 @@ class TestDebateBickerDirectorPush:
         s = RoastState.__new__(RoastState)
         s.user_id = "u1"
         s.roast_id = "d1"
-        s.mode = Mode.DEBATE_BICKER
+        s.mode = Mode.DEBATE
         s.roast_instance_id = "rid-2"
         s.phase = Phase.ACTIVE
         s.turn_count = kw.pop("turn_count", 2)
@@ -541,7 +541,7 @@ class TestRoastTogetherScore:
         s = RoastState.__new__(RoastState)
         s.user_id = "u1"
         s.roast_id = "n1"
-        s.mode = Mode.ROAST_TOGETHER
+        s.mode = Mode.POISON_OPINION
         s.roast_instance_id = "rid-1"
         s.turn_count = kw.pop("turn_count", 4)
         s.phase = Phase.ACTIVE
@@ -583,7 +583,7 @@ class TestDebateBickerScore:
         s = RoastState.__new__(RoastState)
         s.user_id = "u1"
         s.roast_id = "d1"
-        s.mode = Mode.DEBATE_BICKER
+        s.mode = Mode.DEBATE
         s.roast_instance_id = "rid-2"
         s.turn_count = kw.pop("turn_count", 3)
         s.phase = Phase.ACTIVE

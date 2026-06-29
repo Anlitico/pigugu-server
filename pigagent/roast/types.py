@@ -6,8 +6,8 @@ from enum import StrEnum
 
 
 class Mode(StrEnum):
-    ROAST_TOGETHER = "roast_together"
-    DEBATE_BICKER = "debate_bicker"
+    POISON_OPINION = "poison_opinion"
+    DEBATE = "debate"
 
 
 class Phase(StrEnum):

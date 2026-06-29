@@ -20,7 +20,7 @@ if TYPE_CHECKING:
 
 
 class RoastTogetherMode(GameMode):
-    mode = Mode.ROAST_TOGETHER
+    mode = Mode.POISON_OPINION
     max_turns = 8
 
     async def get_system_prompt_extension(self, prompt_store: PromptStore | None) -> str:
@@ -117,7 +117,7 @@ class RoastTogetherMode(GameMode):
             "type": "roast_score",
             "roast_instance_id": state.roast_instance_id,
             "roast_id": state.roast_id,
-            "mode_id": "poison_opinion",
+            "mode_id": str(self.mode),
             "round": state.turn_count,
             "score": score,
             "rating": rating,
