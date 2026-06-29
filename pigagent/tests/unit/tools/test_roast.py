@@ -251,15 +251,14 @@ class TestRoastCompleteTool:
     async def test_settles_completed_roast(self):
         """end_reason='completed' — best_take from state.extra, interrupted=False."""
         tool, mock_pool, mock_conn, mock_redis = _make_complete_tool()
-        from roast.types import Phase
+        from roast.types import Phase, Mode
 
         mock_state = MagicMock()
         mock_state.phase = Phase.CLOSING
         mock_state.roast_instance_id = "rid-123"
         mock_state.user_id = "test-user"
         mock_state.roast_id = "roast-1"
-        mock_state.mode = MagicMock()
-        mock_state.mode.__str__ = MagicMock(return_value="roast_together")
+        mock_state.mode = Mode.ROAST_TOGETHER
         mock_state.turn_count = 5
         mock_state.started_at = 1700000000.0
         mock_state.extra = {"headline": "Test", "source": "test", "best_take": "That was killer!"}
@@ -285,11 +284,10 @@ class TestRoastCompleteTool:
         mock_redis.publish.assert_called_once()
         publish_args = mock_redis.publish.call_args[0]
         assert publish_args[0] == "ws:user:test-user"
-        assert "roast_settled" in publish_args[1]
-        assert "roast_settled" in publish_args[1]
         published = json.loads(publish_args[1])
+        assert published["type"] == "roast_end"
         assert published["end_reason"] == "completed"
-        assert published["best_take"] == "That was killer!"
+        assert published["total_score"] == 0
 
     @pytest.mark.asyncio
     async def test_settles_quit_roast(self):
