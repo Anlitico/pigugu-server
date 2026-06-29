@@ -278,12 +278,12 @@ def create_roast_complete_tool(
         game_mode = GameModeRegistry.get(state.mode)
         score_data = game_mode.score(state)
 
-        if state.mode == Mode.ROAST_TOGETHER:
+        if state.mode == Mode.POISON_OPINION:
             settlement_event = {
                 "type": "roast_end",
                 "roast_instance_id": state.roast_instance_id,
                 "roast_id": state.roast_id,
-                "mode_id": "poison_opinion",
+                "mode_id": str(state.mode),
                 "headline": state.extra.get("headline", ""),
                 "source": state.extra.get("source", ""),
                 "total_score": score_data.get("total_score", 0),
@@ -295,13 +295,12 @@ def create_roast_complete_tool(
                 "end_reason": end_reason,
                 "started_at": state.started_at,
             }
-            public_mode_id = "poison_opinion"
-        elif state.mode == Mode.DEBATE_BICKER:
+        elif state.mode == Mode.DEBATE:
             settlement_event = {
                 "type": "debate_end",
                 "roast_instance_id": state.roast_instance_id,
                 "roast_id": state.roast_id,
-                "mode_id": "debate",
+                "mode_id": str(state.mode),
                 "headline": state.extra.get("headline", ""),
                 "source": state.extra.get("source", ""),
                 "final_user_support": score_data.get("final_user_support", 50.0),
@@ -311,7 +310,6 @@ def create_roast_complete_tool(
                 "end_reason": end_reason,
                 "started_at": state.started_at,
             }
-            public_mode_id = "debate"
         else:
             # Unknown/legacy mode — fall back to generic settlement event.
             # The mode-specific data (total_score, final_user_support, etc.)
@@ -333,8 +331,6 @@ def create_roast_complete_tool(
                 "end_reason": end_reason,
                 "started_at": state.started_at,
             }
-            public_mode_id = str(state.mode)
-
         # Write roast_history (basic metadata only — per-round detail is in director_logs)
         try:
             if pg_pool is not None:
@@ -353,7 +349,7 @@ def create_roast_complete_tool(
                             interrupted = EXCLUDED.interrupted,
                             settled_at = NOW()""",
                         state.roast_instance_id, user_id, state.roast_id,
-                        public_mode_id, state.extra.get("headline", ""),
+                        str(state.mode), state.extra.get("headline", ""),
                         state.extra.get("source", ""), state.turn_count,
                         best_take or None, end_reason == "quit",
                         state.started_at,

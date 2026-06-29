@@ -159,7 +159,7 @@ class TestStartRoast:
         import asyncio
         result = asyncio.run(_collect(
             agent.start_roast(
-                1, "test-roast-id", "roast_together",
+                1, "test-roast-id", "poison_opinion",
                 "Donald Trump tweeted about AI today. Share your thoughts.",
             )
         ))

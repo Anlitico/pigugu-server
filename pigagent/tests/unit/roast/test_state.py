@@ -10,7 +10,7 @@ def _make(**kw):
     state.user_id = kw.get("user_id", "u1")
     state.persona_id = kw.get("persona_id", 1)
     state.roast_id = kw.get("roast_id", "n1")
-    state.mode = kw.get("mode", Mode.ROAST_TOGETHER)
+    state.mode = kw.get("mode", Mode.POISON_OPINION)
     state.roast_instance_id = kw.get("roast_instance_id", "test-id")
     state.phase = kw.get("phase", Phase.ACTIVE)
     state.turn_count = kw.get("turn_count", 0)
@@ -30,7 +30,7 @@ class TestRoastState:
         s = _make()
         d = s.to_dict()
         assert d["roast_instance_id"] == "test-id"
-        assert d["mode"] == "roast_together"
+        assert d["mode"] == "poison_opinion"
 
     def test_from_dict_roundtrip(self):
         s = _make(turn_count=3, extra={"score": 10})

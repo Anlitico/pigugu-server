@@ -53,7 +53,7 @@ def _debate_result(final_user_support: float) -> str:
 
 
 class DebateBickerMode(GameMode):
-    mode = Mode.DEBATE_BICKER
+    mode = Mode.DEBATE
     max_turns = 8
 
     async def get_system_prompt_extension(self, prompt_store: PromptStore | None) -> str:
@@ -197,7 +197,7 @@ class DebateBickerMode(GameMode):
             "type": "debate_judge",
             "roast_instance_id": state.roast_instance_id,
             "roast_id": state.roast_id,
-            "mode_id": "debate",
+            "mode_id": str(self.mode),
             "round": state.turn_count,
             "user_support": user_support,
             "opponent_support": opponent_support,

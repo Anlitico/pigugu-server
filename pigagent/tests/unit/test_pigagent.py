@@ -182,7 +182,7 @@ class TestGenerateReply:
         game_mode.tick = AsyncMock()
 
         agent, ctx, redis, pg = _make_agent(
-            game_modes={"roast_together": game_mode},
+            game_modes={"poison_opinion": game_mode},
         )
 
         # Simulate active roast
@@ -192,7 +192,7 @@ class TestGenerateReply:
         roast.persona_id = 1
         roast.roast_id = "r1"
         roast.mode = MagicMock()
-        roast.mode.__str__ = MagicMock(return_value="roast_together")  # type: ignore[reportAttributeAccessIssue]
+        roast.mode.__str__ = MagicMock(return_value="poison_opinion")  # type: ignore[reportAttributeAccessIssue]
         roast.roast_instance_id = "inst-1"
         roast.phase = MagicMock()
         roast.turn_count = 0
@@ -304,7 +304,7 @@ class TestStartRoast:
 
         game_mode = MagicMock()
         game_mode.mode = MagicMock()
-        game_mode.mode.__str__ = MagicMock(return_value="roast_together")
+        game_mode.mode.__str__ = MagicMock(return_value="poison_opinion")
         game_mode.tick = AsyncMock()
         game_mode.init_extra = MagicMock(return_value={"key": "val"})
         game_mode.get_system_prompt_extension = AsyncMock(return_value="Game rules here")
@@ -322,7 +322,7 @@ class TestStartRoast:
         roast.turn_count = 0
         roast.extra = {}
         roast.mode = MagicMock()
-        roast.mode.__str__ = MagicMock(return_value="roast_together")
+        roast.mode.__str__ = MagicMock(return_value="poison_opinion")
 
         agent.get_active_roast = AsyncMock(return_value=None)
 
@@ -333,7 +333,7 @@ class TestStartRoast:
             mock_registry.get.return_value = game_mode
 
             result = asyncio.run(_run_collect(
-                agent.start_roast(1, "r1", "roast_together", "prompt")
+                agent.start_roast(1, "r1", "poison_opinion", "prompt")
             ))
 
         assert result == "Opening line!"

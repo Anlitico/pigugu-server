@@ -16,7 +16,7 @@ class TestRoastStartRequest:
             user_id="u1",
             persona_id=1,
             roast_id="r1",
-            mode_id="roast_together",
+            mode_id="poison_opinion",
             prompt="news text",
         )
         assert req.user_id == "u1"
@@ -46,7 +46,7 @@ class TestEventStream:
 
         import asyncio
         events = asyncio.run(_collect_events(_event_stream(
-            mock_agent, 1, "r1", "roast_together", "news text",
+            mock_agent, 1, "r1", "poison_opinion", "news text",
         )))
 
         assert events[0].startswith("data: ")
@@ -68,7 +68,7 @@ class TestEventStream:
 
         import asyncio
         events = asyncio.run(_collect_events(_event_stream(
-            mock_agent, 1, "r1", "roast_together", "news",
+            mock_agent, 1, "r1", "poison_opinion", "news",
         )))
 
         assert any('"error"' in e for e in events)
@@ -120,13 +120,13 @@ class TestStartRoastEndpoint:
 
         with patch("roast.session_registry.registry", mock_registry), \
              patch("api.roast.create_pig_agent", return_value=pig_agent), \
-             patch("api.roast.get_game_modes", return_value={"roast_together": MagicMock()}):
+             patch("api.roast.get_game_modes", return_value={"poison_opinion": MagicMock()}):
             client = TestClient(app)
             response = client.post("/roast/start", json={
                 "user_id": "u1",
                 "persona_id": 1,
                 "roast_id": "r1",
-                "mode_id": "roast_together",
+                "mode_id": "poison_opinion",
                 "prompt": "test prompt",
             })
 
@@ -151,13 +151,13 @@ class TestStartRoastEndpoint:
         app.include_router(router)
 
         with patch("roast.session_registry.registry", mock_registry), \
-             patch("api.roast.get_game_modes", return_value={"roast_together": MagicMock()}):
+             patch("api.roast.get_game_modes", return_value={"poison_opinion": MagicMock()}):
             client = TestClient(app)
             response = client.post("/roast/start", json={
                 "user_id": "u1",
                 "persona_id": 1,
                 "roast_id": "r1",
-                "mode_id": "roast_together",
+                "mode_id": "poison_opinion",
                 "prompt": "test prompt",
             })
 

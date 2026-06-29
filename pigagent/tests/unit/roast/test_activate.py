@@ -7,25 +7,25 @@ import pytest
 
 
 class TestResolveGameMode:
-    def test_maps_poison_opinion_to_roast_together(self):
+    def test_resolves_poison_opinion(self):
         from roast.activate import _resolve_game_mode
         mode = _resolve_game_mode("poison_opinion")
-        assert str(mode.mode) == "roast_together"
+        assert str(mode.mode) == "poison_opinion"
 
-    def test_maps_debate_to_debate_bicker(self):
+    def test_maps_debate_directly(self):
         from roast.activate import _resolve_game_mode
         mode = _resolve_game_mode("debate")
-        assert str(mode.mode) == "debate_bicker"
+        assert str(mode.mode) == "debate"
 
     def test_maps_breaking_bomb_falls_back(self):
         from roast.activate import _resolve_game_mode
         mode = _resolve_game_mode("breaking_bomb")
-        assert str(mode.mode) == "roast_together"  # falls back: breaking_bomb no longer registered
+        assert str(mode.mode) == "poison_opinion"
 
     def test_unknown_mode_falls_back(self):
         from roast.activate import _resolve_game_mode
         mode = _resolve_game_mode("prediction")
-        assert str(mode.mode) == "roast_together"
+        assert str(mode.mode) == "poison_opinion"
 
 
 class TestBuildRoastBody:
@@ -78,7 +78,7 @@ class TestActivateRoast:
         mock_state = MagicMock()
         mock_state.roast_instance_id = "inst-123"
         mock_state.mode = MagicMock()
-        mock_state.mode.__str__ = MagicMock(return_value="roast_together")
+        mock_state.mode.__str__ = MagicMock(return_value="poison_opinion")
 
         redis = MagicMock()
         redis.setex = AsyncMock()

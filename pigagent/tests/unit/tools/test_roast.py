@@ -258,7 +258,7 @@ class TestRoastCompleteTool:
         mock_state.roast_instance_id = "rid-123"
         mock_state.user_id = "test-user"
         mock_state.roast_id = "roast-1"
-        mock_state.mode = Mode.ROAST_TOGETHER
+        mock_state.mode = Mode.POISON_OPINION
         mock_state.turn_count = 5
         mock_state.started_at = 1700000000.0
         mock_state.extra = {"headline": "Test", "source": "test", "best_take": "That was killer!"}
@@ -300,7 +300,7 @@ class TestRoastCompleteTool:
         mock_state.roast_instance_id = "rid-999"
         mock_state.roast_id = "roast-4"
         mock_state.mode = MagicMock()
-        mock_state.mode.__str__ = MagicMock(return_value="roast_together")
+        mock_state.mode.__str__ = MagicMock(return_value="poison_opinion")
         mock_state.turn_count = 1
         mock_state.started_at = 1700000000.0
         mock_state.extra = {"headline": "H", "source": "S"}
@@ -328,7 +328,7 @@ class TestRoastCompleteTool:
         mock_state.roast_instance_id = "rid-456"
         mock_state.roast_id = "roast-2"
         mock_state.mode = MagicMock()
-        mock_state.mode.__str__ = MagicMock(return_value="roast_together")
+        mock_state.mode.__str__ = MagicMock(return_value="poison_opinion")
         mock_state.turn_count = 3
         mock_state.started_at = 1700000000.0
         mock_state.extra = {"headline": "H", "source": "S", "best_take": "null"}
@@ -379,7 +379,7 @@ class TestRoastCompleteTool:
         mock_state.roast_instance_id = "rid-789"
         mock_state.roast_id = "roast-3"
         mock_state.mode = MagicMock()
-        mock_state.mode.__str__ = MagicMock(return_value="roast_together")
+        mock_state.mode.__str__ = MagicMock(return_value="poison_opinion")
         mock_state.turn_count = 2
         mock_state.started_at = 1700000000.0
         mock_state.extra = {"headline": "H", "source": "S"}
@@ -403,7 +403,7 @@ class TestRoastCompleteTool:
         mock_state.roast_instance_id = "rid-111"
         mock_state.roast_id = "roast-5"
         mock_state.mode = MagicMock()
-        mock_state.mode.__str__ = MagicMock(return_value="roast_together")
+        mock_state.mode.__str__ = MagicMock(return_value="poison_opinion")
         mock_state.turn_count = 2
         mock_state.started_at = 1700000000.0
         mock_state.extra = {"headline": "H", "source": "S"}

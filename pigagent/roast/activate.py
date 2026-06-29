@@ -18,25 +18,10 @@ from roast.constants import ROAST_BODY_PREFIX
 from roast.state import RoastState
 from roast.registry import GameModeRegistry
 
-# Map DB game_mode values → Mode enum strings.
-# DB values come from the classifier (poison_opinion, debate, etc.)
-# and don't match the Mode enum (roast_together, debate_bicker, etc.).
-# This compatibility layer will be removed when DB and code are aligned.
-_DB_MODE_MAP: dict[str, str] = {
-    "poison_opinion": "roast_together",
-    "debate": "debate_bicker",
-}
-
 
 def _resolve_game_mode(db_game_mode: str):
-    """Resolve a DB game_mode string to a GameMode instance.
-
-    First checks the compatibility map, then tries the string directly,
-    and finally falls back to GameModeRegistry.get() (which falls back to
-    roast_together for unknown values).
-    """
-    mapped = _DB_MODE_MAP.get(db_game_mode, db_game_mode)
-    return GameModeRegistry.get(mapped)
+    """Resolve a DB game_mode string to a GameMode instance."""
+    return GameModeRegistry.get(db_game_mode)
 
 
 async def activate_roast(

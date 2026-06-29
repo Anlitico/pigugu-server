@@ -43,7 +43,7 @@ class TestTrigger:
 
 
 class _MinimalMode(GameMode):
-    mode = Mode.ROAST_TOGETHER
+    mode = Mode.POISON_OPINION
     max_turns = 3
 
     async def get_system_prompt_extension(self, prompt_store=None) -> str:
@@ -105,7 +105,7 @@ class TestGameModeTick:
         s.user_id = "u1"
         s.persona_id = 1
         s.roast_id = "n1"
-        s.mode = Mode.ROAST_TOGETHER
+        s.mode = Mode.POISON_OPINION
         s.roast_instance_id = "test-id"
         s.phase = kw.pop("phase", Phase.ACTIVE)
         s.turn_count = kw.pop("turn_count", 0)
@@ -178,7 +178,7 @@ class TestGameModeTickDirector:
         s.user_id = "u1"
         s.persona_id = 1
         s.roast_id = "n1"
-        s.mode = Mode.ROAST_TOGETHER
+        s.mode = Mode.POISON_OPINION
         s.roast_instance_id = "test-id"
         s.phase = kw.pop("phase", Phase.ACTIVE)
         s.turn_count = kw.pop("turn_count", 0)
