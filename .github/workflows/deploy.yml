@@ -123,8 +123,7 @@ jobs:
         JWT_SECRET_KEY: ${{ secrets.JWT_SECRET_KEY }}
         AWS_IOT_WEBHOOK_SECRET: ${{ secrets.AWS_IOT_WEBHOOK_SECRET }}
         MQTT_BROKER_URI: ${{ secrets.MQTT_BROKER_URI }}
-        BRIGHTDATA_API_KEY: ${{ secrets.BRIGHTDATA_API_KEY }}
-        DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
+        ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
         XAI_API_KEY: ${{ secrets.XAI_API_KEY }}
       run: |
         # Inject secrets into secrets.yaml
