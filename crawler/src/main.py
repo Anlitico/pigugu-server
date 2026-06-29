@@ -29,12 +29,12 @@ from .prompt import SYSTEM_PROMPT
 TOOLS: list[dict[str, object]] = [
     {
         "name": "fetch_week_headlines",
-        "description": "Fetch 7-day AP + Reuters headlines, classified by domain.",
+        "description": "Fetch 3-day AP + Reuters headlines, classified by domain.",
         "input_schema": {"type": "object", "properties": {}, "required": []},
     },
     {
         "name": "list_recent_scenarios",
-        "description": "Return full text (headline, teaser, prompt) of all scenarios from past 7 days.",
+        "description": "Return full text (headline, teaser, prompt) of all scenarios from past 14 days.",
         "input_schema": {"type": "object", "properties": {}, "required": []},
     },
     {
@@ -118,7 +118,7 @@ async def _handle_list_recent(_args: dict) -> str:
     from sqlalchemy import select
 
     try:
-        cutoff = datetime.now(timezone.utc) - timedelta(days=7)
+        cutoff = datetime.now(timezone.utc) - timedelta(days=14)
         async with AsyncSessionLocal() as session:
             result = await session.execute(
                 select(

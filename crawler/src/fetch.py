@@ -129,8 +129,8 @@ async def fetch_week_articles() -> list[ArticleDict]:
 
     Returns articles with an added 'domain' field.
     """
-    ap = await _fetch_days(AP_RSS_URL, "ap", days=7)
-    reuters = await _fetch_days(REUTERS_RSS_URL, "reuters", days=7)
+    ap = await _fetch_days(AP_RSS_URL, "ap", days=3)
+    reuters = await _fetch_days(REUTERS_RSS_URL, "reuters", days=3)
     articles = ap + reuters
 
     # Classify each article into a domain
