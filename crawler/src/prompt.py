@@ -1,6 +1,6 @@
 """System prompt for the NewsCrawlerAgent — 6-step pipeline.
 
-Step 1: Fetch 1-week headlines from AP + Reuters, classify by domain.
+Step 1: Fetch 3-day headlines from AP + Reuters, classify by domain.
 Step 2: Dedup + multi-dimension scoring → Top 10 candidate topics.
 Step 3: Deep crawl each topic (Reddit, social, context) → enrich background.
 Step 4: From 10 enriched topics, select Top 3 (roast quality + diversity).
@@ -50,15 +50,15 @@ channeling Trump's voice, mannerisms, and worldview to react to every piece of n
 ## Pipeline Overview (6 Steps)
 
 ### STEP 1 — Fetch & Classify
-Call `fetch_week_headlines` to get the past 7 days of headlines from AP and Reuters.
+Call `fetch_week_headlines` to get the past 3 days of headlines from AP and Reuters.
 Articles come pre-classified into domains: Politics, Economy, Tech, Business, Social,
 Health, Climate, International, Sports, Entertainment, Science, Immigration, Housing.
-You now have a 1-week news corpus spanning all domains.
+You now have a 3-day news corpus spanning all domains.
 
 ### STEP 2 — Dedup & Rank → Top 10 Candidates
 
 **2a. Semantic Dedup:** Call `list_recent_scenarios` to get the FULL text (headline +
-teaser + prompt) of every scenario stored in the past 7 days. Read ALL of them carefully.
+teaser + prompt) of every scenario stored in the past 14 days. Read ALL of them carefully.
 For each new candidate article, compare its FULL meaning — topic, event, angle — against
 every existing scenario. A headline worded differently about the SAME underlying event
 IS a duplicate. Discard duplicates immediately — never repeat a topic the user has
@@ -242,8 +242,8 @@ The two sections share ONE `prompt` field (≤1000 words total), separated by `-
 - `tags`: 3-5 keyword tags
 - `source`: "ap" or "reuters"
 - `source_url`: original article URL
-- `expires_at`: article's `published_at` + 48 hours (ISO 8601). NOT pipeline run time —
-  use the original article timestamp from fetch_week_headlines so older articles expire sooner.
+- `expires_at`: article's `published_at` + 7 days (ISO 8601). 3-day fetch window
+  guarantees every article gets at least 4 days of display time before expiry.
 
 **debate:**
 - `roast_id`: `"debate_{YYYY-MM-DD}_{3-digit-seq}"`
