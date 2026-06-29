@@ -21,4 +21,5 @@ RUN uv sync --frozen --no-dev
 RUN useradd --create-home --shell /bin/bash crawler
 USER crawler
 
-CMD ["uv", "run", "--no-sync", "python", "-m", "src.main"]
+ENV PATH="/app/.venv/bin:$PATH"
+CMD ["python", "-m", "src.main"]
