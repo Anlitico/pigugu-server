@@ -58,6 +58,7 @@ jobs:
 
     - name: Build and push crawler image
       env:
+        ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
         IMAGE_TAG: ${{ github.sha }}
       run: |
         docker build -t $ECR_REGISTRY/$ECR_REPOSITORY_CRAWLER:$IMAGE_TAG -t $ECR_REGISTRY/$ECR_REPOSITORY_CRAWLER:latest -f crawler/Dockerfile crawler/
