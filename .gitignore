@@ -232,6 +232,6 @@ temp/
 
 # Project tooling (machine-specific, not for version control)
 pyrightconfig.json
-uv.lock
+# uv.lock — committed (needed for crawler reproducible Docker builds)
 diagrams/
 tmp/

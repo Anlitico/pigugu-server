@@ -5,7 +5,6 @@ from models.device_provisioning_session import DeviceProvisioningSession
 from models.fcm_token import FCMToken
 from models.news import News
 from models.roast_scenario import RoastScenario
-from models.trump_social_post import TrumpSocialPost
 from models.user import User
 
-__all__ = ["User", "Device", "DeviceProvisioningSession", "News", "Conversation", "Achievement", "FCMToken", "RoastScenario", "TrumpSocialPost"]
+__all__ = ["User", "Device", "DeviceProvisioningSession", "News", "Conversation", "Achievement", "FCMToken", "RoastScenario"]
