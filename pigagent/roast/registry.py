@@ -30,12 +30,12 @@ class GameModeRegistry:
             try:
                 mode = Mode(mode)
             except ValueError:
-                logger.warning(f"[GameMode] '{mode}' not recognized, falling back to poison_opinion")
-                return cls._modes[Mode.POISON_OPINION]
+                logger.warning(f"[GameMode] '{mode}' not recognized, falling back to roast_together")
+                return cls._modes[Mode.ROAST_TOGETHER]
         m = cls._modes.get(mode)
         if m is None:
-            logger.warning(f"[GameMode] '{mode}' not found, falling back to poison_opinion")
-            return cls._modes[Mode.POISON_OPINION]
+            logger.warning(f"[GameMode] '{mode}' not found, falling back to roast_together")
+            return cls._modes[Mode.ROAST_TOGETHER]
         return m
 
     @classmethod
@@ -58,6 +58,6 @@ class GameModeRegistry:
         return {str(k): v for k, v in cls._modes.items()}
 
 
-def get_game_mode(mode: Mode | str = Mode.POISON_OPINION) -> GameMode:
+def get_game_mode(mode: Mode | str = Mode.ROAST_TOGETHER) -> GameMode:
     """Convenience: get a game mode."""
     return GameModeRegistry.get(mode)

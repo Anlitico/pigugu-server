@@ -21,9 +21,8 @@ class ScenarioCard(BaseModel):
     @property
     def is_live(self) -> bool:
         return (
-            self.game_mode == "breaking_bomb"
-            and self.expires_at is not None
-            and self.expires_at > datetime.now(tz=self.expires_at.tzinfo)
+            self.expires_at is None
+            or self.expires_at > datetime.now(tz=self.expires_at.tzinfo)
         )
 
 

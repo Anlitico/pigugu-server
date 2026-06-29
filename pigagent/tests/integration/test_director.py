@@ -25,7 +25,7 @@ def _make_state(**kw) -> RoastState:
     s.user_id = kw.pop("user_id", "test-user")
     s.persona_id = kw.pop("persona_id", 1)
     s.roast_id = kw.pop("roast_id", "n1")
-    s.mode = kw.pop("mode", Mode.POISON_OPINION)
+    s.mode = kw.pop("mode", Mode.ROAST_TOGETHER)
     s.roast_instance_id = kw.pop("roast_instance_id", _ROAST_ID)
     s.phase = kw.pop("phase", Phase.ACTIVE)
     s.turn_count = kw.pop("turn_count", 0)

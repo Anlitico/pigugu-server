@@ -11,7 +11,7 @@ def _state(**kw):
     s.user_id = "u1"
     s.persona_id = 1
     s.roast_id = "n1"
-    s.mode = kw.pop("mode", Mode.POISON_OPINION)
+    s.mode = kw.pop("mode", Mode.ROAST_TOGETHER)
     s.roast_instance_id = "test-id"
     s.phase = kw.pop("phase", Phase.ACTIVE)
     s.turn_count = kw.pop("turn_count", 0)
@@ -120,7 +120,7 @@ class TestMarkRoastComplete:
             "user_id": "u1",
             "persona_id": 1,
             "roast_id": "n1",
-            "mode": "poison_opinion",
+            "mode": "roast_together",
             "phase": Phase.CLOSED,
             "turn_count": 5,
             "extra": {},
@@ -149,7 +149,7 @@ class TestMarkRoastComplete:
             "user_id": "u1",
             "persona_id": 1,
             "roast_id": "n1",
-            "mode": "poison_opinion",
+            "mode": "roast_together",
             "phase": Phase.ACTIVE,
             "turn_count": 3,
             "extra": {},
@@ -178,7 +178,7 @@ class TestMarkRoastComplete:
             "user_id": "u1",
             "persona_id": 1,
             "roast_id": "n2",
-            "mode": "poison_opinion",
+            "mode": "roast_together",
             "phase": Phase.CLOSING,
             "turn_count": 6,
             "extra": {},
@@ -343,7 +343,7 @@ class TestRoastTogetherDirectorPush:
         s.user_id = "u1"
         s.persona_id = 1
         s.roast_id = "n1"
-        s.mode = Mode.POISON_OPINION
+        s.mode = Mode.ROAST_TOGETHER
         s.roast_instance_id = "rid-1"
         s.phase = Phase.ACTIVE
         s.turn_count = kw.pop("turn_count", 3)
@@ -541,7 +541,7 @@ class TestRoastTogetherScore:
         s = RoastState.__new__(RoastState)
         s.user_id = "u1"
         s.roast_id = "n1"
-        s.mode = Mode.POISON_OPINION
+        s.mode = Mode.ROAST_TOGETHER
         s.roast_instance_id = "rid-1"
         s.turn_count = kw.pop("turn_count", 4)
         s.phase = Phase.ACTIVE

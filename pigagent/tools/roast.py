@@ -91,7 +91,7 @@ def create_list_roasts_tool(pg_pool: str, *, connect: ConnectFn | None = None) -
                 },
                 "game_mode": {
                     "type": "string",
-                    "enum": ["poison_opinion", "debate"],
+                    "enum": ["roast_together", "debate"],
                     "description": "Filter by game mode. Omit to return all modes.",
                 },
                 "start_date": {
@@ -278,7 +278,7 @@ def create_roast_complete_tool(
         game_mode = GameModeRegistry.get(state.mode)
         score_data = game_mode.score(state)
 
-        if state.mode == Mode.POISON_OPINION:
+        if state.mode == Mode.ROAST_TOGETHER:
             settlement_event = {
                 "type": "roast_end",
                 "roast_instance_id": state.roast_instance_id,

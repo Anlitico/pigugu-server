@@ -47,7 +47,7 @@ async def activate_roast(
         user_id: The user starting the roast.
         persona_id: Persona ID for the game session.
         roast_id: DB roast_scenarios.roast_id.
-        game_mode: DB roast_scenarios.game_mode (e.g. "debate", "poison_opinion").
+        game_mode: DB roast_scenarios.game_mode (e.g. "debate", "roast_together").
         prompt: Full English game scenario prompt.
         redis: Redis client.
         pg_pool: Optional PG pool for RoastState history persistence.

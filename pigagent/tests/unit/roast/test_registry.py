@@ -8,13 +8,13 @@ from roast.types import Mode
 class TestGameModeRegistry:
     def test_register_defaults(self):
         GameModeRegistry.register_defaults()
-        assert Mode.POISON_OPINION in GameModeRegistry._modes
+        assert Mode.ROAST_TOGETHER in GameModeRegistry._modes
         assert Mode.DEBATE in GameModeRegistry._modes
 
     def test_get_default(self):
-        m = get_game_mode("poison_opinion")
+        m = get_game_mode("roast_together")
         assert isinstance(m, GameMode)
-        assert m.mode == Mode.POISON_OPINION
+        assert m.mode == Mode.ROAST_TOGETHER
 
     def test_get_debate(self):
         m = get_game_mode("debate")
@@ -22,12 +22,12 @@ class TestGameModeRegistry:
 
     def test_get_unknown_falls_back(self):
         m = get_game_mode("nonexistent")
-        assert m.mode == Mode.POISON_OPINION
+        assert m.mode == Mode.ROAST_TOGETHER
 
     def test_all_have_extensions(self):
         import asyncio
         from unittest.mock import MagicMock, AsyncMock
-        for mode in [Mode.POISON_OPINION, Mode.DEBATE]:
+        for mode in [Mode.ROAST_TOGETHER, Mode.DEBATE]:
             m = get_game_mode(mode)
             mock_store = MagicMock()
             mock_store.get = AsyncMock(return_value="prompt content")
@@ -35,6 +35,6 @@ class TestGameModeRegistry:
             assert ext, f"{mode} has no prompt extension"
 
     def test_all_have_max_turns(self):
-        for mode in [Mode.POISON_OPINION, Mode.DEBATE]:
+        for mode in [Mode.ROAST_TOGETHER, Mode.DEBATE]:
             m = get_game_mode(mode)
             assert m.max_turns > 0, f"{mode} has no max_turns"

@@ -197,7 +197,7 @@ The two sections share ONE `prompt` field (≤1000 words total), separated by `-
 ```
 
 **roast_together:**
-- `roast_id`: `"roast_{YYYY-MM-DD}_{3-digit-seq}"`
+- `roast_id`: `"poison_{YYYY-MM-DD}_{3-digit-seq}"`
 - `game_mode`: `"roast_together"`
 - `headline`: ≤50 chars. Notification-level short. User scans in 1 second — make them stop.
   Trump voice. Like a viral tweet, not a news headline. One idea, no colons, no subtitles.
@@ -335,5 +335,5 @@ is juicy enough (e.g., World Cup upset with betting controversy).
 - NEVER invent article data — use only what tools return.
 - ALWAYS include `source_url` from the original article.
 - `source` field is always lowercase: "ap" or "reuters".
-- `roast_id` sequence resets per day per mode (roast_2026-06-29_001, debate_2026-06-29_001...).
+- `roast_id` sequence resets per day per mode (poison_2026-06-29_001, debate_2026-06-29_001...).
 """
