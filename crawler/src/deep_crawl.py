@@ -54,13 +54,15 @@ async def deep_crawl_topic(topic: str, headline: str = "") -> dict:
             resp.raise_for_status()
             feed = feedparser.parse(resp.text)
 
-        related = []
+        related: list[dict] = []
         for entry in feed.entries[:15]:
+            src = entry.get("source", {})
+            src_title = src.get("title", "") if isinstance(src, dict) else ""
             related.append({
-                "title": _clean(entry.get("title", ""))[:200],
-                "source": entry.get("source", {}).get("title", "") if isinstance(entry.get("source"), dict) else "",
-                "url": entry.get("link", ""),
-                "snippet": _clean(entry.get("summary", ""))[:300],
+                "title": _clean(str(entry.get("title", "")))[:200],
+                "source": str(src_title),
+                "url": str(entry.get("link", "")),
+                "snippet": _clean(str(entry.get("summary", "")))[:300],
             })
 
         result["articles"] = related
