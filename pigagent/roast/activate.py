@@ -25,7 +25,6 @@ from roast.registry import GameModeRegistry
 _DB_MODE_MAP: dict[str, str] = {
     "poison_opinion": "roast_together",
     "debate": "debate_bicker",
-    "breaking_bomb": "breaking_bomb",
 }
 
 
