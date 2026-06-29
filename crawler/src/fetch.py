@@ -110,7 +110,7 @@ DOMAIN_KEYWORDS: dict[str, list[str]] = {
 }
 
 
-class ArticleDict(TypedDict, total=False):
+class ArticleDict(TypedDict):
     source: str
     article_id: str
     title: str
@@ -192,7 +192,7 @@ async def _fetch(source: str, url: str) -> list[ArticleDict]:
 
     articles: list[ArticleDict] = []
     for entry in feed.entries:
-        title = _clean(entry.get("title", ""))
+        title = _clean(str(entry.get("title", "")))
         if not title or len(title) < 10:
             continue
         article_id = _make_id(source, entry)
@@ -202,8 +202,8 @@ async def _fetch(source: str, url: str) -> list[ArticleDict]:
                 source=source,
                 article_id=article_id,
                 title=title,
-                summary=_clean(entry.get("summary", entry.get("description", ""))),
-                url=entry.get("link", ""),
+                summary=_clean(str(entry.get("summary", entry.get("description", "")))),
+                url=str(entry.get("link", "")),
                 category="",
                 domain="",
                 published_at=published.isoformat() if published else "",
@@ -246,11 +246,9 @@ def _parse_published(entry) -> datetime | None:
     raw = entry.get("published") or entry.get("updated", "")
     if raw:
         try:
-            from feedparser import _parse_date as parse_date
-            parsed = parse_date(raw)
-            if parsed:
-                return datetime(*parsed[:6], tzinfo=timezone.utc)
-        except Exception:
+            # Try ISO 8601 first (most common in RSS)
+            return datetime.fromisoformat(str(raw).replace("Z", "+00:00"))
+        except (ValueError, AttributeError):
             pass
     return None
 

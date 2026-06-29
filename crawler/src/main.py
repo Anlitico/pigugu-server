@@ -26,7 +26,7 @@ from .prompt import SYSTEM_PROMPT
 
 # ── Tool definitions (Anthropic format) ───────────────────────────────────
 
-TOOLS = [
+TOOLS: list[dict[str, object]] = [
     {
         "name": "fetch_week_headlines",
         "description": "Fetch 7-day AP + Reuters headlines, classified by domain.",
@@ -274,7 +274,7 @@ async def run(dry_run: bool = False) -> None:
             "End with mark_pipeline_complete."
         )
 
-    messages = [{"role": "user", "content": user_prompt}]
+    messages: list[dict[str, object]] = [{"role": "user", "content": user_prompt}]
 
     model = os.environ.get("ANTHROPIC_MODEL", "deepseek-v4-pro[1m]")
     logger.info("Starting pipeline (dry_run={}, model={})", dry_run, model)
@@ -286,8 +286,8 @@ async def run(dry_run: bool = False) -> None:
             model=model,
             max_tokens=24000,
             system=SYSTEM_PROMPT,
-            tools=TOOLS,
-            messages=messages,
+            tools=TOOLS,  # type: ignore[arg-type]
+            messages=messages,  # type: ignore[arg-type]
         ) as stream:
             final = stream.get_final_message()
 
@@ -306,7 +306,7 @@ async def run(dry_run: bool = False) -> None:
             logger.info("Pipeline finished — stop_reason={}", final.stop_reason)
             break
 
-        tool_results = []
+        tool_results: list[dict[str, object]] = []
         for b in tool_uses:
             name = b.name
             handler = HANDLERS.get(name)
