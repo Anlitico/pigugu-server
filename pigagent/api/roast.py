@@ -20,12 +20,13 @@ class RoastStartRequest(BaseModel):
     mode_id: str
     prompt: str
     headline: str = ""
+    teaser: str = ""
     source: str = ""
 
 
 async def _event_stream(pig_agent, persona_id: int, roast_id: str,
                          mode_id: str, prompt: str,
-                         headline: str = "", source: str = ""):
+                         headline: str = "", teaser: str = "", source: str = ""):
     """SSE generator: yields text chunks from start_roast()."""
     try:
         async for text in pig_agent.start_roast(
@@ -33,7 +34,7 @@ async def _event_stream(pig_agent, persona_id: int, roast_id: str,
             roast_id=roast_id,
             mode_id=mode_id,
             prompt=prompt,
-            headline=headline,
+            headline=headline, teaser=teaser,
             source=source,
         ):
             yield f"data: {{\"text\": {__import__('json').dumps(text)}}}\n\n"
@@ -70,7 +71,7 @@ async def start_roast(req: RoastStartRequest):
             "roast_id": req.roast_id,
             "mode_id": req.mode_id,
             "prompt": req.prompt,
-            "headline": req.headline,
+            "headline": req.headline, "teaser": req.teaser,
             "source": req.source,
         })
         # Return SSE with settled_in_room marker so the client knows
@@ -92,7 +93,7 @@ async def start_roast(req: RoastStartRequest):
             roast_id=req.roast_id,
             mode_id=req.mode_id,
             prompt=req.prompt,
-            headline=req.headline,
+            headline=req.headline, teaser=req.teaser,
             source=req.source,
         ),
         media_type="text/event-stream",
@@ -126,7 +127,7 @@ async def start_roast_sync(req: RoastStartRequest):
             "roast_id": req.roast_id,
             "mode_id": req.mode_id,
             "prompt": req.prompt,
-            "headline": req.headline,
+            "headline": req.headline, "teaser": req.teaser,
             "source": req.source,
         })
         return {
@@ -143,7 +144,7 @@ async def start_roast_sync(req: RoastStartRequest):
             roast_id=req.roast_id,
             mode_id=req.mode_id,
             prompt=req.prompt,
-            headline=req.headline,
+            headline=req.headline, teaser=req.teaser,
             source=req.source,
         ):
             if isinstance(text, str):
