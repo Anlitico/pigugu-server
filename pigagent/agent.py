@@ -362,6 +362,19 @@ class PigAgent:
             logger.error(f"[PigAgent] activate_roast failed: {e}")
             return
 
+        # Seed session info BEFORE roast body so [Session Start] appears
+        # before [Game Background] in agent_conversations (correct timeline).
+        # Also set _session_seeded so generate_reply doesn't duplicate it.
+        if self.ctx and not self._session_seeded:
+            try:
+                await self.ctx.add_turn(
+                    role="system",
+                    content=await self.build_session_info(roast=True),
+                )
+                self._session_seeded = True
+            except Exception as e:
+                logger.error(f"[PigAgent] Failed to seed session info: {e}")
+
         # Persist roast body to context  -  loaded automatically on each turn
         if body and self.ctx:
             try:
@@ -379,11 +392,23 @@ class PigAgent:
         )
 
         # Trigger opening reply  -  roast body is already in context
+        opening_text: str = ""
         async for text in self.generate_reply(
             "Game start",
             persona_id=persona_id,
         ):
+            if isinstance(text, str):
+                opening_text += text
             yield text
+
+        # Persist opening assistant reply to context (API path has no
+        # LiveKit session to handle conversation_item_added event).
+        if opening_text.strip() and self.ctx:
+            try:
+                await self.ctx.add_turn(role="assistant", content=opening_text.strip())
+                logger.info(f"[PigAgent] Opening persisted: {len(opening_text)} chars")
+            except Exception as e:
+                logger.error(f"[PigAgent] Failed to persist opening: {e}")
 
     async def get_active_roast(self):
         try:
