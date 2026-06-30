@@ -163,17 +163,23 @@ class PigAgent:
         if prompt:
             messages.insert(0, Message.system(prompt))
 
-        # 4. Seed session info on first turn — after history, before user message
+        # 4. Check roast routing (must happen BEFORE session info injection,
+        #    so the Free Chat marker doesn't override the roast game mode)
+        roast_state = await self.get_active_roast()
+        game_mode = None
+
+        # 5. Seed session info on first turn — after history, before user message.
+        #    Skip Free Chat marker if an active roast game is already running.
         if not self._session_seeded:
-            session_msg = Message.system(await self.build_session_info())
-            messages.insert(-1, session_msg)  # before user message, after history
+            if roast_state:
+                session_msg = Message.system(await self.build_session_info(roast=True))
+            else:
+                session_msg = Message.system(await self.build_session_info(roast=False))
+            messages.insert(-1, session_msg)
             if self.ctx:
                 asyncio.create_task(self._persist_turns([session_msg]))
             self._session_seeded = True
 
-        # 5. Check roast routing
-        roast_state = await self.get_active_roast()
-        game_mode = None
         if roast_state:
             if roast_state.phase == Phase.SETTLED or roast_state.phase == Phase.CLOSED:
                 # Roast is over — close and enter Free Chat
@@ -260,9 +266,16 @@ class PigAgent:
 
     # ── Session ────────────────────────────────────────────────────────
 
-    async def build_session_info(self) -> str:
-        """Build a one-time system message injected at conversation start."""
+    async def build_session_info(self, roast: bool = False) -> str:
+        """Build a one-time system message injected at conversation start.
+
+        Args:
+            roast: If True, skip the Free Chat marker — the game background
+                   injected by activate_roast() already provides the mode.
+        """
         now = datetime.now(ZoneInfo("America/Los_Angeles")).strftime("%Y-%m-%d %H:%M:%S %Z")
+        if roast:
+            return f"[Session Start]\nCurrent time: {now}"
         marker = await self._build_free_chat_marker()
         return f"[Session Start]\nCurrent time: {now}\n\n{marker}"
 
@@ -319,6 +332,7 @@ class PigAgent:
         mode_id: str,
         prompt: str,
         headline: str = "",
+        teaser: str = "",
         source: str = "",
     ) -> AsyncIterator[str | FlushSentinel]:
         """Start a roast game and stream the opening reply.
@@ -338,6 +352,7 @@ class PigAgent:
                 game_mode=mode_id,
                 prompt=prompt,
                 headline=headline,
+                teaser=teaser,
                 source=source,
                 redis=self._redis,
                 pg_pool=self._pg_pool,

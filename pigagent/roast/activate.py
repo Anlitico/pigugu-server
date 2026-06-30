@@ -32,6 +32,7 @@ async def activate_roast(
     game_mode: str,
     prompt: str,
     headline: str = "",
+    teaser: str = "",
     source: str = "",
     redis,
     pg_pool=None,
@@ -72,7 +73,7 @@ async def activate_roast(
         pg_pool=pg_pool,
     )
 
-    body = f"{ROAST_BODY_PREFIX}\n{await _build_roast_body(game_mode_obj=mode, prompt=prompt, prompt_store=prompt_store)}"
+    body = f"{ROAST_BODY_PREFIX}\n{await _build_roast_body(game_mode_obj=mode, prompt=prompt, headline=headline, teaser=teaser, prompt_store=prompt_store)}"
 
     logger.info(
         f"[activate_roast] Started: {state.roast_instance_id} "
@@ -82,8 +83,12 @@ async def activate_roast(
     return state.roast_instance_id, body
 
 
-async def _build_roast_body(*, game_mode_obj: Any, prompt: str = "", prompt_store: PromptStore | None = None) -> str:
+async def _build_roast_body(*, game_mode_obj: Any, prompt: str = "", headline: str = "", teaser: str = "", prompt_store: PromptStore | None = None) -> str:
     parts: list[str] = []
+    if headline.strip():
+        parts.append(f"## Headline\n{headline.strip()}")
+    if teaser.strip():
+        parts.append(f"## Teaser\n{teaser.strip()}")
     if prompt.strip():
         parts.append(f"## News Context\n{prompt.strip()}")
     if prompt_store:

@@ -147,7 +147,7 @@ def create_start_roast_tool(
         conn = await _acquire()
         try:
             row = await conn.fetchrow(
-                "SELECT roast_id, game_mode, prompt, headline, source "
+                "SELECT roast_id, game_mode, prompt, headline, teaser, source "
                 "FROM roast_scenarios "
                 "WHERE roast_id = $1 AND status = 'active'",
                 roast_id,
@@ -167,6 +167,7 @@ def create_start_roast_tool(
                 game_mode=row["game_mode"],
                 prompt=row["prompt"],
                 headline=row.get("headline", ""),
+                teaser=row.get("teaser", ""),
                 source=row.get("source", ""),
                 redis=redis,
                 pg_pool=pg_pool,
