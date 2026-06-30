@@ -108,9 +108,10 @@ async def run(ctx: JobContext) -> None:
                     add_to_chat_ctx=False,
                 )
                 # session.say with add_to_chat_ctx=False doesn't fire
-                # conversation_item_added — write opening manually.
+                # conversation_item_added — write opening manually to both
+                # agent_conversations (via ctx.add_turn) and roast_conversations.
                 asyncio.create_task(
-                    _write_roast_conversation(user_id, "assistant", full_text.strip())
+                    _safe_add_turn(user_id, "assistant", full_text.strip())
                 )
                 logger.info(
                     f"[Inject] start_roast spoken: {len(full_text)} chars"

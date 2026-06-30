@@ -299,6 +299,52 @@ class TestStartRoast:
         # to roast_together for unknown modes, so the roast starts normally.
         assert result == ["Opening line!"]
 
+    def test_persists_opening_assistant_reply(self):
+        """start_roast must persist the opening assistant text to context."""
+        import asyncio
+
+        game_mode = MagicMock()
+        game_mode.mode = MagicMock()
+        game_mode.mode.__str__ = MagicMock(return_value="roast_together")
+        game_mode.tick = AsyncMock()
+        game_mode.init_extra = MagicMock(return_value={})
+        game_mode.get_system_prompt_extension = AsyncMock(return_value="Rules")
+
+        agent, ctx, redis, pg = _make_agent()
+        _mock_runner_stream(agent, ["Opening line!"])
+
+        from roast.state import RoastState
+        roast = RoastState.__new__(RoastState)
+        roast.user_id = "u1"
+        roast.roast_id = "r1"
+        roast.roast_instance_id = "inst-1"
+        roast.phase = MagicMock()
+        roast.turn_count = 0
+        roast.extra = {}
+        roast.mode = MagicMock()
+        roast.mode.__str__ = MagicMock(return_value="roast_together")
+
+        agent.get_active_roast = AsyncMock(return_value=None)
+        ctx.add_turn = AsyncMock()
+
+        async def _run():
+            with (
+                patch("roast.state.RoastState.start", new=AsyncMock(return_value=roast)),
+                patch("roast.activate.GameModeRegistry") as mock_registry,
+            ):
+                mock_registry.get.return_value = game_mode
+                async for _ in agent.start_roast(1, "r1", "roast_together", "prompt"):
+                    pass
+
+        asyncio.run(_run())
+
+        # Collect all add_turn calls
+        calls = [c.kwargs for c in ctx.add_turn.call_args_list]
+        roles = [c["role"] for c in calls]
+        # Expect: system (session info), system (roast body), assistant (opening)
+        assert roles == ["system", "system", "assistant"], f"Expected [system, system, assistant], got {roles}"
+        assert calls[2]["content"] == "Opening line!"
+
     def test_creates_session_and_streams_reply(self):
         import asyncio
 
@@ -337,14 +383,16 @@ class TestStartRoast:
             ))
 
         assert result == "Opening line!"
-        assert ctx.add_turn.call_count >= 1
-        first_call_kwargs = ctx.add_turn.call_args_list[0][1]
-        assert first_call_kwargs["role"] == "system"
-        first_call_content = first_call_kwargs["content"]
-        assert "News Context" in first_call_content
-        assert "prompt" in first_call_content
-        assert "Game Mode" in first_call_content
-        assert "Game rules here" in first_call_content
+        assert ctx.add_turn.call_count >= 2
+        # [0] = session info (seeded before roast body), [1] = roast body
+        calls = [c.kwargs for c in ctx.add_turn.call_args_list]
+        roast_kwargs = calls[1]  # roast body is second write now
+        assert roast_kwargs["role"] == "system"
+        roast_content = roast_kwargs["content"]
+        assert "News Context" in roast_content
+        assert "prompt" in roast_content
+        assert "Game Mode" in roast_content
+        assert "Game rules here" in roast_content
 
 
 # ── tools ───────────────────────────────────────────────────────────────────
@@ -529,6 +577,21 @@ class TestBuildSessionInfo:
         info = asyncio.run(agent.build_session_info())
         # Pacific timezone (PDT or PST)
         assert any(tz in info for tz in ("PDT", "PST", "-07", "-08"))
+
+    def test_roast_mode_skips_free_chat_marker(self):
+        """build_session_info(roast=True) must NOT contain Free Chat marker."""
+        import asyncio
+        agent, ctx, redis, pg = _make_agent()
+        info = asyncio.run(agent.build_session_info(roast=True))
+        assert "Free Chat" not in info
+        assert "[Session Start]" in info
+
+    def test_normal_mode_includes_free_chat_marker(self):
+        """build_session_info(roast=False) must contain Free Chat marker."""
+        import asyncio
+        agent, ctx, redis, pg = _make_agent()
+        info = asyncio.run(agent.build_session_info(roast=False))
+        assert "Free Chat" in info
 
 
 class TestSeedSessionInfo:
