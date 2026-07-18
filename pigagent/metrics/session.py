@@ -131,9 +131,13 @@ def _log(sess: dict[str, Any]) -> None:
     wall_entry = sess.get("wall_entry")
     room_created = sess.get("room_creation_time", 0.0)
     dispatch_lag: float | None = None
-    if wall_entry and room_created and room_created > 0:
-        dispatch_lag = round(wall_entry - room_created, 3)
-        m["dispatch_lag"] = dispatch_lag
+    if wall_entry and room_created:
+        try:
+            if room_created > 0:
+                dispatch_lag = round(wall_entry - room_created, 3)
+                m["dispatch_lag"] = dispatch_lag
+        except TypeError:
+            pass
 
     seg_parts: list[str] = []
     for label, a, b in SEGMENTS:

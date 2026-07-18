@@ -24,10 +24,15 @@ async def run(ctx: JobContext) -> None:
     """Wire a LiveKit session: persona, components, bridge, event handlers."""
     config = get_config()
 
+    # ctx.room.creation_time is a datetime, not a float
+    _room_created = getattr(ctx.room, "creation_time", None)
+    if _room_created is not None and not isinstance(_room_created, (int, float)):
+        _room_created = _room_created.timestamp()
+
     ColdStartMetrics.start(
         session_id=ctx.job.id,
         room_name=ctx.room.name,
-        room_creation_time=getattr(ctx.room, "creation_time", 0.0) or 0.0,
+        room_creation_time=_room_created or 0.0,
     )
 
     # ── Metadata + persona ────────────────────────────────────────────
