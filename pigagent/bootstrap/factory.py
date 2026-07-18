@@ -259,6 +259,9 @@ async def create_agent_components(config=None, persona=None):
 
     stt = get_stt()
 
+    from metrics.session import ColdStartMetrics
+    ColdStartMetrics.mark("stt_init")
+
     # ── TTS (per session  -  persona voice/speed/emotion) ────────────────
 
     cartesia_api_key = os.getenv("CARTESIA_API_KEY")
@@ -290,5 +293,7 @@ async def create_agent_components(config=None, persona=None):
         api_key=cartesia_api_key,
         base_url=config.CARTESIA_TTS_BASE_URL,
     )
+
+    ColdStartMetrics.mark("tts_init")
 
     return stt, tts
