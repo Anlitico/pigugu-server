@@ -24,7 +24,11 @@ async def run(ctx: JobContext) -> None:
     """Wire a LiveKit session: persona, components, bridge, event handlers."""
     config = get_config()
 
-    ColdStartMetrics.start(session_id=ctx.job.id, room_name=ctx.room.name)
+    ColdStartMetrics.start(
+        session_id=ctx.job.id,
+        room_name=ctx.room.name,
+        room_creation_time=getattr(ctx.room, "creation_time", 0.0) or 0.0,
+    )
 
     # ── Metadata + persona ────────────────────────────────────────────
     metadata: dict[str, Any] = {}
