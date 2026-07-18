@@ -133,7 +133,7 @@ def _log(sess: dict[str, Any]) -> None:
     # New room (<60s): room was created by this dispatch → dispatch_lag.
     # Reused room (>=60s): room already existed → show room_age for reference.
     wall_entry = sess.get("wall_entry")
-    room_created = sess.get("room_creation_time", 0.0)
+    room_created = sess.get("meta", {}).get("room_creation_time", 0.0)
     lk_delta: float | None = None
     lk_delta_label: str = ""
     if wall_entry and room_created:
