@@ -127,15 +127,18 @@ def _log(sess: dict[str, Any]) -> None:
     m = sess["marks"]
     total = _diff(m, "entry", "ready")
 
-    # Compute dispatch_lag: wall-clock time from LiveKit room creation to agent receiving the job
+    # Compute dispatch_lag: wall-clock time from LiveKit room creation to agent receiving the job.
+    # Only meaningful if the room was created by this dispatch (within 60s), not a reused room.
     wall_entry = sess.get("wall_entry")
     room_created = sess.get("room_creation_time", 0.0)
     dispatch_lag: float | None = None
     if wall_entry and room_created:
         try:
-            if room_created > 0:
-                dispatch_lag = round(wall_entry - room_created, 3)
-                m["dispatch_lag"] = dispatch_lag
+            if isinstance(room_created, (int, float)) and 0 < room_created <= wall_entry:
+                lag = wall_entry - room_created
+                if lag <= 60.0:
+                    dispatch_lag = round(lag, 3)
+                    m["dispatch_lag"] = dispatch_lag
         except TypeError:
             pass
 
