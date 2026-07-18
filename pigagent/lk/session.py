@@ -26,8 +26,10 @@ async def run(ctx: JobContext) -> None:
 
     # ctx.room.creation_time is a datetime, not a float
     _room_created = getattr(ctx.room, "creation_time", None)
+    logger.info(f"[DEBUG] room.creation_time raw={_room_created!r} type={type(_room_created).__name__}")
     if _room_created is not None and not isinstance(_room_created, (int, float)):
         _room_created = _room_created.timestamp()
+    logger.info(f"[DEBUG] room.creation_time converted={_room_created!r}")
 
     ColdStartMetrics.start(
         session_id=ctx.job.id,

@@ -31,7 +31,9 @@ _PG_DSN: str = os.getenv("DATABASE_URL", "").replace("+asyncpg", "")
 #
 #   Segment         | Formula                      | What it measures
 #   ----------------+------------------------------+--------------------------------
-#   dispatch_lag    | entry_wall - room_created    | LiveKit Cloud dispatch → agent receives job
+#   dispatch_lag / room_age | wall_entry - room_created | LiveKit Cloud: room creation → agent receives job.
+#                            |                          | If <60s: new room → dispatch_lag.
+#                            |                          | If >=60s: reused room → room_age.
 #   stt_init        | stt_init - entry             | Metadata + get_stt() — STT singleton init (first session per worker)
 #   tts_init        | tts_init - stt_init          | create_tts() — TTS per-session creation
 #   vad             | vad - tts_init               | get_vad() — Silero VAD model load (first session per worker)
@@ -127,30 +129,39 @@ def _log(sess: dict[str, Any]) -> None:
     m = sess["marks"]
     total = _diff(m, "entry", "ready")
 
-    # Compute dispatch_lag: wall-clock time from LiveKit room creation to agent receiving the job.
-    # Only meaningful if the room was created by this dispatch (within 60s), not a reused room.
+    # Compute LiveKit-side delta from room creation to agent receiving job.
+    # New room (<60s): room was created by this dispatch → dispatch_lag.
+    # Reused room (>=60s): room already existed → show room_age for reference.
     wall_entry = sess.get("wall_entry")
     room_created = sess.get("room_creation_time", 0.0)
-    dispatch_lag: float | None = None
+    lk_delta: float | None = None
+    lk_delta_label: str = ""
     if wall_entry and room_created:
         try:
             if isinstance(room_created, (int, float)) and 0 < room_created <= wall_entry:
-                lag = wall_entry - room_created
-                if lag <= 60.0:
-                    dispatch_lag = round(lag, 3)
-                    m["dispatch_lag"] = dispatch_lag
+                delta = round(wall_entry - room_created, 3)
+                if delta < 60.0:
+                    lk_delta = delta
+                    lk_delta_label = "dispatch_lag"
+                    m["dispatch_lag"] = delta
+                else:
+                    lk_delta = delta
+                    lk_delta_label = "room_age"
         except TypeError:
             pass
 
+    # ── Agent-side segments ──
     seg_parts: list[str] = []
     for label, a, b in SEGMENTS:
         if label == "dispatch_lag":
-            if dispatch_lag is not None:
-                seg_parts.append(f"dispatch_lag={_fmt(dispatch_lag)}")
-        else:
-            d = _diff(m, a, b)
-            if d is not None:
-                seg_parts.append(f"{label}={_fmt(d)}")
+            continue  # handled above
+        d = _diff(m, a, b)
+        if d is not None:
+            seg_parts.append(f"{label}={_fmt(d)}")
+
+    # ── Assemble output ──
+    if lk_delta is not None:
+        seg_parts.insert(0, f"{lk_delta_label}={_fmt(lk_delta)}")
 
     meta_parts: list[str] = []
     meta = sess["meta"]
