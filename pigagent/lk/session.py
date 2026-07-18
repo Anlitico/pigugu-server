@@ -16,12 +16,15 @@ from agent_config import get_config
 from system_prompts import get_persona
 from bootstrap.factory import create_agent_components, create_pig_agent, get_pg_pool, get_redis, get_vad
 from lk.bridge import PigAgentVoiceBridge
+from metrics.session import ColdStartMetrics
 from metrics.turn import TelemetryCollector
 
 
 async def run(ctx: JobContext) -> None:
     """Wire a LiveKit session: persona, components, bridge, event handlers."""
     config = get_config()
+
+    ColdStartMetrics.start(session_id=ctx.job.id, room_name=ctx.room.name)
 
     # ── Metadata + persona ────────────────────────────────────────────
     metadata: dict[str, Any] = {}
@@ -141,6 +144,7 @@ async def run(ctx: JobContext) -> None:
     tts_plugin = tts.get_plugin()
 
     vad = get_vad()
+    ColdStartMetrics.mark("vad")
 
     logger.info(f"[DEBUG] STT: {type(stt_plugin).__name__}, TTS: {type(tts_plugin).__name__}")
 
@@ -360,7 +364,9 @@ async def run(ctx: JobContext) -> None:
         close_on_disconnect=False,
     )
 
+    ColdStartMetrics.mark("session_start")
     await session.start(bridge, room=ctx.room, room_options=room_options)  # type: ignore[reportArgumentType]
+    ColdStartMetrics.mark("session_started")
 
     # Resolve user_id from participant identity if not in metadata
     if not user_id:
@@ -387,11 +393,18 @@ async def run(ctx: JobContext) -> None:
             return
         logger.info(f"User ID resolved from joined participant: {user_id}")
     logger.info(f"User ID resolved: {user_id}")
+    ColdStartMetrics.mark("user_id")
+    ColdStartMetrics.set_meta("user_id", user_id)
+    ColdStartMetrics.set_meta("persona_id", persona_id)
 
     # ── Create PigAgent now that user_id is known ─────────────────────
     pig_agent = await create_pig_agent(user_id, config, hw_id=hw_id)
     bridge._pig = pig_agent
     logger.info("[DEBUG] LLM: PigAgent with %s wired for user=%s hw_id=%s", pig_agent.model, user_id, hw_id)
+    ColdStartMetrics.mark("agent_created")
+    ColdStartMetrics.set_meta("stt_provider", config.STT_PROVIDER)
+    ColdStartMetrics.set_meta("llm_model", pig_agent.model)
+    ColdStartMetrics.set_meta("tts_model", config.CARTESIA_TTS_MODEL)
 
     # Accept TrackSource.UNKNOWN (0) in addition to SOURCE_MICROPHONE (2).
     # LiveKit JS client's LocalAudioTrack may report source="unknown" instead
@@ -406,6 +419,9 @@ async def run(ctx: JobContext) -> None:
 
     if config.ENABLE_POLICY_SEARCH:
         logger.info(f"[SEARCH] Enabled, backend={config.POLICY_SEARCH_BACKEND}")
+
+    ColdStartMetrics.mark("ready")
+    ColdStartMetrics.flush()
 
     logger.info("Agent ready  -  waiting for voice input...")
 
