@@ -24,17 +24,11 @@ async def run(ctx: JobContext) -> None:
     """Wire a LiveKit session: persona, components, bridge, event handlers."""
     config = get_config()
 
-    # ctx.room.creation_time is a datetime, not a float
-    _room_created = getattr(ctx.room, "creation_time", None)
-    logger.info(f"[DEBUG] room.creation_time raw={_room_created!r} type={type(_room_created).__name__}")
-    if _room_created is not None and not isinstance(_room_created, (int, float)):
-        _room_created = _room_created.timestamp()
-    logger.info(f"[DEBUG] room.creation_time converted={_room_created!r}")
-
+    # ctx.room.creation_time is only available after session.start() connects.
+    # Record wall clock at entry; room_creation_time will be set post-connect.
     ColdStartMetrics.start(
         session_id=ctx.job.id,
         room_name=ctx.room.name,
-        room_creation_time=_room_created or 0.0,
     )
 
     # ── Metadata + persona ────────────────────────────────────────────
@@ -378,6 +372,13 @@ async def run(ctx: JobContext) -> None:
     ColdStartMetrics.mark("session_start")
     await session.start(bridge, room=ctx.room, room_options=room_options)  # type: ignore[reportArgumentType]
     ColdStartMetrics.mark("session_started")
+
+    # room.creation_time is only available after session.start() connects
+    _room_created = getattr(ctx.room, "creation_time", None)
+    if _room_created is not None and not isinstance(_room_created, (int, float)):
+        _room_created = _room_created.timestamp()
+    if _room_created:
+        ColdStartMetrics.set_meta("room_creation_time", _room_created)
 
     # Resolve user_id from participant identity if not in metadata
     if not user_id:
