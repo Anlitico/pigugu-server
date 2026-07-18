@@ -31,6 +31,7 @@ _PG_DSN: str = os.getenv("DATABASE_URL", "").replace("+asyncpg", "")
 #
 #   Segment         | Formula                      | What it measures
 #   ----------------+------------------------------+--------------------------------
+#   dispatch_lag    | entry_wall - room_created    | LiveKit Cloud dispatch → agent receives job
 #   stt_init        | stt_init - entry             | Metadata + get_stt() — STT singleton init (first session per worker)
 #   tts_init        | tts_init - stt_init          | create_tts() — TTS per-session creation
 #   vad             | vad - tts_init               | get_vad() — Silero VAD model load (first session per worker)
@@ -41,14 +42,15 @@ _PG_DSN: str = os.getenv("DATABASE_URL", "").replace("+asyncpg", "")
 #   finalize        | ready - agent_created        | Track source fixup + final config logging
 
 SEGMENTS: list[tuple[str, str, str]] = [
-    ("stt_init",          "entry",            "stt_init"),
-    ("tts_init",          "stt_init",         "tts_init"),
-    ("vad",               "tts_init",         "vad"),
-    ("session_setup",     "vad",              "session_start"),
-    ("lk_connect",        "session_start",    "session_started"),
-    ("wait_participant",  "session_started",  "user_id"),
-    ("agent_create",      "user_id",          "agent_created"),
-    ("finalize",          "agent_created",    "ready"),
+    ("dispatch_lag",      "dispatch_lag",    "dispatch_lag"),
+    ("stt_init",          "entry",           "stt_init"),
+    ("tts_init",          "stt_init",        "tts_init"),
+    ("vad",               "tts_init",        "vad"),
+    ("session_setup",     "vad",             "session_start"),
+    ("lk_connect",        "session_start",   "session_started"),
+    ("wait_participant",  "session_started", "user_id"),
+    ("agent_create",      "user_id",         "agent_created"),
+    ("finalize",          "agent_created",   "ready"),
 ]
 
 META_KEYS = [
@@ -84,11 +86,14 @@ class ColdStartMetrics:
     """
 
     @classmethod
-    def start(cls, *, session_id: str, room_name: str) -> None:
+    def start(cls, *, session_id: str, room_name: str,
+             room_creation_time: float = 0.0) -> None:
         global _session
         if _session is not None:
             cls.flush()
         _session = _make_session(session_id, room_name)
+        _session["wall_entry"] = time.time()
+        _session["room_creation_time"] = room_creation_time
         cls.mark("entry")
 
     @classmethod
@@ -122,11 +127,23 @@ def _log(sess: dict[str, Any]) -> None:
     m = sess["marks"]
     total = _diff(m, "entry", "ready")
 
+    # Compute dispatch_lag: wall-clock time from LiveKit room creation to agent receiving the job
+    wall_entry = sess.get("wall_entry")
+    room_created = sess.get("room_creation_time", 0.0)
+    dispatch_lag: float | None = None
+    if wall_entry and room_created and room_created > 0:
+        dispatch_lag = round(wall_entry - room_created, 3)
+        m["dispatch_lag"] = dispatch_lag
+
     seg_parts: list[str] = []
     for label, a, b in SEGMENTS:
-        d = _diff(m, a, b)
-        if d is not None:
-            seg_parts.append(f"{label}={_fmt(d)}")
+        if label == "dispatch_lag":
+            if dispatch_lag is not None:
+                seg_parts.append(f"dispatch_lag={_fmt(dispatch_lag)}")
+        else:
+            d = _diff(m, a, b)
+            if d is not None:
+                seg_parts.append(f"{label}={_fmt(d)}")
 
     meta_parts: list[str] = []
     meta = sess["meta"]
