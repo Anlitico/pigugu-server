@@ -26,8 +26,8 @@ _config = get_config()
 
 logging.basicConfig(handlers=[_InterceptHandler()], level=0, force=True)
 
-# Capture livekit / third-party loggers
-for _name in ("livekit", "livekit.agents", "livekit_api", "opentelemetry"):
+# Capture third-party loggers
+for _name in ("opentelemetry",):
     _lg = logging.getLogger(_name)
     _lg.handlers = [_InterceptHandler()]
     _lg.propagate = False

@@ -1,14 +1,17 @@
 # pigagent/bootstrap/factory.py
 """
-Component factory: STT/TTS per session, PigAgent + ContextManager per user.
+Component factory: PigAgent + ContextManager per user.
 
 Storage (Redis + PG pool) and caches (prompts, game modes) are initialized
 at module load time. If Redis or PG fails, the process exits — there is no
 fallback.
 
 PigAgent and ContextManager are created per session/user, not as global
-singletons. Shared resources (Redis, PG pool, LLM provider, STT, VAD,
-prompt cache, game mode cache) remain singletons.
+singletons. Shared resources (Redis, PG pool, LLM provider, prompt cache,
+game mode cache) remain singletons.
+
+STT and TTS are called directly via Deepgram HTTP API and Cartesia SSE API
+(in ws/handler.py), not through LiveKit plugins.
 """
 
 import os
@@ -16,8 +19,6 @@ import os
 from loguru import logger
 
 from agent_config import get_config
-from core.audio.stt import create_stt
-from core.audio.tts import create_tts
 from agent import PigAgent
 
 
@@ -45,53 +46,6 @@ def get_game_modes() -> dict:
 # ── Global singletons ──────────────────────────────────────────────────────
 
 _redis = None
-_vad = None
-_stt = None
-
-
-def get_stt():
-    """Return the global STT plugin singleton."""
-    global _stt
-    if _stt is not None:
-        return _stt
-    config = get_config()
-    stt_provider = config.STT_PROVIDER.lower()
-    if stt_provider == "deepgram":
-        _stt = create_stt(
-            provider="deepgram",
-            model=config.DEEPGRAM_STT_MODEL,
-            language=config.DEEPGRAM_STT_LANGUAGE,
-            sample_rate=config.DEEPGRAM_STT_SAMPLE_RATE,
-            enable_diarization=config.DEEPGRAM_ENABLE_DIARIZATION,
-            endpointing_ms=int(config.ENDPOINTING_DELAY * 1000),
-            api_key=os.getenv("DEEPGRAM_API_KEY"),
-        )
-    else:
-        _stt = create_stt(
-            provider="cartesia",
-            model=config.CARTESIA_STT_MODEL,
-            language=config.CARTESIA_STT_LANGUAGE,
-            encoding=config.CARTESIA_STT_ENCODING,
-            sample_rate=config.CARTESIA_STT_SAMPLE_RATE,
-            api_key=os.getenv("CARTESIA_API_KEY"),
-            base_url=config.CARTESIA_STT_BASE_URL,
-        )
-    logger.info(f"[Factory] STT loaded: {_stt.model}")
-    return _stt
-
-
-def get_vad():
-    """Return the global VAD (Voice Activity Detection) singleton."""
-    global _vad
-    if _vad is None:
-        try:
-            from livekit.plugins import silero  # type: ignore[reportAttributeAccessIssue]
-            _vad = silero.VAD.load()
-            logger.info("[Factory] VAD loaded")
-        except RuntimeError as e:
-            logger.warning(f"[Factory] VAD unavailable: {e}")
-            return None
-    return _vad
 
 
 def _init_redis():
@@ -132,11 +86,6 @@ async def create_pig_agent(user_id: str, config=None, *, hw_id: str = "") -> Pig
     Each call creates a fresh PigAgent + ContextManager + PromptStore.
     Shared resources (Redis, PG pool, game modes, model config) are reused.
 
-    PromptStore is per-agent — its cache starts empty, and prompts are
-    lazily loaded from PG on first access. When a prompt is updated in
-    PG, restarting the session (new PigAgent → new PromptStore) picks
-    up the change without a redeploy.
-
     hw_id is the hardware_id of the connected device, used by tools
     (e.g. volume_control) to send C2D MQTT messages.
     """
@@ -144,7 +93,6 @@ async def create_pig_agent(user_id: str, config=None, *, hw_id: str = "") -> Pig
         config = get_config()
 
     model = config.resolve_model()
-
     game_modes = _ensure_game_mode_cache()
 
     redis = get_redis()
@@ -188,13 +136,8 @@ def validate_configuration(config=None):
 
     errors = []
 
-    stt_provider = config.STT_PROVIDER.lower()
-    if stt_provider == "deepgram":
-        if not os.getenv("DEEPGRAM_API_KEY"):
-            errors.append("DEEPGRAM_API_KEY required in .env file for Deepgram STT")
-    elif stt_provider == "cartesia":
-        if not os.getenv("CARTESIA_API_KEY"):
-            errors.append("CARTESIA_API_KEY required in .env file for Cartesia STT")
+    if not os.getenv("DEEPGRAM_API_KEY"):
+        errors.append("DEEPGRAM_API_KEY required in .env file for Deepgram STT")
 
     if not os.getenv("CARTESIA_API_KEY"):
         errors.append("CARTESIA_API_KEY required in .env file for Cartesia TTS")
@@ -214,12 +157,6 @@ def validate_configuration(config=None):
         else:
             errors.append(f"Unknown LLM provider: {llm_provider}")
 
-    if not os.getenv("LIVEKIT_API_KEY"):
-        errors.append("LIVEKIT_API_KEY required in .env file")
-
-    if not os.getenv("LIVEKIT_API_SECRET"):
-        errors.append("LIVEKIT_API_SECRET required in .env file")
-
     if config.ENABLE_POLICY_SEARCH and config.POLICY_SEARCH_BACKEND == "perplexity":
         if not os.getenv("PERPLEXITY_API_KEY") and not os.getenv("OPENROUTER_API_KEY"):
             errors.append(
@@ -236,64 +173,3 @@ def validate_configuration(config=None):
         return False
 
     return True
-
-
-async def create_agent_components(config=None, persona=None):
-    """Create TTS per session. STT and VAD are global singletons.
-
-    PigAgent is NOT created here — it's per-session and requires user_id,
-    which is resolved after the LiveKit session starts. Callers should
-    use create_pig_agent(user_id) separately once user_id is known.
-
-    Args:
-        config: AgentConfig instance. If None, loads from get_config().
-        persona: Persona instance for TTS voice override.
-
-    Returns:
-        Tuple of (stt, tts) instances.
-    """
-    if config is None:
-        config = get_config()
-
-    # ── STT (global singleton) ─────────────────────────────────────────
-
-    stt = get_stt()
-
-    from metrics.session import ColdStartMetrics
-    ColdStartMetrics.mark("stt_init")
-
-    # ── TTS (per session  -  persona voice/speed/emotion) ────────────────
-
-    cartesia_api_key = os.getenv("CARTESIA_API_KEY")
-
-    tts_voice = config.CARTESIA_TTS_VOICE
-    tts_speed = config.CARTESIA_TTS_SPEED
-    tts_emotion = None
-
-    if persona is not None:
-        if persona.tts_voice:
-            tts_voice = persona.tts_voice
-        if persona.tts_speed is not None:
-            tts_speed = persona.tts_speed
-        tts_emotion = persona.tts_emotion
-
-    if tts_emotion is None and config.CARTESIA_TTS_EMOTION:
-        tts_emotion = [e.strip() for e in config.CARTESIA_TTS_EMOTION.split(",")]
-
-    tts = create_tts(
-        model=config.CARTESIA_TTS_MODEL,
-        language=config.CARTESIA_TTS_LANGUAGE,
-        encoding=config.CARTESIA_TTS_ENCODING,
-        voice=tts_voice,
-        speed=tts_speed,
-        emotion=tts_emotion,
-        volume=config.CARTESIA_TTS_VOLUME,
-        sample_rate=config.CARTESIA_TTS_SAMPLE_RATE,
-        word_timestamps=config.CARTESIA_TTS_WORD_TIMESTAMPS,
-        api_key=cartesia_api_key,
-        base_url=config.CARTESIA_TTS_BASE_URL,
-    )
-
-    ColdStartMetrics.mark("tts_init")
-
-    return stt, tts

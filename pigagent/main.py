@@ -1,8 +1,7 @@
 # pigagent/main.py
-"""Pigugu Voice Agent  -  CLI entry point.
+"""Pigugu Voice Agent  -  entry point.
 
-Starts the HTTP API server and LiveKit workers in the same process.
-All session wiring in lk/session.py, all business logic in pigagent.py.
+Starts the HTTP API server and xiaozhi WebSocket server in the same process.
 """
 
 import os
@@ -14,24 +13,27 @@ load_dotenv(find_dotenv())
 load_dotenv(find_dotenv(filename=".env.local"), override=True)
 
 import bootstrap.logging  # noqa: F401  -  must be after load_dotenv()
-from lk.entrypoint import main as lk_main
+from bootstrap.factory import validate_configuration
 
 if __name__ == "__main__":
-    # Start FastAPI HTTP server in background thread
+    if not validate_configuration():
+        import sys
+        sys.exit(1)
+
+    # Start FastAPI HTTP server with xiaozhi WS endpoint
     import uvicorn
     from api.server import create_app
 
-    api_port = int(os.getenv("API_PORT", "8080"))
-    http_thread = threading.Thread(
-        target=uvicorn.run,
-        args=(create_app(),),
-        kwargs={
-            "host": "0.0.0.0", "port": api_port, "log_level": "info",
-            "ws_ping_interval": 20, "ws_ping_timeout": 10,
-        },
-        daemon=True,
-    )
-    http_thread.start()
+    app = create_app()
+    from ws.server import router as xiaozhi_router
+    app.include_router(xiaozhi_router)
 
-    # Start LiveKit workers (blocks)
-    lk_main()
+    api_port = int(os.getenv("API_PORT", "8080"))
+    uvicorn.run(
+        app,
+        host="0.0.0.0",
+        port=api_port,
+        log_level="info",
+        ws_ping_interval=20,
+        ws_ping_timeout=10,
+    )

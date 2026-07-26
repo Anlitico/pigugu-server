@@ -21,7 +21,12 @@ from ..llm.registry import ModelRegistry
 from ..llm.types import Message, ChatResponse
 from .stop import StepResult, step_count_is, no_tool_calls
 
-from livekit.agents.types import FlushSentinel
+class FlushSentinel:
+    """Sentinel to signal TTS should commit/flush buffered audio immediately.
+
+    Replaces livekit.agents.types.FlushSentinel to remove LiveKit dependency.
+    """
+    pass
 
 from .state import AgentState, StateStatus
 from .executor import ToolExecutor

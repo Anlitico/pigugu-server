@@ -1,8 +1,6 @@
 # pigagent/core/__init__.py
 """Core AI pipeline  -  LLM, agent, audio."""
 
-from .audio import create_stt, STTProvider, create_tts, TTSProvider
-
 from .llm import (
     Message, ChatResponse, ChatDelta, ToolCall,
     ModelCapability, ModelInfo, ToolSpec,
@@ -11,8 +9,6 @@ from .llm import (
 )
 
 __all__ = [
-    "create_stt", "STTProvider",
-    "create_tts", "TTSProvider",
     "Message", "ChatResponse", "ChatDelta", "ToolCall",
     "ModelCapability", "ModelInfo", "ToolSpec",
     "LLMProvider",
