@@ -19,7 +19,7 @@ from zoneinfo import ZoneInfo
 from typing import Any, TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from livekit.agents.types import FlushSentinel
+    from core.agent.runner import FlushSentinel
     from prompts import PromptStore
 
 from loguru import logger

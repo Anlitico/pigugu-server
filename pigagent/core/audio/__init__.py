@@ -1,10 +1,5 @@
-﻿# pigagent/core/audio/__init__.py
-"""Core audio infrastructure  -  STT and TTS providers."""
+# pigagent/core/audio/__init__.py
+"""Audio module — STT/TTS handled directly in ws/handler.py via HTTP APIs."""
 
-from .stt import create_stt, STTProvider
-from .tts import create_tts, TTSProvider
-
-__all__ = [
-    "create_stt", "STTProvider",
-    "create_tts", "TTSProvider",
-]
+# STT/TTS via Deepgram HTTP API and Cartesia SSE API — no LiveKit dependency.
+__all__: list[str] = []

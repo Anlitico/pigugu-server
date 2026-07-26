@@ -5,8 +5,6 @@ Configuration for AI Agent
 Configuration is loaded from environment variables first, then .config.
 
 API Keys (MUST be provided by environment variables, usually .env locally):
-- LIVEKIT_API_KEY
-- LIVEKIT_API_SECRET
 - DEEPGRAM_API_KEY (if using Deepgram STT)
 - CARTESIA_API_KEY (if using Cartesia STT/TTS)
 - DASHSCOPE_API_KEY
@@ -82,8 +80,8 @@ class AgentConfig(BaseSettings):
     API keys MUST be provided via environment variables.
     """
     
-    # LiveKit Configuration
-    LIVEKIT_URL: str = Field(default_factory=lambda: get_config_value("LIVEKIT_URL", "ws://localhost:8002"))
+    # WebSocket Server Configuration
+    WS_PORT: int = Field(default_factory=lambda: int(get_config_value("API_PORT", 8080)))
     
     # STT Provider Selection - "deepgram" or "cartesia"
     STT_PROVIDER: str = Field(default_factory=lambda: get_config_value("STT_PROVIDER", "deepgram"))
@@ -207,7 +205,7 @@ def get_config() -> AgentConfig:
 def _log_config_summary(cfg: AgentConfig) -> None:
     """Print all config values at INFO level once after loading."""
     fields = [
-        ("LIVEKIT_URL", cfg.LIVEKIT_URL),
+        ("WS_PORT", cfg.WS_PORT),
         ("STT_PROVIDER", cfg.STT_PROVIDER),
         ("DEEPGRAM", f"model={cfg.DEEPGRAM_STT_MODEL} lang={cfg.DEEPGRAM_STT_LANGUAGE} rate={cfg.DEEPGRAM_STT_SAMPLE_RATE} diarization={cfg.DEEPGRAM_ENABLE_DIARIZATION}"),
         ("CARTESIA_STT", f"model={cfg.CARTESIA_STT_MODEL} lang={cfg.CARTESIA_STT_LANGUAGE} encoding={cfg.CARTESIA_STT_ENCODING} rate={cfg.CARTESIA_STT_SAMPLE_RATE}"),
