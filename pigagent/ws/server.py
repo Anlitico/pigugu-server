@@ -16,7 +16,7 @@ from loguru import logger
 
 from ws.handler import XiaozhiHandler
 
-router = APIRouter(prefix="/ws/v1", tags=["xiaozhi"])
+router = APIRouter(prefix="/v1/agent", tags=["agent"])
 
 # ── Global connection registry ────────────────────────────────────
 
@@ -36,9 +36,9 @@ async def send_inject(user_id: str, msg: dict) -> None:
     await handler.inject_roast(msg)
 
 
-@router.websocket("/xiaozhi")
+@router.websocket("")
 async def xiaozhi_websocket(ws: WebSocket) -> None:
-    """Xiaozhi protocol WebSocket endpoint."""
+    """Xiaozhi protocol WebSocket endpoint — wss://host/v1/agent"""
     client_id = ws.headers.get("client-id", "") or ws.headers.get("Client-Id", "")
     device_id = ws.headers.get("device-id", "") or ws.headers.get("Device-Id", "")
     protocol_version = ws.headers.get("protocol-version", "") or ws.headers.get("Protocol-Version", "")
