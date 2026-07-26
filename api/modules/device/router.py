@@ -15,7 +15,7 @@ from modules.device.schemas import (
     DeviceRenameRequest,
     DeviceResponse,
     DeviceStateRequest,
-    LiveKitTokenResponse,
+    AgentConfigResponse,
     MqttCredentialRequest,
     MqttCredentialResponse,
     ProvisioningSessionResponse,
@@ -140,34 +140,18 @@ async def report_state(body: DeviceStateRequest, db: AsyncSession = Depends(get_
     return {"status": "ok"}
 
 
-@router.get("/livekit-token", response_model=LiveKitTokenResponse)
-async def get_livekit_token(
+@router.get("/agent-config", response_model=AgentConfigResponse)
+async def get_agent_config(
     current_user: User = Depends(get_current_user),
 ):
-    """Return a long-lived (3650d) token + room info. Hardware stores this
-    during provisioning and uses it for all future wake-word joins."""
+    """Return xiaozhi WS URL + auth token. Firmware stores these in NVS
+    and connects directly to the WebSocket endpoint."""
     try:
-        token, room_name = await service.generate_livekit_token(str(current_user.id))
-    except Exception as e:
-        logger.exception("LiveKit token generation failed for user=%s", current_user.id)
-        try:
-            from modules.ws.manager import ws_manager
-            import json
-            await ws_manager.broadcast_to_user(
-                str(current_user.id),
-                json.dumps({"type": "error", "error_code": "LIVEKIT_TOKEN_FAILED",
-                            "error_msg": "LiveKit token 获取失败"}),
-            )
-        except Exception:
-            pass
-        raise HTTPException(status_code=500, detail="Failed to generate LiveKit token")
-
-    from core.config import settings
-    return LiveKitTokenResponse(
-        token=token,
-        room_name=room_name,
-        livekit_url=settings.livekit_url,
-    )
+        config = await service.generate_agent_config(str(current_user.id))
+    except Exception:
+        logger.exception("Agent config generation failed for user=%s", current_user.id)
+        raise HTTPException(status_code=500, detail="Failed to generate agent config")
+    return AgentConfigResponse(**config)
 
 
 @router.get("s", response_model=list[DeviceResponse])
@@ -295,6 +279,35 @@ from pydantic import BaseModel
 class FcmTokenRequest(BaseModel):
     token: str
     platform: str | None = None
+
+# ── OTA / Provisioning (xiaozhi firmware) ─────────────────────────
+
+@router.get("/ota")
+async def get_ota_config(
+    device_id: str = Query(default="", alias="device_id"),
+    client_id: str = Query(default="", alias="client_id"),
+):
+    """Return provisioning config for xiaozhi firmware.
+
+    Firmware calls this after WiFi connect to get the WebSocket URL + token.
+    Unauthenticated — identified by device_id / client_id headers.
+    """
+    from core.security import create_access_token
+
+    ws_url = getattr(settings, "ws_url", "wss://api.pigugu.net/v1/agent")
+    token = create_access_token(data={"sub": client_id or device_id})
+
+    logger.info("OTA config: device=%s client=%s url=%s", device_id, client_id, ws_url)
+    return {
+        "websocket": {
+            "url": ws_url,
+            "token": token,
+            "version": 1,
+        }
+    }
+
+
+# ── FCM Push Token ───────────────────────────────────────────────
 
 @router.post("/fcm-token", status_code=201)
 async def register_fcm_token(

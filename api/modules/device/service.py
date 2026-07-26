@@ -406,55 +406,22 @@ async def rename_device(db: AsyncSession, user_id: uuid.UUID, device_id: uuid.UU
     return device
 
 
-async def generate_livekit_token(
+async def generate_agent_config(
     user_id: str,
-) -> tuple[str, str]:
-    """Generate a long-lived LiveKit token for the user's hardware.
+) -> dict:
+    """Generate xiaozhi WebSocket config for firmware provisioning.
 
-    Token is valid for 365 days, includes RoomConfiguration with agent
-    dispatch. Hardware stores it during provisioning and uses it for all
-    future wake-word joins.
-
-    Returns (token, room_name).
+    Returns dict with ws_url and auth token. Firmware stores these in NVS
+    under the 'websocket' namespace and connects directly to the WS endpoint.
     """
-    from livekit import api as lk_api
-    from modules.device.room import build_room_name, AGENT_NAME
+    from core.config import settings
+    from core.security import create_access_token
 
-    room_name = build_room_name(user_id)
+    ws_url = getattr(settings, "ws_url", "wss://api.pigugu.net/v1/agent")
+    token = create_access_token(data={"sub": user_id})
 
-    api_key = settings.livekit_api_key
-    api_secret = settings.livekit_api_secret
-
-    import datetime as _dt
-    at = lk_api.AccessToken(api_key=api_key, api_secret=api_secret)
-    at.ttl = _dt.timedelta(days=3650)
-    token = (
-        at.with_identity(f"dev-{user_id}")
-        .with_grants(
-            lk_api.VideoGrants(
-                room_join=True,
-                room=room_name,
-                can_publish=True,
-                can_subscribe=True,
-            )
-        )
-        .with_room_config(
-            lk_api.RoomConfiguration(
-                agents=[
-                    lk_api.RoomAgentDispatch(
-                        agent_name=AGENT_NAME,
-                        metadata=json.dumps({
-                            "user_id": user_id,
-                        }),
-                    )
-                ],
-            )
-        )
-        .to_jwt()
-    )
-
-    logger.info("Token issued: user=%s room=%s", user_id, room_name)
-    return token, room_name
+    logger.info("Agent config issued: user=%s url=%s", user_id, ws_url)
+    return {"ws_url": ws_url, "token": token}
 
 
 async def join_room(db: AsyncSession, user_id: uuid.UUID, hw_id: str) -> None:

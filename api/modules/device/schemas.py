@@ -51,6 +51,12 @@ class LiveKitTokenResponse(BaseModel):
     livekit_url: str
 
 
+class AgentConfigResponse(BaseModel):
+    """xiaozhi WebSocket config for firmware provisioning."""
+    ws_url: str
+    token: str
+
+
 class DeviceStateRequest(BaseModel):
     device_id: str
     state: str  # listening | thinking | speaking | idle
