@@ -121,7 +121,7 @@ async def create_provisioning_session(
         user_id=user_id,
         status="created",
         challenge_nonce=secrets.token_urlsafe(32),
-        expires_at=datetime.now(timezone.utc) + timedelta(minutes=15),
+        expires_at=datetime.now(timezone.utc) + timedelta(minutes=30),
     )
     db.add(session)
     await db.flush()

@@ -148,7 +148,6 @@ async def _handle_online(hw_id: str, msg: dict) -> None:
     hw_id = hw_id.strip().lower()
     await redis_set(f"device:online:hw:{hw_id}", "1", ex=600)
     await redis_set(f"device:last_seen:hw:{hw_id}", str(datetime.now().isoformat()), ex=86400)
-    await _push_ws_by_hw(hw_id, {"type": "online", "hardware_id": hw_id})
 
     session_id = msg.get("session_id")
     request_id = uuid.uuid4()
@@ -221,10 +220,12 @@ async def _handle_online(hw_id: str, msg: dict) -> None:
             if not session or session.status != "created":
                 return
 
+            user_id = str(session.user_id)
+
             if session.expires_at < datetime.now(timezone.utc):
                 session.status = "expired"
                 await db.commit()
-                await _push_ws_by_hw(hw_id, {
+                await _push_ws(user_id, {
                     "type": "error",
                     "error_code": "PROVISION_SESSION_EXPIRED",
                     "error_msg": "配网会话已过期",
@@ -245,14 +246,18 @@ async def _handle_online(hw_id: str, msg: dict) -> None:
         from core.aws import publish_mqtt_message
         await publish_mqtt_message(f"pgg/dev/{hw_id}/c2d", ping)
 
-        await _push_ws_by_hw(hw_id, {"type": "verifying"})
+        await _push_ws(user_id, {"type": "online", "hardware_id": hw_id})
+        await _push_ws(user_id, {"type": "verifying"})
 
         # Fire-and-forget watchdog: waits for pong or pushes timeout error
         asyncio.create_task(_wait_for_pong(hw_id, str(request_id), session_id))
 
     except Exception as e:
         logger.error("_handle_online failed for %s: %s", hw_id, e)
-        await _push_ws_by_hw(hw_id, {"type": "error", "error_msg": "配网服务异常"})
+        try:
+            await _push_ws(user_id, {"type": "error", "error_msg": "配网服务异常"})
+        except (NameError, Exception):
+            await _push_ws_by_hw(hw_id, {"type": "error", "error_msg": "配网服务异常"})
 
 
 async def _handle_pong(hw_id: str, msg: dict, session_id: str | None, request_id: str | None) -> None:
@@ -290,6 +295,23 @@ async def _handle_pong(hw_id: str, msg: dict, session_id: str | None, request_id
     except Exception as e:
         logger.warning("Failed to persist device RTT for %s: %s", hw_id, e)
 
+    # Push via session.user_id if available, otherwise fall back to DB lookup
+    if session_id:
+        try:
+            from sqlalchemy import select
+            from core.database import AsyncSessionLocal
+            from models.device_provisioning_session import DeviceProvisioningSession
+            sid = uuid.UUID(session_id)
+            async with AsyncSessionLocal() as db:
+                session_result = await db.execute(
+                    select(DeviceProvisioningSession).where(DeviceProvisioningSession.id == sid)
+                )
+                session = session_result.scalar_one_or_none()
+                if session:
+                    await _push_ws(str(session.user_id), {"type": "verified", "rtt_ms": rtt_ms})
+                    return
+        except Exception:
+            pass
     await _push_ws_by_hw(hw_id, {"type": "verified", "rtt_ms": rtt_ms})
 
 
@@ -337,7 +359,7 @@ async def _handle_register(hw_id: str, msg: dict) -> None:
                         existing.certificate_arn = session.certificate_arn
                     existing.thing_name = hw_id
                 elif existing.user_id != session.user_id:
-                    await _push_ws_by_hw(hw_id, {"type": "error", "error_code": "DEVICE_ALREADY_BOUND", "error_msg": "该设备已被其他账号绑定"})
+                    await _push_ws(str(session.user_id), {"type": "error", "error_code": "DEVICE_ALREADY_BOUND", "error_msg": "该设备已被其他账号绑定"})
                     return
             else:
                 has_active = (await db.execute(
@@ -365,7 +387,7 @@ async def _handle_register(hw_id: str, msg: dict) -> None:
 
             logger.info("_handle_register: %s bound successfully (session=%s)", hw_id, session_id)
 
-            await _push_ws_by_hw(hw_id, {
+            await _push_ws(str(session.user_id), {
                 "type": "bound",
                 "hardware_id": hw_id,
                 "device_name": device_name,
@@ -373,7 +395,10 @@ async def _handle_register(hw_id: str, msg: dict) -> None:
 
     except Exception as e:
         logger.exception("_handle_register failed for %s: %s", hw_id, e)
-        await _push_ws_by_hw(hw_id, {"type": "error", "error_msg": "绑定设备失败"})
+        try:
+            await _push_ws(str(session.user_id), {"type": "error", "error_msg": "绑定设备失败"})
+        except Exception:
+            await _push_ws_by_hw(hw_id, {"type": "error", "error_msg": "绑定设备失败"})
 
 
 @router.api_route("/webhook", methods=["POST", "GET"])
