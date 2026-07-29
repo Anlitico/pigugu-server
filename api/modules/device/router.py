@@ -295,7 +295,7 @@ async def get_ota_config(
     from core.security import create_access_token
 
     ws_url = getattr(settings, "ws_url", "wss://api.pigugu.net/v1/agent")
-    token = create_access_token(data={"sub": client_id or device_id})
+    token = create_access_token(subject=client_id or device_id)
 
     logger.info("OTA config: device=%s client=%s url=%s", device_id, client_id, ws_url)
     return {
