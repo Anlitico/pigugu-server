@@ -86,7 +86,7 @@ metadata:
   annotations:
     service.beta.kubernetes.io/aws-load-balancer-type: "nlb"
     service.beta.kubernetes.io/aws-load-balancer-scheme: "internet-facing"
-    service.beta.kubernetes.io/aws-load-balancer-ssl-cert: arn:aws:acm:us-west-1:537557168531:certificate/4a84c383-f015-4961-b56c-b3a0a20166c1
+    service.beta.kubernetes.io/aws-load-balancer-ssl-cert: arn:aws:acm:us-west-1:537557168531:certificate/48b5e4af-c516-4d7c-88ed-3e424233e201
     service.beta.kubernetes.io/aws-load-balancer-ssl-ports: "443"
     service.beta.kubernetes.io/aws-load-balancer-backend-protocol: "tcp"
     service.beta.kubernetes.io/aws-load-balancer-eip-allocations: "eipalloc-0333f5af0db9a06b1,eipalloc-01e5ab6fa780e2d61"
