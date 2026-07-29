@@ -126,6 +126,26 @@ async def _wait_for_pong(hw_id: str, request_id: str, session_id: str) -> None:
     try:
         key = f"provision:verify:{session_id}:{request_id}"
         if not await redis_exists(key):
+            # Resolve user_id from session so the error reaches the App
+            try:
+                from sqlalchemy import select
+                from core.database import AsyncSessionLocal
+                from models.device_provisioning_session import DeviceProvisioningSession
+                sid = uuid.UUID(session_id)
+                async with AsyncSessionLocal() as db:
+                    session_result = await db.execute(
+                        select(DeviceProvisioningSession).where(DeviceProvisioningSession.id == sid)
+                    )
+                    session = session_result.scalar_one_or_none()
+                    if session:
+                        await _push_ws(str(session.user_id), {
+                            "type": "error",
+                            "error_code": "PROVISION_VERIFY_TIMEOUT",
+                            "error_msg": "设备无法连接到服务器",
+                        })
+                        return
+            except Exception:
+                pass
             await _push_ws_by_hw(hw_id, {
                 "type": "error",
                 "error_code": "PROVISION_VERIFY_TIMEOUT",
