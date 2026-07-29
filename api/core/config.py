@@ -17,7 +17,7 @@ class Settings(BaseSettings):
     livekit_api_secret: str = ""
 
     # xiaozhi WebSocket agent endpoint
-    ws_url: str = "wss://api.pigugu.net/v1/agent"
+    ws_url: str = "wss://agent.pigugu.net/v1/agent"
 
     anthropic_api_key: str = ""
 
