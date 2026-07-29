@@ -90,8 +90,8 @@ async def issue_mqtt_creds(
         try:
             from modules.ws.manager import ws_manager
             import json
-            await ws_manager.broadcast(
-                body.hardware_id.strip().lower(),
+            await ws_manager.broadcast_to_user(
+                str(current_user.id),
                 json.dumps({"type": "credentials_ready", "hardware_id": body.hardware_id.strip().lower()}),
             )
         except Exception:
