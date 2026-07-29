@@ -119,7 +119,7 @@ class XiaozhiHandler:
             "session_id": self.session_id,
             "audio_params": {
                 "format": "opus",
-                "sample_rate": 24000,
+                "sample_rate": 16000,
                 "channels": 1,
                 "frame_duration": 60,
             },
@@ -401,7 +401,7 @@ class XiaozhiHandler:
                 pcm.extend(data)
         if len(pcm) > 0 and not self._interrupt_event.is_set():
             for frame in opus_encode_chunks(
-                bytes(pcm), sample_rate=24000, channels=1, frame_duration_ms=60,
+                bytes(pcm), sample_rate=16000, channels=1, frame_duration_ms=60,
             ):
                 if self._interrupt_event.is_set():
                     break
@@ -434,7 +434,7 @@ class XiaozhiHandler:
 
             if len(pcm_chunks) > 0 and not self._interrupt_event.is_set():
                 for frame in opus_encode_chunks(
-                    bytes(pcm_chunks), sample_rate=24000, channels=1, frame_duration_ms=60,
+                    bytes(pcm_chunks), sample_rate=16000, channels=1, frame_duration_ms=60,
                 ):
                     if self._interrupt_event.is_set():
                         break
@@ -616,7 +616,7 @@ def _make_tts_payload(text: str, voice_id: str, model_id: str) -> dict:
         "output_format": {
             "container": "raw",
             "encoding": "pcm_s16le",
-            "sample_rate": 24000,
+            "sample_rate": 16000,
         },
         "language": "en",
     }
