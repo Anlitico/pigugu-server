@@ -73,6 +73,8 @@ async def issue_mqtt_credentials(
             broker_uri=creds["broker_uri"],
             client_cert=creds["client_cert"],
             client_key=creds["client_key"],
+            ws_url=creds.get("ws_url", settings.ws_url),
+            ws_version=creds.get("ws_version", 1),
         )
 
     # Create IoT resources (cert, thing, policy attachment)
@@ -92,6 +94,8 @@ async def issue_mqtt_credentials(
         broker_uri=settings.mqtt_broker_uri,
         client_cert=cert["certificatePem"],
         client_key=cert["keyPair"]["PrivateKey"],
+        ws_url=settings.ws_url,
+        ws_version=1,
     )
 
     # Cache the credentials so subsequent calls with the same session
