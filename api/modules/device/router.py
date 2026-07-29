@@ -1,6 +1,6 @@
 import logging
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from core.config import settings
@@ -282,17 +282,18 @@ class FcmTokenRequest(BaseModel):
 
 # ── OTA / Provisioning (xiaozhi firmware) ─────────────────────────
 
-@router.get("/ota")
-async def get_ota_config(
-    device_id: str = Query(default="", alias="device_id"),
-    client_id: str = Query(default="", alias="client_id"),
-):
+@router.post("/ota")
+async def get_ota_config(request: Request):
     """Return provisioning config for xiaozhi firmware.
 
     Firmware calls this after WiFi connect to get the WebSocket URL + token.
-    Unauthenticated — identified by device_id / client_id headers.
+    Unauthenticated — identified by Device-Id / Client-Id headers.
     """
     from core.security import create_access_token
+    from fastapi import Request
+
+    device_id = request.headers.get("device-id", request.headers.get("Device-Id", ""))
+    client_id = request.headers.get("client-id", request.headers.get("Client-Id", ""))
 
     ws_url = getattr(settings, "ws_url", "wss://api.pigugu.net/v1/agent")
     token = create_access_token(subject=client_id or device_id)
