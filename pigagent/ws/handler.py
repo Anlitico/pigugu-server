@@ -307,10 +307,12 @@ class XiaozhiHandler:
             #    Both tasks respect _interrupt_event for barge-in.
             text_queue: asyncio.Queue[str | None] = asyncio.Queue()
 
+            pig = self._pig
+            assert pig is not None, "PigAgent not initialized"
             async def _llm_producer():
                 """Feed LLM text chunks into the queue; sends None as EOF."""
                 try:
-                    async for chunk in self._pig.generate_reply(
+                    async for chunk in pig.generate_reply(
                         stt_text.strip(),
                         persona_id=self._persona_id,
                         interrupt_event=self._interrupt_event,
@@ -640,7 +642,7 @@ def _opus_decode_one(data: bytes, sample_rate: int = 16000, channels: int = 1) -
     Each binary WS frame from the firmware is one Opus frame.
     """
     try:
-        import opuslib
+        import opuslib  # pyright: ignore[reportMissingImports]
         decoder = opuslib.Decoder(sample_rate, channels)
         frame_samples = 60 * sample_rate // 1000  # 60ms frame
         pcm_size = frame_samples * channels * 2
@@ -656,7 +658,7 @@ def opus_encode_chunks(
 ) -> list[bytes]:
     """Encode PCM s16le to Opus frames (one per frame_duration_ms chunk)."""
     try:
-        import opuslib
+        import opuslib  # pyright: ignore[reportMissingImports]
         encoder = opuslib.Encoder(sample_rate, channels, "voip")
         frames: list[bytes] = []
         frame_samples = frame_duration_ms * sample_rate // 1000
