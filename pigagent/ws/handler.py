@@ -169,7 +169,9 @@ class XiaozhiHandler:
             # Run VAD on pre-buffered frames so silence watchdog has context
             for data in self._audio_frames:
                 pcm = _opus_decode_one(data, sample_rate=16000, channels=1)
-                if pcm:
+                if pcm and len(pcm) >= 2:
+                    if len(pcm) % 2 != 0:
+                        pcm = pcm[:-1]
                     arr = np.frombuffer(pcm, dtype=np.int16).astype(np.float32) / 32768.0
                     self._vad_pcm.append(arr)
             if len(self._vad_pcm) >= 5:
@@ -247,7 +249,10 @@ class XiaozhiHandler:
         self._audio_frames.append(data)
         # Decode and feed VAD
         pcm = _opus_decode_one(data, sample_rate=16000, channels=1)
-        if pcm:
+        if pcm and len(pcm) >= 2:
+            # Ensure even-length for int16 (strip odd trailing byte if present)
+            if len(pcm) % 2 != 0:
+                pcm = pcm[:-1]
             arr = np.frombuffer(pcm, dtype=np.int16).astype(np.float32) / 32768.0
             self._vad_pcm.append(arr)
             # Check VAD every ~300ms (5 × 60ms frames)
