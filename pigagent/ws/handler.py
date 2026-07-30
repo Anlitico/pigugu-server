@@ -352,13 +352,17 @@ class XiaozhiHandler:
                             break
                         if isinstance(chunk, str):
                             await text_queue.put(chunk)
+                        else:
+                            logger.info(f"[Xiaozhi] LLM non-str chunk type={type(chunk).__name__}")
                     await text_queue.put(None)  # EOF
+                    logger.info(f"[Xiaozhi] LLM producer done")
                 except Exception as e:
                     logger.error(f"[Xiaozhi] LLM producer failed: {e}")
                     await text_queue.put(None)
 
             async def _tts_consumer():
                 """Read text from queue, flush to Cartesia in chunks, send Opus."""
+                logger.info(f"[Xiaozhi] TTS consumer started")
                 text_buffer = ""
                 full_spoken = ""
                 first_tts = True
@@ -388,6 +392,7 @@ class XiaozhiHandler:
                             continue
 
                         if chunk is None:
+                            logger.info(f"[Xiaozhi] TTS consumer got EOF, full_spoken={len(full_spoken)}")
                             break  # EOF
                         if self._interrupt_event.is_set():
                             break
