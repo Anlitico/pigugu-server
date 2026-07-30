@@ -4,7 +4,7 @@ version = "0.1.0"
 requires-python = ">=3.13"
 dependencies = [
     # Standalone VAD (ONNX-based, no PyTorch)
-    "silero-vad-lite>=5.1",
+    "silero-vad-lite>=0.1",
     # AI Providers
     "dashscope~=1.25",
     "openai~=2.38",
