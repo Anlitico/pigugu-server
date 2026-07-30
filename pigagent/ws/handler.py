@@ -71,6 +71,7 @@ class XiaozhiHandler:
         self._silence_timer: asyncio.Task | None = None
         self._vad_pcm: list[np.ndarray] = []  # accumulated PCM for VAD
         self._vad_speech_detected = False
+        self._pre_buffer: list[bytes] = []  # frames buffered before listening starts
         self._http: Any = None  # shared aiohttp session — created lazily
 
     # ── Main dispatch ───────────────────────────────────────────────
@@ -150,21 +151,40 @@ class XiaozhiHandler:
             text = data.get("text", "")
             logger.info(f"[Xiaozhi] Wake word detected: '{text}' from {self.client_id}")
 
-        elif state == "start":
-            # If a turn is still processing, abort it immediately.
+            # Start collecting audio from detect — wake word frames arrived
+            # before detect and were buffered in _pre_buffer; we flush them
+            # now so the wake word audio is included in the STT input.
             if self._turn_task and not self._turn_task.done():
                 self._sentence_id += 1
                 self._interrupt_event.set()
                 self._turn_task.cancel()
-                logger.info(f"[Xiaozhi] Aborted in-flight turn for new listen/start")
+                logger.info(f"[Xiaozhi] Aborted in-flight turn for new listen/detect")
 
             self._interrupt_event.clear()
             self._listening = True
-            self._audio_frames.clear()
+            self._audio_frames = list(self._pre_buffer)
+            self._pre_buffer.clear()
             self._vad_pcm.clear()
             self._vad_speech_detected = False
+            # Run VAD on pre-buffered frames so silence watchdog has context
+            for data in self._audio_frames:
+                pcm = _opus_decode_one(data, sample_rate=16000, channels=1)
+                if pcm:
+                    arr = np.frombuffer(pcm, dtype=np.int16).astype(np.float32) / 32768.0
+                    self._vad_pcm.append(arr)
+            if len(self._vad_pcm) >= 5:
+                merged = np.concatenate(self._vad_pcm)
+                self._vad_pcm.clear()
+                if self._run_vad(merged):
+                    self._vad_speech_detected = True
             self._start_silence_watchdog()
-            logger.info(f"[Xiaozhi] Listening start: session={self.session_id}")
+            logger.info(f"[Xiaozhi] Listening start (from detect): {len(self._audio_frames)} pre-buffered frames")
+
+        elif state == "start":
+            # Don't clear audio — frames are already being collected since detect.
+            # Just restart the watchdog as the firmware is now streaming live audio.
+            logger.info(f"[Xiaozhi] Firmware start: {len(self._audio_frames)} frames so far")
+            self._start_silence_watchdog()
 
         elif state == "stop":
             self._listening = False
@@ -218,6 +238,11 @@ class XiaozhiHandler:
     async def _handle_binary(self, data: bytes) -> None:
         """Store Opus frames, run VAD, reset silence timer."""
         if not self._listening:
+            # Buffer frames that arrive before detect (e.g. wake word audio).
+            # Keep a sliding window so we don't grow unbounded.
+            self._pre_buffer.append(data)
+            if len(self._pre_buffer) > 200:
+                self._pre_buffer.pop(0)
             return
         self._audio_frames.append(data)
         # Decode and feed VAD
