@@ -39,15 +39,15 @@ from bootstrap.factory import create_pig_agent, get_pg_pool, get_redis
 from metrics.session import ColdStartMetrics
 from metrics.turn import TelemetryCollector
 
-# ── Silero VAD (lazy-loaded per worker) ─────────────────────────────
+# ── Silero VAD (lazy-loaded per worker, ONNX-based, no PyTorch) ─────
 _vad_model = None
 
 
 def _get_vad_model():
     global _vad_model
     if _vad_model is None:
-        from silero_vad import load_silero_vad
-        _vad_model = load_silero_vad()
+        from silero_vad_lite import SileroVAD
+        _vad_model = SileroVAD(16000)
     return _vad_model
 
 
@@ -201,8 +201,8 @@ class XiaozhiHandler:
         """Returns True if speech is present in the PCM chunk."""
         try:
             model = _get_vad_model()
-            # VAD expects float32 in [-1, 1], 16kHz
-            return model(audio, 16000).item() > 0.5
+            # silero-vad-lite: process() returns float speech probability
+            return model.process(audio) > 0.5
         except Exception:
             return True  # assume speech on VAD error → no false-timeout
 
