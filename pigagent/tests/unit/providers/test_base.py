@@ -44,7 +44,7 @@ class TestTTSProvider:
 
     def test_concrete_subclass(self):
         class MyTTS(TTSProvider):
-            async def synthesize(self, text: str) -> list[bytes]:
+            async def synthesize(self, text: str, raw_pcm: bool = False) -> list[bytes]:
                 return [b"opus_frame"]
 
         import asyncio

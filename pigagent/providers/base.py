@@ -36,10 +36,11 @@ class TTSProvider(ABC):
     """Text-to-Speech — convert text to Opus-encoded audio frames."""
 
     @abstractmethod
-    async def synthesize(self, text: str) -> list[bytes]:
-        """Convert text to a list of Opus-encoded binary frames.
+    async def synthesize(self, text: str, raw_pcm: bool = False) -> list[bytes]:
+        """Convert text to a list of Opus-encoded (or raw PCM) binary frames.
 
         Each frame is one 60 ms chunk at 16 kHz.
+        Set ``raw_pcm=True`` to skip Opus encoding.
         """
         ...
 

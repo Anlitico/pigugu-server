@@ -73,7 +73,10 @@ function toggleConnection() {
         log(`Hello: session=${sessionId}`, 'info');
       } else if (msg.type === 'stt') {
         log(`STT: "${msg.text}"`, 'stt');
+        _sttReceived = true;
       } else if (msg.type === 'tts') {
+        if (msg.state === 'start') resetTTsPlayback();
+        _sttReceived = false;
         if (msg.state === 'start') { audioFrames = []; log('TTS receiving...', 'tts'); }
         else if (msg.state === 'stop') { playTTS(); }
         else { log(`TTS: ${msg.state}`, 'tts'); }
@@ -121,8 +124,6 @@ async function initEncoder() {
 // ── Recording ──
 async function startMic() {
   if (stream) return;
-  await initEncoder();
-  if (!encoder) return;
   stream = await navigator.mediaDevices.getUserMedia({
     audio: { sampleRate: SAMPLE_RATE, channelCount: 1, echoCancellation: true }
   });
@@ -134,8 +135,12 @@ async function startMic() {
     const input = e.inputBuffer.getChannelData(0);
     const pcm = new Int16Array(input.length);
     for (let i = 0; i < input.length; i++) pcm[i] = Math.max(-32768, Math.min(32767, Math.round(input[i] * 32767)));
-    const ad = new AudioData({ format: 's16', sampleRate: SAMPLE_RATE, numberOfFrames: input.length, numberOfChannels: 1, timestamp: 0, data: pcm.buffer });
-    encoder.encode(ad); ad.close();
+    // Send raw PCM directly (no Opus encode)
+    if (ws && ws.readyState === WebSocket.OPEN) {
+      ws.send(pcm.buffer);
+      frameCount++;
+      if (frameCount === 1) log('Audio → raw PCM', 'info');
+    }
   };
   source.connect(processor);
   processor.connect(audioCtx.destination);
@@ -158,6 +163,12 @@ async function startChat() {
 
   recording = true;
   log('=== Conversation started ===', 'stt');
+
+  // Send hello first to set audio param format
+  ws.send(JSON.stringify({ type: 'hello', version: 1, transport: 'websocket',
+    audio_params: { format: 'pcm', sample_rate: SAMPLE_RATE, channels: 1, frame_duration: FRAME_MS },
+    persona_id: 1 }));
+  await sleep(500);
 
   while (recording && ws && ws.readyState === WebSocket.OPEN) {
     // Start a new turn: detect → start → wait for VAD silence
@@ -189,13 +200,17 @@ function stopChat() {
 function waitForServerResponse(timeoutMs) {
   return new Promise(resolve => {
     const start = Date.now();
+    _sttReceived = false;
     const check = () => {
+      const elapsed = Date.now() - start;
       if (!recording) { resolve(); return; }
-      if (Date.now() - start > timeoutMs) { resolve(); return; }
+      // If STT was received, extend timeout — LLM+TTS takes time
+      if (_sttReceived && elapsed < 60000) { setTimeout(check, 500); return; }
+      if (elapsed > timeoutMs) { resolve(); return; }
       // If we've received TTS, resume listening after playback
       if (audioFrames.length > 0) {
-        listening = false;  // stop sending during TTS playback
-        resolve();  // caller will restart detect for next turn
+        listening = false;
+        resolve();
         return;
       }
       setTimeout(check, 500);
@@ -205,32 +220,34 @@ function waitForServerResponse(timeoutMs) {
 }
 
 // ── TTS Playback ──
+// Streaming TTS playback — play frames as they arrive
+let _ttsCtx = null;
+let _ttsNextTime = 0;
+
 async function playTTS() {
   const frames = audioFrames.splice(0);
-  log(`Playing ${frames.length} TTS frames (~${(frames.length * 0.06).toFixed(1)}s)`, 'stt');
   if (!frames.length) return;
-  if (typeof AudioDecoder === 'undefined') { log('Need Chrome for AudioDecoder', 'warn'); return; }
 
-  const ctx = new AudioContext({ sampleRate: SAMPLE_RATE });
-  const decoder = new AudioDecoder({
-    output: (audioData) => {
-      const buf = ctx.createBuffer(1, audioData.numberOfFrames, audioData.sampleRate);
-      audioData.copyTo(buf.getChannelData(0), { planeIndex: 0, format: 'f32' });
-      const src = ctx.createBufferSource(); src.buffer = buf; src.connect(ctx.destination);
-      src.onended = () => { if (--pending === 0) { ctx.close(); log('TTS done', 'info'); } };
-      src.start();
-      pending++;
-      audioData.close();
-    },
-    error: (e) => log(`Decoder: ${e.message}`, 'warn'),
-  });
-  decoder.configure({ codec: 'opus', sampleRate: SAMPLE_RATE, numberOfChannels: 1 });
-  let pending = 0;
-  for (const frame of frames) {
-    decoder.decode(new EncodedAudioChunk({ type: 'key', timestamp: 0, duration: 60000, data: frame.buffer }));
+  // Decode raw PCM (Int16) to float32 and schedule each frame
+  if (!_ttsCtx) _ttsCtx = new AudioContext({ sampleRate: SAMPLE_RATE });
+  const ctx = _ttsCtx;
+  const now = ctx.currentTime;
+  _ttsNextTime = Math.max(_ttsNextTime, now);
+
+  for (const f of frames) {
+    const samples = new Int16Array(f.buffer, f.byteOffset, f.byteLength / 2);
+    const buf = ctx.createBuffer(1, samples.length, SAMPLE_RATE);
+    const ch = buf.getChannelData(0);
+    for (let i = 0; i < samples.length; i++) ch[i] = samples[i] / 32768.0;
+    const src = ctx.createBufferSource();
+    src.buffer = buf;
+    src.connect(ctx.destination);
+    src.start(_ttsNextTime);
+    _ttsNextTime += samples.length / SAMPLE_RATE;
   }
-  await decoder.flush();
 }
+
+function resetTTsPlayback() { _ttsCtx = null; _ttsNextTime = 0; }
 
 function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 

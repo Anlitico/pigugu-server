@@ -112,6 +112,7 @@ class ConnectionHandler:
         self._user_id: str = ""
         self._hw_id: str = ""
         self._persona_id: int = 1
+        self._raw_pcm: bool = False  # set by hello: format='pcm' for browser
         self._pig: Any = None  # PigAgent (lazy-created)
 
         # ---- Listen-mode state ----
@@ -199,6 +200,7 @@ class ConnectionHandler:
         self._persona_id = int(data.get("persona_id", 1))
         self._hw_id = str(data.get("hw_id", ""))
         audio_params = data.get("audio_params", {})
+        self._raw_pcm = audio_params.get("format", "opus") == "pcm"
 
         logger.info(
             f"[Voice] Hello client={self.client_id} "
@@ -507,7 +509,7 @@ class ConnectionHandler:
                                 )
                                 TelemetryCollector.mark("tts_start")
                                 tts_started = True
-                            frames = await self.tts.synthesize(text_buffer.strip())
+                            frames = await self.tts.synthesize(text_buffer.strip(), raw_pcm=self._raw_pcm)
                             full_spoken += text_buffer
                             text_buffer = ""
                             for frame in frames:
@@ -553,7 +555,7 @@ class ConnectionHandler:
                         flush_text = text_buffer.strip()
                         text_buffer = ""
                         full_spoken += flush_text
-                        frames = await self.tts.synthesize(flush_text)
+                        frames = await self.tts.synthesize(flush_text, raw_pcm=self._raw_pcm)
                         for frame in frames:
                             if self._interrupt_event.is_set():
                                 break
@@ -573,7 +575,7 @@ class ConnectionHandler:
                             }
                         )
                         tts_started = True
-                    frames = await self.tts.synthesize(text_buffer.strip())
+                    frames = await self.tts.synthesize(text_buffer.strip(), raw_pcm=self._raw_pcm)
                     full_spoken += text_buffer.strip()
                     for frame in frames:
                         if self._interrupt_event.is_set():
@@ -690,7 +692,7 @@ class ConnectionHandler:
                         "state": "start",
                     }
                 )
-                frames = await self.tts.synthesize(opening_text.strip())
+                frames = await self.tts.synthesize(opening_text.strip(), raw_pcm=self._raw_pcm)
                 for frame in frames:
                     if self._interrupt_event.is_set():
                         break
