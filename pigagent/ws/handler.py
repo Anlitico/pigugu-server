@@ -294,14 +294,24 @@ class XiaozhiHandler:
 
         try:
             # 1. Opus → PCM
+            import sys
+            sys.stderr.write(f"[Xiaozhi] Opus->PCM START\n")
+            sys.stderr.flush()
             pcm_frames = [_opus_decode_one(f, sample_rate=16000, channels=1) for f in frames]
             pcm = b"".join([pf for pf in pcm_frames if pf])
+            sys.stderr.write(f"[Xiaozhi] Opus->PCM: {len(frames)} frames -> {len(pcm)} bytes\n")
+            sys.stderr.flush()
             if len(pcm) < 1600:
-                logger.debug(f"[Xiaozhi] Audio too short: {len(pcm)} bytes")
+                sys.stderr.write(f"[Xiaozhi] Audio too short: {len(pcm)} bytes\n")
+                sys.stderr.flush()
                 return
 
             # 2. STT
+            sys.stderr.write(f"[Xiaozhi] Calling Deepgram STT...\n")
+            sys.stderr.flush()
             stt_text = await self._transcribe(pcm)
+            sys.stderr.write(f"[Xiaozhi] Deepgram returned: '{stt_text[:120]}'\n")
+            sys.stderr.flush()
             if not stt_text.strip():
                 logger.debug("[Xiaozhi] STT produced no text")
                 return
