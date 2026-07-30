@@ -279,6 +279,7 @@ class XiaozhiHandler:
         """
         frames = list(self._audio_frames)
         self._audio_frames.clear()
+        logger.warning(f"[Xiaozhi] _process_turn ENTER: {len(frames)} frames")
         if not frames:
             return
 
