@@ -3,8 +3,8 @@ name = "pigagent"
 version = "0.1.0"
 requires-python = ">=3.13"
 dependencies = [
-    # Standalone VAD (ONNX-based, no PyTorch)
-    "silero-vad-lite>=0.1",
+    # Standalone VAD (ONNX Runtime)
+    "onnxruntime>=1.18",
     # AI Providers
     "dashscope~=1.25",
     "openai~=2.38",
