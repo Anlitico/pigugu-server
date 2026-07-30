@@ -56,7 +56,7 @@ async def xiaozhi_websocket(ws: WebSocket) -> None:
     )
 
     # ── Create handler with shared providers (lazy-init from factory) ─
-    from providers.vad.silero import SileroVAD
+    from providers.vad.onnx import SileroVAD
     from providers.stt.deepgram import DeepgramSTT
     from providers.tts.cartesia import CartesiaTTS
 
@@ -86,7 +86,7 @@ _shared_tts: TTSProvider | None = None
 def _get_shared_vad():
     global _shared_vad
     if _shared_vad is None:
-        from providers.vad.silero import SileroVAD
+        from providers.vad.onnx import SileroVAD
 
         _shared_vad = SileroVAD(
             threshold=0.5,
