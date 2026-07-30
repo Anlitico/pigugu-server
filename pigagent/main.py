@@ -36,4 +36,6 @@ if __name__ == "__main__":
         log_level="info",
         ws_ping_interval=20,
         ws_ping_timeout=10,
+        reload=True,
+        reload_dirs=["/pigagent"],
     )

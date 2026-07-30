@@ -294,24 +294,19 @@ class XiaozhiHandler:
 
         try:
             # 1. Opus → PCM
-            import sys
-            sys.stderr.write(f"[Xiaozhi] Opus->PCM START\n")
-            sys.stderr.flush()
+            logger.warning(f"[Xiaozhi] STEP1: starting Opus decode")
             pcm_frames = [_opus_decode_one(f, sample_rate=16000, channels=1) for f in frames]
+            logger.warning(f"[Xiaozhi] STEP2: decode done, joining")
             pcm = b"".join([pf for pf in pcm_frames if pf])
-            sys.stderr.write(f"[Xiaozhi] Opus->PCM: {len(frames)} frames -> {len(pcm)} bytes\n")
-            sys.stderr.flush()
+            logger.warning(f"[Xiaozhi] STEP3: PCM {len(pcm)} bytes")
             if len(pcm) < 1600:
-                sys.stderr.write(f"[Xiaozhi] Audio too short: {len(pcm)} bytes\n")
-                sys.stderr.flush()
+                logger.warning(f"[Xiaozhi] STEP4: audio too short, exiting")
                 return
 
             # 2. STT
-            sys.stderr.write(f"[Xiaozhi] Calling Deepgram STT...\n")
-            sys.stderr.flush()
+            logger.warning(f"[Xiaozhi] STEP5: calling Deepgram...")
             stt_text = await self._transcribe(pcm)
-            sys.stderr.write(f"[Xiaozhi] Deepgram returned: '{stt_text[:120]}'\n")
-            sys.stderr.flush()
+            logger.warning(f"[Xiaozhi] STEP6: Deepgram returned '{stt_text[:80]}'")
             if not stt_text.strip():
                 logger.debug("[Xiaozhi] STT produced no text")
                 return
