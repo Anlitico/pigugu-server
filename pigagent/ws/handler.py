@@ -352,13 +352,17 @@ class XiaozhiHandler:
                             break
                         if isinstance(chunk, str):
                             await text_queue.put(chunk)
+                        else:
+                            logger.info(f"[Xiaozhi] LLM non-str chunk type={type(chunk).__name__}")
                     await text_queue.put(None)  # EOF
+                    logger.info(f"[Xiaozhi] LLM producer done")
                 except Exception as e:
                     logger.error(f"[Xiaozhi] LLM producer failed: {e}")
                     await text_queue.put(None)
 
             async def _tts_consumer():
                 """Read text from queue, flush to Cartesia in chunks, send Opus."""
+                logger.info(f"[Xiaozhi] TTS consumer started")
                 text_buffer = ""
                 full_spoken = ""
                 first_tts = True
@@ -388,6 +392,7 @@ class XiaozhiHandler:
                             continue
 
                         if chunk is None:
+                            logger.info(f"[Xiaozhi] TTS consumer got EOF, full_spoken={len(full_spoken)}")
                             break  # EOF
                         if self._interrupt_event.is_set():
                             break
@@ -464,7 +469,7 @@ class XiaozhiHandler:
                 logger.error("[Xiaozhi] DEEPGRAM_API_KEY not set")
                 return ""
 
-            url = "https://api.deepgram.com/v1/listen?model=nova-3&detect_language=true&encoding=linear16&sample_rate=16000"
+            url = "https://api.deepgram.com/v1/listen?model=nova-3&language=en&encoding=linear16&sample_rate=16000"
             http = await self._ensure_http()
             async with http.post(url, data=pcm, headers={
                 "Authorization": f"Token {api_key}",
