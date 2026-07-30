@@ -22,15 +22,10 @@ if __name__ == "__main__":
 
     # Start FastAPI HTTP server with xiaozhi WS endpoint
     import uvicorn
-    from api.server import create_app
-
-    app = create_app()
-    from ws.server import router as xiaozhi_router
-    app.include_router(xiaozhi_router)
 
     api_port = int(os.getenv("API_PORT", "8080"))
     uvicorn.run(
-        app,
+        "ws.app:app",
         host="0.0.0.0",
         port=api_port,
         log_level="info",
