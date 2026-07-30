@@ -9,6 +9,7 @@ dependencies = [
     "dashscope~=1.25",
     "openai~=2.38",
     # Audio Processing
+    "opuslib>=3.0",
     "numpy~=2.4",
     "soundfile~=0.13",
     "sounddevice~=0.5",
