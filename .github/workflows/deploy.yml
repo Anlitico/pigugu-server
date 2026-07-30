@@ -38,32 +38,44 @@ jobs:
       id: login-ecr
       uses: aws-actions/amazon-ecr-login@v2
 
+    - name: Set up Docker Buildx
+      uses: docker/setup-buildx-action@v3
+
     - name: Build and Push API
-      env:
-        ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
-        IMAGE_TAG: ${{ github.sha }}
-      run: |
-        docker build -t $ECR_REGISTRY/$ECR_REPOSITORY_API:$IMAGE_TAG -t $ECR_REGISTRY/$ECR_REPOSITORY_API:latest -f .cicd/Dockerfile.api .
-        docker push $ECR_REGISTRY/$ECR_REPOSITORY_API:$IMAGE_TAG
-        docker push $ECR_REGISTRY/$ECR_REPOSITORY_API:latest
+      uses: docker/build-push-action@v6
+      with:
+        context: .
+        file: .cicd/Dockerfile.api
+        push: true
+        tags: |
+          ${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_REPOSITORY_API }}:${{ github.sha }}
+          ${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_REPOSITORY_API }}:latest
+        cache-from: type=gha
+        cache-to: type=gha,mode=max
 
     - name: Build and Push Agent
-      env:
-        ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
-        IMAGE_TAG: ${{ github.sha }}
-      run: |
-        docker build -t $ECR_REGISTRY/$ECR_REPOSITORY_AGENT:$IMAGE_TAG -t $ECR_REGISTRY/$ECR_REPOSITORY_AGENT:latest -f .cicd/Dockerfile.agent .
-        docker push $ECR_REGISTRY/$ECR_REPOSITORY_AGENT:$IMAGE_TAG
-        docker push $ECR_REGISTRY/$ECR_REPOSITORY_AGENT:latest
+      uses: docker/build-push-action@v6
+      with:
+        context: .
+        file: .cicd/Dockerfile.agent
+        push: true
+        tags: |
+          ${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_REPOSITORY_AGENT }}:${{ github.sha }}
+          ${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_REPOSITORY_AGENT }}:latest
+        cache-from: type=gha
+        cache-to: type=gha,mode=max
 
     - name: Build and push crawler image
-      env:
-        ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
-        IMAGE_TAG: ${{ github.sha }}
-      run: |
-        docker build -t $ECR_REGISTRY/$ECR_REPOSITORY_CRAWLER:$IMAGE_TAG -t $ECR_REGISTRY/$ECR_REPOSITORY_CRAWLER:latest -f crawler/Dockerfile crawler/
-        docker push $ECR_REGISTRY/$ECR_REPOSITORY_CRAWLER:$IMAGE_TAG
-        docker push $ECR_REGISTRY/$ECR_REPOSITORY_CRAWLER:latest
+      uses: docker/build-push-action@v6
+      with:
+        context: crawler/
+        file: crawler/Dockerfile
+        push: true
+        tags: |
+          ${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_REPOSITORY_CRAWLER }}:${{ github.sha }}
+          ${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_REPOSITORY_CRAWLER }}:latest
+        cache-from: type=gha
+        cache-to: type=gha,mode=max
 
   deploy:
     name: Deploy to EKS
