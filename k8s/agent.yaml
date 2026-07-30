@@ -33,9 +33,6 @@ spec:
       containers:
       - name: agent
         image: 537557168531.dkr.ecr.us-west-1.amazonaws.com/pigugu-agent:latest
-        securityContext:
-          seccompProfile:
-            type: Unconfined
         envFrom:
         - configMapRef:
             name: pigugu-agent-config
