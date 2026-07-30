@@ -28,6 +28,8 @@ import asyncio
 import json
 import os
 import uuid
+import time
+import numpy as np
 from typing import Any
 
 from loguru import logger
@@ -36,6 +38,17 @@ from starlette.websockets import WebSocket, WebSocketDisconnect
 from bootstrap.factory import create_pig_agent, get_pg_pool, get_redis
 from metrics.session import ColdStartMetrics
 from metrics.turn import TelemetryCollector
+
+# ── Silero VAD (lazy-loaded per worker) ─────────────────────────────
+_vad_model = None
+
+
+def _get_vad_model():
+    global _vad_model
+    if _vad_model is None:
+        from silero_vad import load_silero_vad
+        _vad_model = load_silero_vad()
+    return _vad_model
 
 
 class XiaozhiHandler:
@@ -55,6 +68,9 @@ class XiaozhiHandler:
         self._turn_task: asyncio.Task | None = None
         self._persona_id: int = 1
         self._sentence_id: int = 0
+        self._silence_timer: asyncio.Task | None = None
+        self._vad_pcm: list[np.ndarray] = []  # accumulated PCM for VAD
+        self._vad_speech_detected = False
         self._http: Any = None  # shared aiohttp session — created lazily
 
     # ── Main dispatch ───────────────────────────────────────────────
@@ -137,7 +153,7 @@ class XiaozhiHandler:
         elif state == "start":
             # If a turn is still processing, abort it immediately.
             if self._turn_task and not self._turn_task.done():
-                self._sentence_id += 1  # invalidate stale TTS frames
+                self._sentence_id += 1
                 self._interrupt_event.set()
                 self._turn_task.cancel()
                 logger.info(f"[Xiaozhi] Aborted in-flight turn for new listen/start")
@@ -145,13 +161,48 @@ class XiaozhiHandler:
             self._interrupt_event.clear()
             self._listening = True
             self._audio_frames.clear()
+            self._vad_pcm.clear()
+            self._vad_speech_detected = False
+            self._start_silence_watchdog()
             logger.info(f"[Xiaozhi] Listening start: session={self.session_id}")
 
         elif state == "stop":
             self._listening = False
+            self._cancel_silence_watchdog()
             logger.info(f"[Xiaozhi] Listening stop: {len(self._audio_frames)} frames")
             if len(self._audio_frames) > 0:
                 self._turn_task = asyncio.create_task(self._process_turn())
+
+    # ── Server-side VAD + silence detection ────────────────────────
+
+    def _run_vad(self, audio: np.ndarray) -> bool:
+        """Returns True if speech is present in the PCM chunk."""
+        try:
+            model = _get_vad_model()
+            # VAD expects float32 in [-1, 1], 16kHz
+            return model(audio, 16000).item() > 0.5
+        except Exception:
+            return True  # assume speech on VAD error → no false-timeout
+
+    STATIC_SILENCE_TIMEOUT = 1.5  # seconds
+
+    def _start_silence_watchdog(self) -> None:
+        """Reset or start the silence timer."""
+        if self._silence_timer and not self._silence_timer.done():
+            self._silence_timer.cancel()
+        self._silence_timer = asyncio.create_task(self._silence_watchdog())
+
+    async def _silence_watchdog(self) -> None:
+        await asyncio.sleep(self.STATIC_SILENCE_TIMEOUT)
+        if self._listening and len(self._audio_frames) > 0:
+            logger.info(f"[Xiaozhi] Auto-stop on silence: {len(self._audio_frames)} frames")
+            self._listening = False
+            self._turn_task = asyncio.create_task(self._process_turn())
+
+    def _cancel_silence_watchdog(self) -> None:
+        if self._silence_timer and not self._silence_timer.done():
+            self._silence_timer.cancel()
+        self._silence_timer = None
 
     async def _handle_abort(self, data: dict) -> None:
         """Abort current TTS/LLM output."""
@@ -165,9 +216,25 @@ class XiaozhiHandler:
     # ── Binary audio handler ────────────────────────────────────────
 
     async def _handle_binary(self, data: bytes) -> None:
-        """Store individual Opus frames."""
-        if self._listening:
-            self._audio_frames.append(data)
+        """Store Opus frames, run VAD, reset silence timer."""
+        if not self._listening:
+            return
+        self._audio_frames.append(data)
+        # Decode and feed VAD
+        pcm = _opus_decode_one(data, sample_rate=16000, channels=1)
+        if pcm:
+            arr = np.frombuffer(pcm, dtype=np.int16).astype(np.float32) / 32768.0
+            self._vad_pcm.append(arr)
+            # Check VAD every ~300ms (5 × 60ms frames)
+            if len(self._vad_pcm) >= 5:
+                merged = np.concatenate(self._vad_pcm)
+                self._vad_pcm.clear()
+                speech = self._run_vad(merged)
+                if speech and not self._vad_speech_detected:
+                    self._vad_speech_detected = True
+                    logger.debug(f"[Xiaozhi] VAD speech start: session={self.session_id}")
+        # Reset silence watchdog on every frame
+        self._start_silence_watchdog()
 
     # ── Turn processing pipeline ────────────────────────────────────
 
@@ -554,6 +621,7 @@ class XiaozhiHandler:
 
     async def _cleanup(self) -> None:
         self._interrupt_event.set()
+        self._cancel_silence_watchdog()
         if self._tts_task and not self._tts_task.done():
             self._tts_task.cancel()
         if self._turn_task and not self._turn_task.done():
