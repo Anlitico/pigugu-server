@@ -17,4 +17,11 @@ RUN python -c "import tomllib, subprocess, sys; \
 
 COPY pigagent/ .
 
+# Fix silero-vad-lite: clear execstack flag on .so (container security blocks it otherwise)
+RUN apt-get update && apt-get install -y --no-install-recommends prelink \
+    && find /usr/local/lib -name 'silero_vad_lite*.so' -exec execstack -c {} \; \
+    && apt-get remove -y prelink && apt-get autoremove -y \
+    && rm -rf /var/lib/apt/lists/* \
+    && python -c "import silero_vad_lite; print('silero-vad-lite OK')"
+
 CMD ["python", "main.py", "start"]
