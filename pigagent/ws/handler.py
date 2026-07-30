@@ -464,14 +464,15 @@ class XiaozhiHandler:
                 logger.error("[Xiaozhi] DEEPGRAM_API_KEY not set")
                 return ""
 
-            url = "https://api.deepgram.com/v1/listen?model=nova-3&language=en&encoding=linear16&sample_rate=16000&endpointing=500"
+            url = "https://api.deepgram.com/v1/listen?model=nova-3&detect_language=true&encoding=linear16&sample_rate=16000&endpointing=500"
             http = await self._ensure_http()
             async with http.post(url, data=pcm, headers={
                 "Authorization": f"Token {api_key}",
                 "Content-Type": "audio/x-raw",
             }) as resp:
                 if resp.status != 200:
-                    logger.error(f"[Xiaozhi] Deepgram error: {resp.status}")
+                    err_body = await resp.text()
+                    logger.error(f"[Xiaozhi] Deepgram error: {resp.status} body={err_body[:500]}")
                     return ""
                 result = await resp.json()
                 channel = result.get("results", {}).get("channels", [{}])[0]
