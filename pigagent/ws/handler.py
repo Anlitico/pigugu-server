@@ -464,7 +464,7 @@ class XiaozhiHandler:
                 logger.error("[Xiaozhi] DEEPGRAM_API_KEY not set")
                 return ""
 
-            url = "https://api.deepgram.com/v1/listen?model=nova-3&detect_language=true&encoding=linear16&sample_rate=16000"
+            url = "https://api.deepgram.com/v1/listen?model=nova-3&language=zh&encoding=linear16&sample_rate=16000"
             http = await self._ensure_http()
             async with http.post(url, data=pcm, headers={
                 "Authorization": f"Token {api_key}",
