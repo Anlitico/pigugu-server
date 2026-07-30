@@ -25,12 +25,10 @@ if __name__ == "__main__":
 
     api_port = int(os.getenv("API_PORT", "8080"))
     uvicorn.run(
-        "ws.app:app",
+        "app:app",
         host="0.0.0.0",
         port=api_port,
         log_level="info",
         ws_ping_interval=20,
         ws_ping_timeout=10,
-        reload=True,
-        reload_dirs=["/pigagent"],
     )

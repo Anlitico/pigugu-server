@@ -1,0 +1,259 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Xiaozhi WebSocket Test</title>
+<style>
+  * { box-sizing:border-box; margin:0; padding:0 }
+  body { font:14px/1.5 system-ui,sans-serif; background:#1a1a2e; color:#e0e0e0; padding:20px }
+  h2 { color:#e94560; margin-bottom:8px }
+  .row { display:flex; gap:12px; margin-bottom:12px; flex-wrap:wrap }
+  input,button,select { padding:8px 12px; border-radius:6px; border:1px solid #333; background:#16213e; color:#e0e0e0; font-size:14px }
+  button { cursor:pointer; background:#e94560; border:none; font-weight:bold }
+  button:disabled { opacity:.4; cursor:not-allowed }
+  button.secondary { background:#0f3460 }
+  button.green { background:#4ecca3; color:#000 }
+  #log { background:#0a0a1a; border-radius:8px; padding:12px; height:300px; overflow-y:auto; font-family:monospace; font-size:12px; white-space:pre-wrap; word-break:break-all }
+  .stt { color:#4ecca3 }
+  .tts { color:#e94560 }
+  .info { color:#888 }
+  .warn { color:#f0a500 }
+  #status { font-weight:bold; margin:8px 0 }
+  .connected { color:#4ecca3 }
+  .disconnected { color:#e94560 }
+</style>
+</head>
+<body>
+
+<h2>🎙 Xiaozhi WebSocket Test</h2>
+
+<div class="row">
+  <input id="url" value="ws://localhost:8080/v1/agent" style="flex:1;min-width:300px" placeholder="WebSocket URL">
+  <button id="btnConnect" onclick="toggleConnection()">Connect</button>
+  <span id="status" class="disconnected">● Disconnected</span>
+</div>
+
+<div class="row">
+  <button id="btnChat" onclick="startChat()" disabled class="green">💬 Start Conversation</button>
+  <button id="btnStopChat" onclick="stopChat()" disabled>⏹ Stop</button>
+</div>
+
+<div id="log"></div>
+
+<script>
+// ── State ──
+let ws = null, audioCtx = null, encoder = null, stream = null, processor = null, recording = false;
+let listening = false, audioFrames = [], sessionId = null, frameCount = 0;
+const SAMPLE_RATE = 16000, FRAME_MS = 60;
+
+function log(msg, cls='') {
+  const el = document.getElementById('log');
+  el.innerHTML += `<span class="${cls}">[${new Date().toLocaleTimeString()}] ${msg}</span>\n`;
+  el.scrollTop = el.scrollHeight;
+}
+
+// ── WebSocket ──
+function toggleConnection() {
+  if (ws && ws.readyState === WebSocket.OPEN) { ws.close(); return; }
+  ws = new WebSocket(document.getElementById('url').value);
+  ws.binaryType = 'arraybuffer';
+  ws.onopen = () => {
+    log('Connected', 'stt');
+    document.getElementById('status').textContent = '● Connected';
+    document.getElementById('status').className = 'connected';
+    document.getElementById('btnConnect').textContent = 'Disconnect';
+    document.getElementById('btnChat').disabled = false;
+  };
+  ws.onmessage = async (e) => {
+    if (typeof e.data === 'string') {
+      const msg = JSON.parse(e.data);
+      if (msg.type === 'hello') {
+        sessionId = msg.session_id;
+        log(`Hello: session=${sessionId}`, 'info');
+      } else if (msg.type === 'stt') {
+        log(`STT: "${msg.text}"`, 'stt');
+        _sttReceived = true;
+      } else if (msg.type === 'tts') {
+        if (msg.state === 'start') resetTTsPlayback();
+        _sttReceived = false;
+        if (msg.state === 'start') { audioFrames = []; log('TTS receiving...', 'tts'); }
+        else if (msg.state === 'stop') { playTTS(); }
+        else { log(`TTS: ${msg.state}`, 'tts'); }
+      } else {
+        log(`JSON: ${JSON.stringify(msg).slice(0,100)}`, 'info');
+      }
+    } else {
+      audioFrames.push(new Uint8Array(e.data));
+    }
+  };
+  ws.onclose = () => {
+    log('Disconnected', 'warn');
+    document.getElementById('status').textContent = '● Disconnected';
+    document.getElementById('status').className = 'disconnected';
+    document.getElementById('btnConnect').textContent = 'Connect';
+    document.getElementById('btnChat').disabled = true;
+    document.getElementById('btnStopChat').disabled = true;
+    ws = null;
+  };
+  ws.onerror = () => log('WebSocket error', 'warn');
+}
+
+// ── Opus Encoder ──
+async function initEncoder() {
+  if (encoder) return;
+  if (typeof AudioEncoder === 'undefined') { log('Need Chrome for AudioEncoder', 'warn'); return; }
+  const ok = await AudioEncoder.isConfigSupported({ codec: 'opus', sampleRate: SAMPLE_RATE, numberOfChannels: 1 });
+  if (!ok.supported) { log('Opus not supported', 'warn'); return; }
+  encoder = new AudioEncoder({
+    output: (chunk) => {
+      const data = new Uint8Array(chunk.byteLength);
+      chunk.copyTo(data);
+      if (ws && ws.readyState === WebSocket.OPEN && listening) {
+        ws.send(data);
+        frameCount++;
+        if (frameCount <= 3 || frameCount % 50 === 0) log(`Audio → ${frameCount} frames`, 'info');
+      }
+    },
+    error: (e) => log(`Encoder: ${e.message}`, 'warn'),
+  });
+  encoder.configure({ codec: 'opus', sampleRate: SAMPLE_RATE, numberOfChannels: 1, bitrate: 32000 });
+  log('Opus encoder ready', 'stt');
+}
+
+// ── Recording ──
+async function startMic() {
+  if (stream) return;
+  stream = await navigator.mediaDevices.getUserMedia({
+    audio: { sampleRate: SAMPLE_RATE, channelCount: 1, echoCancellation: true }
+  });
+  audioCtx = new AudioContext({ sampleRate: SAMPLE_RATE });
+  const source = audioCtx.createMediaStreamSource(stream);
+  processor = audioCtx.createScriptProcessor(512, 1, 1);
+  processor.onaudioprocess = (e) => {
+    if (!recording || !listening) return;
+    const input = e.inputBuffer.getChannelData(0);
+    const pcm = new Int16Array(input.length);
+    for (let i = 0; i < input.length; i++) pcm[i] = Math.max(-32768, Math.min(32767, Math.round(input[i] * 32767)));
+    // Send raw PCM directly (no Opus encode)
+    if (ws && ws.readyState === WebSocket.OPEN) {
+      ws.send(pcm.buffer);
+      frameCount++;
+      if (frameCount === 1) log('Audio → raw PCM', 'info');
+    }
+  };
+  source.connect(processor);
+  processor.connect(audioCtx.destination);
+  log('Mic open (16kHz, raw PCM)', 'stt');
+}
+
+function stopMic() {
+  recording = false; listening = false;
+  if (processor) { processor.disconnect(); processor = null; }
+  if (stream) { stream.getTracks().forEach(t => t.stop()); stream = null; }
+  if (audioCtx) { audioCtx.close(); audioCtx = null; }
+}
+
+// ── Conversation loop ──
+async function startChat() {
+  if (!ws || ws.readyState !== WebSocket.OPEN) { log('Connect first', 'warn'); return; }
+  await startMic();
+  document.getElementById('btnChat').disabled = true;
+  document.getElementById('btnStopChat').disabled = false;
+
+  recording = true;
+  log('=== Conversation started ===', 'stt');
+
+  // Send hello first to set audio param format
+  ws.send(JSON.stringify({ type: 'hello', version: 1, transport: 'websocket',
+    audio_params: { format: 'pcm', sample_rate: SAMPLE_RATE, channels: 1, frame_duration: FRAME_MS },
+    persona_id: 1 }));
+  await sleep(500);
+
+  while (recording && ws && ws.readyState === WebSocket.OPEN) {
+    // Start a new turn: detect → start → wait for VAD silence
+    listening = true; frameCount = 0;
+    ws.send(JSON.stringify({ type: 'listen', state: 'detect', text: 'Hi fairy' }));
+    log('→ detect → start (listening...)', 'info');
+    await sleep(200);
+    ws.send(JSON.stringify({ type: 'listen', state: 'start', mode: 'auto' }));
+
+    // Wait for server to respond (STT or TTS)
+    await waitForServerResponse(30000);
+    await sleep(500);
+  }
+
+  stopChat();
+}
+
+function stopChat() {
+  recording = false;
+  listening = false;
+  ws.send(JSON.stringify({ type: 'listen', state: 'stop' }));
+  stopMic();
+  document.getElementById('btnChat').disabled = false;
+  document.getElementById('btnStopChat').disabled = true;
+  log('Conversation stopped', 'info');
+}
+
+// Wait for the server to process and respond, then resume listening
+function waitForServerResponse(timeoutMs) {
+  return new Promise(resolve => {
+    const start = Date.now();
+    _sttReceived = false;
+    const check = () => {
+      const elapsed = Date.now() - start;
+      if (!recording) { resolve(); return; }
+      // If STT was received, extend timeout — LLM+TTS takes time
+      if (_sttReceived && elapsed < 60000) { setTimeout(check, 500); return; }
+      if (elapsed > timeoutMs) { resolve(); return; }
+      // If we've received TTS, resume listening after playback
+      if (audioFrames.length > 0) {
+        listening = false;
+        resolve();
+        return;
+      }
+      setTimeout(check, 500);
+    };
+    setTimeout(check, 500);
+  });
+}
+
+// ── TTS Playback ──
+// Streaming TTS playback — play frames as they arrive
+let _ttsCtx = null;
+let _ttsNextTime = 0;
+
+async function playTTS() {
+  const frames = audioFrames.splice(0);
+  if (!frames.length) return;
+
+  // Decode raw PCM (Int16) to float32 and schedule each frame
+  if (!_ttsCtx) _ttsCtx = new AudioContext({ sampleRate: SAMPLE_RATE });
+  const ctx = _ttsCtx;
+  const now = ctx.currentTime;
+  _ttsNextTime = Math.max(_ttsNextTime, now);
+
+  for (const f of frames) {
+    const samples = new Int16Array(f.buffer, f.byteOffset, f.byteLength / 2);
+    const buf = ctx.createBuffer(1, samples.length, SAMPLE_RATE);
+    const ch = buf.getChannelData(0);
+    for (let i = 0; i < samples.length; i++) ch[i] = samples[i] / 32768.0;
+    const src = ctx.createBufferSource();
+    src.buffer = buf;
+    src.connect(ctx.destination);
+    src.start(_ttsNextTime);
+    _ttsNextTime += samples.length / SAMPLE_RATE;
+  }
+}
+
+function resetTTsPlayback() { _ttsCtx = null; _ttsNextTime = 0; }
+
+function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
+
+window.toggleConnection = toggleConnection;
+window.startChat = startChat;
+window.stopChat = stopChat;
+</script>
+</body>
+</html>

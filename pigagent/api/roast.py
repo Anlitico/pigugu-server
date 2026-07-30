@@ -46,13 +46,13 @@ async def _event_stream(pig_agent, persona_id: int, roast_id: str,
 
 async def _agent_active(user_id: str) -> bool:
     """Check if an agent is connected for this user via xiaozhi WS."""
-    from ws.server import has_active_connection
+    from voice.server import has_active_connection
     return await has_active_connection(user_id)
 
 
 async def _inject_to_agent(user_id: str, msg: dict) -> None:
     """Inject a roast command to an active xiaozhi WS connection."""
-    from ws.server import send_inject
+    from voice.server import send_inject
     await send_inject(user_id, msg)
 
 
