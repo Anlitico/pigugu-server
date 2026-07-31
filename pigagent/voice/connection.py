@@ -385,6 +385,30 @@ class ConnectionHandler:
                 if pcm_f:
                     pcm_frames.append(pcm_f)
             pcm = b"".join(pcm_frames)
+            # TEMP: Save raw PCM as WAV for audio quality analysis
+            import struct as _struct
+            try:
+                wav_path = f"/tmp/pigugu_audio_{self.session_id}.wav"
+                with open(wav_path, "wb") as _f:
+                    # WAV header for 16kHz mono 16-bit PCM
+                    data_size = len(pcm)
+                    _f.write(b"RIFF")
+                    _f.write(_struct.pack("<I", 36 + data_size))
+                    _f.write(b"WAVE")
+                    _f.write(b"fmt ")
+                    _f.write(_struct.pack("<I", 16))       # chunk size
+                    _f.write(_struct.pack("<HH", 1, 1))     # PCM, mono
+                    _f.write(_struct.pack("<II", 16000, 32000))  # sample rate, byte rate
+                    _f.write(_struct.pack("<HH", 2, 16))    # block align, bits per sample
+                    _f.write(b"data")
+                    _f.write(_struct.pack("<I", data_size))
+                    _f.write(pcm)
+                logger.warning(
+                    f"[Voice] WAV saved: {wav_path} ({data_size} bytes PCM, "
+                    f"{data_size / 32000:.1f}s)"
+                )
+            except Exception:
+                logger.exception("[Voice] Failed to save WAV")
             logger.warning(
                 f"[Voice] Opus decode: {len(frames)} frames → {len(pcm)} bytes PCM "
                 f"(first_sizes={[len(f) for f in frames[:3]]})"
