@@ -93,6 +93,16 @@ class SileroVAD(VADProvider):
                 conn._vad_context = audio_input[:, -64:]
                 speech_prob = out.item()
 
+                # Sample every 50 chunks for debugging
+                if not hasattr(conn, "_vad_chunk_count"):
+                    conn._vad_chunk_count = 0
+                conn._vad_chunk_count += 1
+                if conn._vad_chunk_count % 50 == 1:
+                    logger.info(
+                        f"[VAD] chunk#{conn._vad_chunk_count} prob={speech_prob:.4f} "
+                        f"is_voice={speech_prob >= self.vad_threshold}"
+                    )
+
                 if speech_prob >= self.vad_threshold:
                     is_voice = True
                 elif speech_prob <= self.vad_threshold_low:
