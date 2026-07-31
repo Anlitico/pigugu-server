@@ -18,7 +18,7 @@ from loguru import logger
 
 from providers.base import VADProvider
 
-_MODEL_PATH = Path(__file__).resolve().parent / "model" / "silero_vad.onnx"
+_MODEL_PATH = Path(__file__).resolve().parent / "model" / "silero_vad_16k_op15.onnx"
 
 
 class SileroVAD(VADProvider):
