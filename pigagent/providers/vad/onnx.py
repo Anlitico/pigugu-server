@@ -79,13 +79,15 @@ class SileroVAD(VADProvider):
                 audio_int16 = np.frombuffer(chunk, dtype=np.int16)
                 audio_float32 = audio_int16.astype(np.float32) / 32768.0
 
-                # Log audio amplitude (first chunk only for each turn)
+                # Sample every 50 chunks for debugging
+                if not hasattr(conn, "_vad_chunk_count"):
+                    conn._vad_chunk_count = 0
+                conn._vad_chunk_count += 1
                 if conn._vad_chunk_count == 1:
                     logger.info(
-                        f"[VAD] audio level: max={np.abs(audio_int16).max()}, "
+                        f"[VAD] audio level chunk#1: max={np.abs(audio_int16).max()}, "
                         f"rms={np.sqrt(np.mean(audio_float32**2)):.4f}"
                     )
-
                 audio_input = np.concatenate(
                     [conn._vad_context, audio_float32.reshape(1, -1)], axis=1
                 ).astype(np.float32)
@@ -101,10 +103,7 @@ class SileroVAD(VADProvider):
                 conn._vad_context = audio_input[:, -64:]
                 speech_prob = out.item()
 
-                # Sample every 50 chunks for debugging
-                if not hasattr(conn, "_vad_chunk_count"):
-                    conn._vad_chunk_count = 0
-                conn._vad_chunk_count += 1
+                # Sample every 50 chunks
                 if conn._vad_chunk_count % 50 == 1:
                     logger.info(
                         f"[VAD] chunk#{conn._vad_chunk_count} prob={speech_prob:.4f} "
