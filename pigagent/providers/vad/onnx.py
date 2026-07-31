@@ -78,6 +78,14 @@ class SileroVAD(VADProvider):
 
                 audio_int16 = np.frombuffer(chunk, dtype=np.int16)
                 audio_float32 = audio_int16.astype(np.float32) / 32768.0
+
+                # Log audio amplitude (first chunk only for each turn)
+                if conn._vad_chunk_count == 1:
+                    logger.info(
+                        f"[VAD] audio level: max={np.abs(audio_int16).max()}, "
+                        f"rms={np.sqrt(np.mean(audio_float32**2)):.4f}"
+                    )
+
                 audio_input = np.concatenate(
                     [conn._vad_context, audio_float32.reshape(1, -1)], axis=1
                 ).astype(np.float32)
