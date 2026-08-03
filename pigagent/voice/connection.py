@@ -1,9 +1,13 @@
 """Connection handler — one instance per device WebSocket.
 
-Replaces the old monolithic ``ws/handler.py``.  Uses pluggable providers
-(VAD / STT / TTS / LLM) and follows the official xiaozhi-esp32-server
-architecture while preserving PigAgent-specific integrations (metrics,
-roast inject, persistence).
+Follows official xiaozhi-esp32-server architecture:
+  - websockets library (not FastAPI/starlette)
+  - ThreadPoolExecutor for LLM (non-blocking)
+  - Streaming ASR via receive_audio (not batch)
+  - Server-side VAD with official double-threshold pattern
+  - Pluggable providers (VAD / STT / TTS / LLM)
+
+PigAgent-specific features preserved: metrics, roast inject, persistence.
 """
 
 from __future__ import annotations
@@ -11,24 +15,29 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import queue
+import tempfile
 import time
 import uuid
+import wave
 from collections import deque
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
+import numpy as np
+import websockets
 from loguru import logger
-from starlette.websockets import WebSocket, WebSocketDisconnect
 
 from bootstrap.factory import create_pig_agent, get_pg_pool, get_redis
 from metrics.session import ColdStartMetrics
 from metrics.turn import TelemetryCollector
-from providers.base import STTProvider, TTSProvider, VADProvider
+from providers.base import InterfaceType, STTProvider, TTSProvider, VADProvider
 
+TAG = __name__
 
-# ── Opus helpers (follows official xiaozhi-esp32-server pattern) ───────
+# ── Opus helpers ──────────────────────────────────────────────────────
 
 def _make_opus_decoder(sample_rate: int = 16000, channels: int = 1) -> Any:
-    """Create an Opus decoder. Returns None if opuslib not installed."""
     try:
         import opuslib  # pyright: ignore[reportMissingImports]
         return opuslib.Decoder(sample_rate, channels)
@@ -36,90 +45,38 @@ def _make_opus_decoder(sample_rate: int = 16000, channels: int = 1) -> Any:
         return None
 
 
-def _opus_decode(data: bytes, decoder: Any) -> bytes | None:
-    """Decode an Opus packet → PCM. Returns None on failure.
-
-    Mirrors the official ``_decode_opus_packet`` from xiaozhi-esp32-server.
-    For browser testing (raw PCM), returns data directly if >200 bytes.
-    """
-    if not data:
-        return None
-    if decoder is None:
-        return data  # opuslib not installed
+def _decode_opus_packet(data: bytes, decoder: Any) -> bytes | None:
+    if not data or decoder is None:
+        return data if data and len(data) > 200 else None
     try:
-        # 60ms frame at 16kHz = 960 samples
-        return decoder.decode(data, 960)
+        return decoder.decode(data, 960)  # 60ms at 16kHz
     except Exception:
-        # Fallback: raw PCM from browser test is much larger than Opus frames
-        if len(data) > 200:
-            return data
         return None
 
 
-def _opus_encode_chunks(
-    pcm: bytes, sample_rate: int = 16000, channels: int = 1, frame_duration_ms: int = 60
-) -> list[bytes]:
-    """Encode raw PCM s16le → list of Opus frames."""
-    try:
-        import opuslib  # pyright: ignore[reportMissingImports]
-
-        encoder = opuslib.Encoder(sample_rate, channels, "voip")
-        frames: list[bytes] = []
-        frame_samples = frame_duration_ms * sample_rate // 1000
-        frame_bytes = frame_samples * channels * 2
-        pos = 0
-        while pos + frame_bytes <= len(pcm):
-            frame = pcm[pos : pos + frame_bytes]
-            try:
-                encoded = encoder.encode(bytes(frame), frame_samples)
-                frames.append(encoded)
-            except Exception:
-                pass
-            pos += frame_bytes
-        return frames
-    except ImportError:
-        logger.warning("[Opus] opuslib not available for encode")
-        return [pcm]
-
-
-# ── ConnectionHandler ─────────────────────────────────────────────────
+# ── Connection handler ────────────────────────────────────────────────
 
 class ConnectionHandler:
-    """Per-device xiaozhi WebSocket connection handler.
+    """Per-device WebSocket connection — official xiaozhi architecture."""
 
-    Manages the full voice-assistant lifecycle for a single ESP32 device:
-    hello handshake → VAD-driven audio capture → STT → LLM → TTS → Opus back.
-
-    Provider slots (set by the server / factory):
-    - ``self.vad`` : VADProvider   (shared)
-    - ``self.stt`` : STTProvider   (shared)
-    - ``self.tts`` : TTSProvider   (shared)
-    - ``self.llm`` : LLMProvider   (shared, but not used directly — we call
-      ``create_pig_agent()`` for the PigAgent async interface)
-    """
-
-    # ── Public slots (set externally) ─────────────────────────────────
+    # Set externally before handle_connection
     vad: VADProvider | None = None
     stt: STTProvider | None = None
     tts: TTSProvider | None = None
+    executor: ThreadPoolExecutor | None = None
 
-    def __init__(self, ws: WebSocket, client_id: str = ""):
-        self.ws = ws
+    def __init__(self, client_id: str = ""):
         self.client_id = client_id
         self.session_id = str(uuid.uuid4())[:8]
 
-        # ---- Identity (populated during hello) ----
+        # Identity
         self._user_id: str = ""
         self._hw_id: str = ""
         self._persona_id: int = 1
-        self._raw_pcm: bool = False  # set by hello: format='pcm' for browser
-        self._pig: Any = None  # PigAgent (lazy-created)
+        self._pig: Any = None
 
-        # ---- Listen-mode state ----
-        self._audio_frames: list[bytes] = []
-        self._turn_active = False
-
-        # ---- VAD state (per the official pattern) ----
+        # Audio state (official pattern)
+        self.opus_decoder = _make_opus_decoder(16000, 1)
         self.client_audio_buffer = bytearray()
         self.client_have_voice = False
         self.client_voice_stop = False
@@ -127,217 +84,223 @@ class ConnectionHandler:
         self.client_listen_mode = "auto"
         self.last_is_voice = False
         self.vad_last_voice_time: float = 0.0
-        # VAD-internal state (set dynamically by SileroVAD provider)
         self._vad_pcm_buffer: bytearray = bytearray()
         self._voice_window: deque[bool] = deque(maxlen=5)
 
-        # ---- Turn / interrupt tracking ----
+        # ASR audio (official: accumulated PCM for batch fallback)
+        self.asr_audio: list[bytes] = []
+
+        # Turn tracking
         self._interrupt_event = asyncio.Event()
         self._sentence_id: int = 0
         self._tts_task: asyncio.Task | None = None
-        self._turn_task: asyncio.Task | None = None
+        self._turn_active = False
+        self.client_is_speaking = False
+
+        # Silence watchdog (safety net only — VAD should handle normal stop)
+        self._watchdog_started_at: float = 0.0
+        self._max_listen_seconds: float = float(os.getenv("MAX_LISTEN_SECONDS", "15.0"))
         self._silence_timer: asyncio.Task | None = None
 
-        # ---- Silence watchdog config ----
-        self._watchdog_started_at: float = 0.0
-        self._max_listen_seconds: float = float(
-            os.getenv("MAX_LISTEN_SECONDS", "1.5")
-        )
+        # Deepgram state (set by STT provider)
+        self.dg_connection: Any = None
+        self.deepgram_final: asyncio.Event = asyncio.Event()
+        self.deepgram_transcript: str = ""
 
-        # ---- Opus decoder (reused across frames for state continuity) ----
-        self._opus_decoder = _make_opus_decoder(16000, 1)
+        # Roast / inject
+        self._inject_queue: asyncio.Queue[dict] = asyncio.Queue()
 
-        # ---- HTTP session (reused for latency) ----
-        self._http: Any = None  # aiohttp.ClientSession
+        # Cleanup tracking
+        self._closed = False
 
-    # ── Main dispatch ─────────────────────────────────────────────────
+    # ── Main entry: called from websockets server ─────────────────────
 
-    async def run(self) -> None:
-        """Accept the WebSocket and dispatch messages until disconnect."""
-        await self.ws.accept()
+    async def handle_connection(self, ws: websockets.ServerConnection) -> None:
+        """Official pattern: accept WS, loop dispatch, cleanup."""
+        self._ws = ws
         ColdStartMetrics.start(session_id=self.session_id, room_name=self.client_id)
         ColdStartMetrics.mark("entry")
-        logger.info(
-            f"[Voice] Connected client={self.client_id} session={self.session_id}"
-        )
+        logger.info(f"[Voice] Connected client={self.client_id} session={self.session_id}")
+        self._start_inject_consumer()
 
         try:
-            while True:
-                msg = await self.ws.receive()
-                if "text" in msg:
-                    await self._dispatch_json(json.loads(msg["text"]))
-                elif "bytes" in msg:
-                    await self._handle_binary(msg["bytes"])
-        except WebSocketDisconnect:
-            logger.info(f"[Voice] Disconnected session={self.session_id}")
-        except Exception as exc:
-            logger.error(f"[Voice] Error: {exc}")
+            async for message in ws:
+                if isinstance(message, str):
+                    await self._route_message(json.loads(message))
+                elif isinstance(message, bytes):
+                    await self._route_message(message)
+        except websockets.ConnectionClosed:
+            logger.info(f"[Voice] Connection closed session={self.session_id}")
+        except Exception:
+            logger.exception(f"[Voice] Error session={self.session_id}")
         finally:
             await self._cleanup()
 
-    async def _dispatch_json(self, data: dict) -> None:
-        msg_type = data.get("type", "")
-        if msg_type == "hello":
-            await self._handle_hello(data)
-        elif msg_type == "listen":
-            await self._handle_listen(data)
-        elif msg_type == "abort":
-            await self._handle_abort(data)
-        else:
-            logger.debug(f"[Voice] Unhandled message type: {msg_type}")
+    # ── Message routing (official: _route_message) ────────────────────
+
+    async def _route_message(self, message) -> None:
+        if isinstance(message, dict):
+            msg_type = message.get("type", "")
+            if msg_type == "hello":
+                await self._handle_hello(message)
+            elif msg_type == "listen":
+                await self._handle_listen(message)
+            elif msg_type == "abort":
+                await self._handle_abort(message)
+            else:
+                logger.debug(f"[Voice] Unhandled: {msg_type}")
+        elif isinstance(message, bytes):
+            if self.vad is None or self.stt is None:
+                return
+            pcm_frame = _decode_opus_packet(message, self.opus_decoder)
+            if pcm_frame:
+                await self._handle_audio(pcm_frame)
 
     # ── Hello ─────────────────────────────────────────────────────────
 
     async def _handle_hello(self, data: dict) -> None:
-        transport = data.get("transport", "")
-        if transport != "websocket":
-            await self.ws.send_json(
-                {"type": "hello", "transport": transport, "session_id": self.session_id}
-            )
-            return
-
         self._persona_id = int(data.get("persona_id", 1))
         self._hw_id = str(data.get("hw_id", ""))
         audio_params = data.get("audio_params", {})
-        self._raw_pcm = audio_params.get("format", "opus") == "pcm"
-
         logger.info(
-            f"[Voice] Hello client={self.client_id} "
-            f"persona={self._persona_id} hw_id={self._hw_id} "
-            f"version={data.get('version')} "
+            f"[Voice] Hello client={self.client_id} persona={self._persona_id} "
+            f"hw_id={self._hw_id} version={data.get('version')} "
             f"sample_rate={audio_params.get('sample_rate')} "
             f"frame_duration={audio_params.get('frame_duration')}"
         )
 
-        await self.ws.send_json(
-            {
-                "type": "hello",
-                "transport": "websocket",
-                "session_id": self.session_id,
-                "audio_params": {
-                    "format": "opus",
-                    "sample_rate": 16000,
-                    "channels": 1,
-                    "frame_duration": 60,
-                },
-            }
-        )
+        # Open streaming ASR
+        if self.stt and self.stt.interface_type == InterfaceType.STREAM:
+            await self.stt.open_audio_channels(self)
 
-    # ── Listen state machine ──────────────────────────────────────────
+        await self._ws.send(json.dumps({
+            "type": "hello",
+            "transport": "websocket",
+            "session_id": self.session_id,
+            "audio_params": {
+                "format": "opus",
+                "sample_rate": 16000,
+                "channels": 1,
+                "frame_duration": 60,
+            },
+        }))
+
+    # ── Listen state machine (official listenMessageHandler) ──────────
 
     async def _handle_listen(self, data: dict) -> None:
-        """Official xiaozhi pattern: detect=start turn, stop=process turn."""
         state = data.get("state", "")
+        mode = data.get("mode", "")
+        if mode:
+            self.client_listen_mode = mode
 
         if state == "detect":
-            text = data.get("text", "")
-            logger.info(
-                f"[Voice] Wake word '{text}' client={self.client_id}"
-            )
-
-            # Abort any in-flight turn AND its TTS task
-            if self._turn_task and not self._turn_task.done():
-                self._sentence_id += 1
-                self._interrupt_event.set()
-                self._turn_task.cancel()
-                logger.info("[Voice] Aborted in-flight turn for new detect")
-            if self._tts_task and not self._tts_task.done():
-                self._tts_task.cancel()
-
-            self._interrupt_event.clear()
-            self._turn_active = True
-
-            # Reset all audio/VAD state for fresh turn (official reset_audio_states)
-            self._audio_frames.clear()
-            self.client_audio_buffer.clear()
-            self.client_have_voice = False
-            self.client_voice_stop = False
-            self.client_voice_window.clear()
-            self.last_is_voice = False
-            self.vad_last_voice_time = 0.0
-            self._vad_pcm_buffer.clear()
-            self._voice_window.clear()
-
-            self._start_silence_watchdog()
-            logger.info("[Voice] Turn started (detect)")
-
+            await self._on_detect(data)
         elif state == "start":
-            logger.info(f"[Voice] Firmware start frames={len(self._audio_frames)}")
-            self._start_silence_watchdog()
-
+            await self._on_start()
         elif state == "stop":
-            self._turn_active = False
-            self._cancel_silence_watchdog()
-            n = len(self._audio_frames)
-            logger.info(f"[Voice] Stop received, frames={n}")
-            if n > 0:
-                self._turn_task = asyncio.create_task(self._process_turn())
+            await self._on_stop()
 
-    # ── Abort ─────────────────────────────────────────────────────────
+    async def _on_detect(self, data: dict) -> None:
+        """Official: reset audio states, start turn."""
+        text = data.get("text", "")
+        logger.info(f"[Voice] Wake word '{text}' client={self.client_id}")
 
-    async def _handle_abort(self, data: dict) -> None:
-        reason = data.get("reason", "unknown")
-        logger.info(
-            f"[Voice] Abort reason={reason} session={self.session_id}"
-        )
-        self._sentence_id += 1
-        self._interrupt_event.set()
+        # Abort in-flight turn
         if self._tts_task and not self._tts_task.done():
+            self._sentence_id += 1
+            self._interrupt_event.set()
             self._tts_task.cancel()
 
-    # ── Binary audio (Opus frames from ESP32) ─────────────────────────
+        self._interrupt_event.clear()
+        self._turn_active = True
+        self._reset_audio_states()
 
-    async def _handle_binary(self, data: bytes) -> None:
-        """Official pattern: always decode, accumulate when turn active."""
+        # Start streaming: open ASR channels
+        if self.stt and self.stt.interface_type == InterfaceType.STREAM:
+            self.deepgram_final.clear()
+            self.deepgram_transcript = ""
+
+        self._start_silence_watchdog()
+        logger.info("[Voice] Turn started (detect)")
+
+    async def _on_start(self) -> None:
+        logger.info("[Voice] Firmware start")
+        self._start_silence_watchdog()
+
+    async def _on_stop(self) -> None:
+        """Official: finalize ASR, process turn."""
+        self._turn_active = False
+        self._cancel_silence_watchdog()
+        self.client_voice_stop = True
+
+        if self.stt and self.stt.interface_type == InterfaceType.STREAM:
+            # Streaming: get result from Deepgram callback
+            await self.stt.handle_voice_stop(self, self.asr_audio)
+            transcript = self.deepgram_transcript
+        else:
+            # Batch fallback
+            pcm = b"".join(self.asr_audio)
+            transcript = await self.stt.transcribe(pcm) if self.stt else ""
+
+        if transcript.strip():
+            await self._on_stt_result(transcript.strip())
+        else:
+            logger.info("[Voice] STT empty, skipping turn")
+
+    # ── Audio handling (official: handleAudioMessage) ─────────────────
+
+    async def _handle_audio(self, pcm_frame: bytes) -> None:
+        """Official: VAD → ASR receive_audio. Accumulates audio for batch fallback."""
         if not self._turn_active:
             return
 
-        self._audio_frames.append(data)
-
-        # Decode to PCM for VAD (official: _decode_opus_packet)
-        pcm = _opus_decode(data, self._opus_decoder)
-        if not pcm or len(pcm) < 2:
-            return
-        if len(pcm) % 2 != 0:
-            pcm = pcm[:-1]
-
-        # Official-pattern VAD: is_vad → have_voice → silence check
+        # VAD: official double-threshold pattern
+        have_voice = False
         if self.vad is not None:
-            have_voice = self.vad.is_vad(self, pcm)
+            have_voice = self.vad.is_vad(self, pcm_frame)
 
-            # Voice → silence transition with sustained silence check
-            if not have_voice and self.client_voice_stop:
-                logger.info(
-                    f"[Voice] VAD voice stop frames={len(self._audio_frames)}"
-                )
-                self._turn_active = False
-                self._cancel_silence_watchdog()
-                if self._turn_task and not self._turn_task.done():
-                    self._sentence_id += 1
-                    self._interrupt_event.set()
-                    self._turn_task.cancel()
-                self._turn_task = asyncio.create_task(self._process_turn())
-                return
+        # Accumulate audio (for batch fallback + debug WAV)
+        self.asr_audio.append(pcm_frame)
 
-    # ── Silence watchdog (hard cap) ───────────────────────────────────
+        # Streaming ASR
+        if self.stt and self.stt.interface_type == InterfaceType.STREAM:
+            await self.stt.receive_audio(self, pcm_frame, have_voice)
+
+        # VAD voice → silence transition → auto-stop
+        if not have_voice and self.client_voice_stop:
+            logger.info(f"[Voice] VAD voice stop, frames={len(self.asr_audio)}")
+            self._turn_active = False
+            self._cancel_silence_watchdog()
+            await self._on_stop()
+
+    def _reset_audio_states(self) -> None:
+        """Official reset_audio_states."""
+        self.client_audio_buffer.clear()
+        self.client_have_voice = False
+        self.client_voice_stop = False
+        self.client_voice_window.clear()
+        self.last_is_voice = False
+        self.vad_last_voice_time = 0.0
+        self._vad_pcm_buffer.clear()
+        self._voice_window.clear()
+        self.asr_audio.clear()
+
+    # ── Silence watchdog ──────────────────────────────────────────────
 
     def _start_silence_watchdog(self) -> None:
         if self._silence_timer and not self._silence_timer.done():
             self._silence_timer.cancel()
         self._watchdog_started_at = time.time()
-        self._silence_timer = asyncio.create_task(self._silence_watchdog())
+        self._silence_timer = asyncio.ensure_future(self._silence_watchdog())
 
     async def _silence_watchdog(self) -> None:
         while self._turn_active:
             elapsed = time.time() - self._watchdog_started_at
             if elapsed > self._max_listen_seconds:
-                logger.warning(
-                    f"[Voice] Max listen duration ({self._max_listen_seconds}s) "
-                    f"reached — auto-stopping frames={len(self._audio_frames)}"
-                )
+                logger.warning(f"[Voice] Watchdog ({self._max_listen_seconds}s) auto-stop")
                 self._turn_active = False
-                if len(self._audio_frames) > 0:
-                    self._turn_task = asyncio.create_task(self._process_turn())
+                if len(self.asr_audio) > 0:
+                    await self._on_stop()
                 return
             await asyncio.sleep(1.0)
 
@@ -346,130 +309,68 @@ class ConnectionHandler:
             self._silence_timer.cancel()
         self._silence_timer = None
 
-    # ── Turn processing pipeline ──────────────────────────────────────
+    # ── STT result → LLM → TTS (official: speech_to_text_wrapper → startToChat → chat) ──
 
-    async def _process_turn(self) -> None:
-        """Opus → PCM → STT → PigAgent → TTS → Opus → WebSocket."""
-        frames = list(self._audio_frames)
-        self._audio_frames.clear()
-        if not frames:
-            return
+    async def _on_stt_result(self, text: str) -> None:
+        """Handle STT result: send to client, persist, launch LLM."""
+        await self._ws.send(json.dumps({
+            "session_id": self.session_id,
+            "type": "stt",
+            "text": text,
+        }))
 
+        # Debug: save WAV
+        self._save_debug_wav(text)
+
+        # Persist user message
+        if self._pig and self._pig.ctx:
+            asyncio.ensure_future(self._persist_turn("user", text))
+
+        # Create PigAgent (lazy)
+        self._user_id = self._user_id or self.client_id
+        if self._pig is None:
+            self._pig = await create_pig_agent(self._user_id, hw_id=self._hw_id)
+            ColdStartMetrics.set_meta("user_id", self._user_id)
+            ColdStartMetrics.set_meta("persona_id", self._persona_id)
+            ColdStartMetrics.set_meta("llm_model", self._pig.model)
+            TelemetryCollector.set_meta("llm_model", self._pig.model)
+            ColdStartMetrics.mark("agent_created")
+            ColdStartMetrics.flush()
+
+        TelemetryCollector.mark("agent_req")
         sentence_id = self._sentence_id
         self._sentence_id += 1
 
-        TelemetryCollector.start_turn(
-            user_id=self._user_id or self.client_id,
-            persona_id=self._persona_id,
+        # LLM → TTS
+        self._tts_task = asyncio.ensure_future(
+            self._tts_producer_consumer(text, sentence_id)
         )
-        TelemetryCollector.mark("vad_end")
 
+    def _save_debug_wav(self, stt_text: str) -> None:
+        """TEMP: save accumulated PCM as WAV for diagnostics."""
         try:
-            # 1. Opus → PCM
-            decoder = _make_opus_decoder(16000, 1)
-            pcm_frames = []
-            for f in frames:
-                pcm_f = _opus_decode(f, decoder)
-                if pcm_f:
-                    pcm_frames.append(pcm_f)
-            pcm = b"".join(pcm_frames)
-            # TEMP: Save raw PCM as WAV for audio quality analysis
-            import struct as _struct
-            try:
-                wav_path = f"/tmp/pigugu_audio_{self.session_id}.wav"
-                with open(wav_path, "wb") as _f:
-                    # WAV header for 16kHz mono 16-bit PCM
-                    data_size = len(pcm)
-                    _f.write(b"RIFF")
-                    _f.write(_struct.pack("<I", 36 + data_size))
-                    _f.write(b"WAVE")
-                    _f.write(b"fmt ")
-                    _f.write(_struct.pack("<I", 16))       # chunk size
-                    _f.write(_struct.pack("<HH", 1, 1))     # PCM, mono
-                    _f.write(_struct.pack("<II", 16000, 32000))  # sample rate, byte rate
-                    _f.write(_struct.pack("<HH", 2, 16))    # block align, bits per sample
-                    _f.write(b"data")
-                    _f.write(_struct.pack("<I", data_size))
-                    _f.write(pcm)
-                logger.warning(
-                    f"[Voice] WAV saved: {wav_path} ({data_size} bytes PCM, "
-                    f"{data_size / 32000:.1f}s)"
-                )
-            except Exception:
-                logger.exception("[Voice] Failed to save WAV")
+            pcm = b"".join(self.asr_audio)
+            wav_path = f"/tmp/pigugu_audio_{self.session_id}.wav"
+            with wave.open(wav_path, "wb") as wf:
+                wf.setnchannels(1)
+                wf.setsampwidth(2)
+                wf.setframerate(16000)
+                wf.writeframes(pcm)
             logger.warning(
-                f"[Voice] Opus decode: {len(frames)} frames → {len(pcm)} bytes PCM "
-                f"(first_sizes={[len(f) for f in frames[:3]]})"
+                f"[Voice] WAV saved: {wav_path} ({len(pcm)} bytes, {len(pcm)/32000:.1f}s) "
+                f"STT='{stt_text[:60]}'"
             )
-            if len(pcm) < 1600:
-                logger.debug(f"[Voice] Audio too short: {len(pcm)} bytes")
-                return
-
-            # 2. STT
-            if self.stt is None:
-                logger.error("[Voice] No STT provider")
-                return
-            stt_text = await self.stt.transcribe(pcm)
-            if not stt_text.strip():
-                # Show PCM stats to diagnose browser Opus encoding issues
-                import struct
-                samples = struct.unpack('<10h', pcm[:20]) if len(pcm) >= 20 else []
-                logger.warning(
-                    f"[Voice] STT empty: {len(frames)} frames, "
-                    f"{len(pcm)} bytes PCM, first_10_samples={samples}"
-                )
-                return
-
-            TelemetryCollector.mark("stt_final")
-            logger.info(f"[Voice] STT: '{stt_text[:120]}'")
-
-            await self.ws.send_json(
-                {
-                    "session_id": self.session_id,
-                    "type": "stt",
-                    "text": stt_text.strip(),
-                }
-            )
-
-            # 3. Persist user message
-            if self._pig and self._pig.ctx:
-                asyncio.create_task(self._persist_turn("user", stt_text.strip()))
-
-            # 4. Create PigAgent (once per connection)
-            self._user_id = self._user_id or self.client_id
-            if self._pig is None:
-                self._pig = await create_pig_agent(
-                    self._user_id, hw_id=self._hw_id
-                )
-                ColdStartMetrics.set_meta("user_id", self._user_id)
-                ColdStartMetrics.set_meta("persona_id", self._persona_id)
-                ColdStartMetrics.set_meta("llm_model", self._pig.model)
-                TelemetryCollector.set_meta("llm_model", self._pig.model)
-                ColdStartMetrics.mark("agent_created")
-                ColdStartMetrics.flush()
-
-            TelemetryCollector.mark("agent_req")
-
-            # 5. LLM → TTS streaming
-            self._tts_task = asyncio.create_task(
-                self._tts_producer_consumer(stt_text.strip(), sentence_id)
-            )
-            await self._tts_task
-
-        except asyncio.CancelledError:
-            logger.info(f"[Voice] Turn cancelled sid={sentence_id}")
         except Exception:
-            logger.exception(f"[Voice] Turn processing failed sid={sentence_id}")
-        finally:
-            TelemetryCollector.finish_turn()
+            logger.exception("[Voice] WAV save failed")
 
-    # ── LLM → TTS producer-consumer ───────────────────────────────────
+    # ── TTS producer-consumer ─────────────────────────────────────────
 
     async def _tts_producer_consumer(self, stt_text: str, sentence_id: int) -> None:
-        """Run LLM producer and TTS consumer in parallel."""
+        """Official pattern: LLM → text → TTS → Opus → WebSocket."""
         text_queue: asyncio.Queue[str | None] = asyncio.Queue()
         pig = self._pig
-        assert pig is not None, "PigAgent not initialised"
+        if pig is None:
+            return
 
         async def _producer() -> str:
             full = ""
@@ -488,12 +389,11 @@ class ConnectionHandler:
             except Exception:
                 logger.exception("[Voice] LLM producer failed")
             finally:
-                await text_queue.put(None)  # EOF
+                await text_queue.put(None)
             return full
 
         async def _consumer() -> None:
             if self.tts is None:
-                # Drain the queue
                 while True:
                     chunk = await text_queue.get()
                     if chunk is None:
@@ -501,7 +401,6 @@ class ConnectionHandler:
                 return
 
             text_buffer = ""
-            full_spoken = ""
             tts_started = False
             first_tts = True
 
@@ -510,244 +409,178 @@ class ConnectionHandler:
                     try:
                         chunk = await asyncio.wait_for(text_queue.get(), timeout=0.5)
                     except asyncio.TimeoutError:
-                        if text_buffer:
+                        if text_buffer and self.tts:
                             if not tts_started:
-                                await self.ws.send_json(
-                                    {
-                                        "session_id": self.session_id,
-                                        "type": "tts",
-                                        "state": "start",
-                                    }
-                                )
-                                TelemetryCollector.mark("tts_start")
+                                await self._ws.send(json.dumps({
+                                    "session_id": self.session_id,
+                                    "type": "tts",
+                                    "state": "start",
+                                }))
                                 tts_started = True
-                            frames = await self.tts.synthesize(text_buffer.strip(), raw_pcm=self._raw_pcm)
-                            full_spoken += text_buffer
+                            frames = await self.tts.synthesize(text_buffer.strip())
                             text_buffer = ""
                             for frame in frames:
                                 if self._interrupt_event.is_set():
                                     break
-                                await self.ws.send_bytes(frame)
+                                await self._ws.send(frame)
                             if first_tts:
-                                TelemetryCollector.mark("agent_spk")
                                 first_tts = False
                         continue
 
                     if chunk is None:
-                        break  # EOF
+                        break
                     if self._interrupt_event.is_set():
                         break
 
                     text_buffer += chunk
-
-                    # Flush on sentence end or enough chars.
-                    # First sentence: aggressive (clause-end or 20 chars)
-                    # Subsequent: natural (sentence end or 100 chars)
-                    is_sentence_end = text_buffer.rstrip().endswith(
-                        (".", "!", "?", "\n", "。", "！", "？")
-                    )
-                    is_clause_end = not is_sentence_end and text_buffer.rstrip().endswith(
-                        (",", "，", "、", ":", "：", ";", "；")
-                    )
+                    is_end = text_buffer.rstrip().endswith((".", "!", "?", "\n", "。", "！", "？"))
+                    is_clause = text_buffer.rstrip().endswith((",", "，", "、", ":", "：", ";", "；"))
                     should_flush = (
-                        (first_tts and (is_clause_end or is_sentence_end or len(text_buffer) >= 20))
-                        or (not first_tts and (is_sentence_end or len(text_buffer) >= 100))
+                        (first_tts and (is_clause or is_end or len(text_buffer) >= 20))
+                        or (not first_tts and (is_end or len(text_buffer) >= 100))
                     )
-                    if should_flush and text_buffer.strip():
+                    if should_flush and text_buffer.strip() and self.tts:
                         if not tts_started:
-                            await self.ws.send_json(
-                                {
-                                    "session_id": self.session_id,
-                                    "type": "tts",
-                                    "state": "start",
-                                }
-                            )
-                            TelemetryCollector.mark("tts_start")
-                            tts_started = True
-                        flush_text = text_buffer.strip()
-                        text_buffer = ""
-                        full_spoken += flush_text
-                        frames = await self.tts.synthesize(flush_text, raw_pcm=self._raw_pcm)
-                        for frame in frames:
-                            if self._interrupt_event.is_set():
-                                break
-                            await self.ws.send_bytes(frame)
-                        if first_tts:
-                            TelemetryCollector.mark("agent_spk")
-                            first_tts = False
-
-                # Flush remaining
-                if text_buffer.strip() and not self._interrupt_event.is_set():
-                    if not tts_started:
-                        await self.ws.send_json(
-                            {
+                            await self._ws.send(json.dumps({
                                 "session_id": self.session_id,
                                 "type": "tts",
                                 "state": "start",
-                            }
-                        )
-                        tts_started = True
-                    frames = await self.tts.synthesize(text_buffer.strip(), raw_pcm=self._raw_pcm)
-                    full_spoken += text_buffer.strip()
+                            }))
+                            tts_started = True
+                        flush_text = text_buffer.strip()
+                        text_buffer = ""
+                        frames = await self.tts.synthesize(flush_text)
+                        for frame in frames:
+                            if self._interrupt_event.is_set():
+                                break
+                            await self._ws.send(frame)
+                        if first_tts:
+                            first_tts = False
+
+                # Flush remaining
+                if text_buffer.strip() and not self._interrupt_event.is_set() and self.tts:
+                    if not tts_started:
+                        await self._ws.send(json.dumps({
+                            "session_id": self.session_id,
+                            "type": "tts",
+                            "state": "start",
+                        }))
+                    frames = await self.tts.synthesize(text_buffer.strip())
                     for frame in frames:
                         if self._interrupt_event.is_set():
                             break
-                        await self.ws.send_bytes(frame)
+                        await self._ws.send(frame)
 
+                if tts_started:
+                    await self._ws.send(json.dumps({
+                        "session_id": self.session_id,
+                        "type": "tts",
+                        "state": "stop",
+                    }))
+                    TelemetryCollector.mark("tts_end")
+            except asyncio.CancelledError:
+                pass
             except Exception:
                 logger.exception("[Voice] TTS consumer failed")
-            finally:
-                if tts_started:
-                    try:
-                        await self.ws.send_json(
-                            {
-                                "session_id": self.session_id,
-                                "type": "tts",
-                                "state": "stop",
-                            }
-                        )
-                    except Exception:
-                        pass
 
-            # Persist spoken text
-            if full_spoken and pig and pig.ctx:
-                asyncio.create_task(self._persist_turn("assistant", full_spoken))
+        # Run concurrently
+        full_text = ""
+        consumer_task = asyncio.ensure_future(_consumer())
+        try:
+            full_text = await _producer()
+            await consumer_task
+        except asyncio.CancelledError:
+            consumer_task.cancel()
 
-        # Run in parallel
-        prod_task = asyncio.create_task(_producer())
-        cons_task = asyncio.create_task(_consumer())
-        await prod_task
-        await cons_task
+        # Persist assistant message
+        if full_text.strip() and self._pig and self._pig.ctx:
+            asyncio.ensure_future(self._persist_turn("assistant", full_text.strip()))
 
-    # ── Persistence ──────────────────────────────────────────────────
+    # ── Abort ─────────────────────────────────────────────────────────
+
+    async def _handle_abort(self, data: dict) -> None:
+        reason = data.get("reason", "unknown")
+        logger.info(f"[Voice] Abort reason={reason}")
+        self._sentence_id += 1
+        self._interrupt_event.set()
+        if self._tts_task and not self._tts_task.done():
+            self._tts_task.cancel()
+        await self._ws.send(json.dumps({
+            "session_id": self.session_id,
+            "type": "tts",
+            "state": "stop",
+        }))
+
+    # ── Persistence ───────────────────────────────────────────────────
 
     async def _persist_turn(self, role: str, content: str) -> None:
         try:
             if self._pig and self._pig.ctx:
-                await self._pig.ctx.add_turn(role=role, content=content)
-            if role in ("user", "assistant"):
-                asyncio.create_task(self._write_roast_conversation(role, content))
+                await self._pig.ctx.add_turn(role, content)
         except Exception:
-            logger.exception(f"[Voice] Failed to persist {role} turn")
+            logger.exception(f"[Voice] Persist failed role={role}")
 
-    async def _write_roast_conversation(self, role: str, content: str) -> None:
-        try:
-            if not self._pig:
-                return
-            state = await self._pig.get_active_roast()
-            if not state:
-                return
-            from roast.types import Phase
-
-            if state.phase == Phase.CLOSING and role != "assistant":
-                return
-            if state.phase not in (Phase.ACTIVE, Phase.CLOSING):
-                return
-
-            pool = await get_pg_pool()
-            async with pool.acquire() as conn:
-                await conn.execute(
-                    """INSERT INTO roast_conversations
-                       (user_id, roast_id, roast_instance_id, role, content)
-                       VALUES ($1, $2, $3, $4, $5)""",
-                    self._user_id,
-                    str(state.roast_id),
-                    state.roast_instance_id,
-                    role,
-                    content,
-                )
-
-            redis = get_redis()
-            if redis:
-                msg = json.dumps(
-                    {
-                        "type": "roast_message",
-                        "roast_id": str(state.roast_id),
-                        "role": role,
-                        "content": content,
-                    }
-                )
-                await redis.publish(f"ws:user:{self._user_id}", msg)
-        except Exception:
-            logger.exception("[Voice] Failed to write roast_conversation")
-
-    # ── Roast inject (API server → agent) ────────────────────────────
+    # ── Roast inject (pigugu-specific) ────────────────────────────────
 
     async def inject_roast(self, msg: dict) -> None:
-        try:
-            if self._pig is None:
-                logger.warning("[Voice] roast_inject: PigAgent not ready")
-                return
-            logger.info(
-                f"[Voice] roast_inject roast_id={msg.get('roast_id')} "
-                f"mode={msg.get('mode_id')}"
+        await self._inject_queue.put(msg)
+
+    def _start_inject_consumer(self) -> None:
+        asyncio.ensure_future(self._inject_consumer())
+
+    async def _inject_consumer(self) -> None:
+        while not self._closed:
+            try:
+                msg = await asyncio.wait_for(self._inject_queue.get(), timeout=1.0)
+            except asyncio.TimeoutError:
+                continue
+            logger.info(f"[Voice] Inject: {msg.get('type', '?')}")
+            sentence_id = self._sentence_id
+            self._sentence_id += 1
+            if self._tts_task and not self._tts_task.done():
+                self._interrupt_event.set()
+                self._tts_task.cancel()
+            self._interrupt_event.clear()
+            await self._ws.send(json.dumps({
+                "session_id": self.session_id,
+                "type": "tts",
+                "state": "start",
+            }))
+            self._tts_task = asyncio.ensure_future(
+                self._inject_tts(msg, sentence_id)
             )
-            opening_text = ""
-            async for text in self._pig.start_roast(
-                persona_id=msg.get("persona_id", self._persona_id),
-                roast_id=msg["roast_id"],
-                mode_id=msg["mode_id"],
-                prompt=msg["prompt"],
-                headline=msg.get("headline", ""),
-                source=msg.get("source", ""),
-            ):
-                if isinstance(text, str):
-                    opening_text += text
+            await self._tts_task
 
-            if opening_text.strip() and self.tts:
-                sentence_id = self._sentence_id
-                self._sentence_id += 1
-                await self.ws.send_json(
-                    {
-                        "session_id": self.session_id,
-                        "type": "tts",
-                        "state": "start",
-                    }
-                )
-                frames = await self.tts.synthesize(opening_text.strip(), raw_pcm=self._raw_pcm)
+    async def _inject_tts(self, msg: dict, sentence_id: int) -> None:
+        try:
+            text = msg.get("text", msg.get("content", ""))
+            if self.tts and text:
+                frames = await self.tts.synthesize(text)
                 for frame in frames:
-                    if self._interrupt_event.is_set():
+                    if self._interrupt_event.is_set() or sentence_id != self._sentence_id:
                         break
-                    if self._sentence_id != sentence_id:  # guard stale frames
-                        break
-                    await self.ws.send_bytes(frame)
-                if self._sentence_id == sentence_id:  # only send stop if not interrupted
-                    await self.ws.send_json(
-                        {
-                            "session_id": self.session_id,
-                            "type": "tts",
-                            "state": "stop",
-                        }
-                    )
-                if self._pig and self._pig.ctx:
-                    asyncio.create_task(
-                        self._persist_turn("assistant", opening_text.strip())
-                    )
+                    await self._ws.send(frame)
+            await self._ws.send(json.dumps({
+                "session_id": self.session_id,
+                "type": "tts",
+                "state": "stop",
+            }))
         except Exception:
-            logger.exception("[Voice] roast_inject failed")
+            logger.exception("[Voice] Inject TTS failed")
 
-    # ── HTTP session ─────────────────────────────────────────────────
-
-    async def _ensure_http(self) -> Any:
-        if self._http is None:
-            import aiohttp
-
-            timeout = aiohttp.ClientTimeout(total=30, connect=10)
-            self._http = aiohttp.ClientSession(timeout=timeout)
-        return self._http
-
-    # ── Cleanup ──────────────────────────────────────────────────────
+    # ── Cleanup ───────────────────────────────────────────────────────
 
     async def _cleanup(self) -> None:
-        self._interrupt_event.set()
+        self._closed = True
         self._cancel_silence_watchdog()
+        self._interrupt_event.set()
         if self._tts_task and not self._tts_task.done():
             self._tts_task.cancel()
-        if self._turn_task and not self._turn_task.done():
-            self._turn_task.cancel()
-        if self.vad and hasattr(self.vad, "release_conn_resources"):
-            self.vad.release_conn_resources(self)
-        if self._http:
-            await self._http.close()
-            self._http = None
+        if self.stt:
+            await self.stt.close_audio_channels()
+        try:
+            if self._pig and hasattr(self._pig, 'ctx'):
+                await self._pig.ctx.flush()
+        except Exception:
+            pass
         logger.info(f"[Voice] Session cleaned session={self.session_id}")
