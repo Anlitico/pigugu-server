@@ -153,3 +153,6 @@ spec:
   - port: 443
     targetPort: 8080
     name: https
+  - port: 8080
+    targetPort: 8080
+    name: plain-tcp

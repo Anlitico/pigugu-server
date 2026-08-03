@@ -124,6 +124,13 @@ async def _on_connect(ws: websockets.ServerConnection) -> None:
 async def run_server(host: str = "0.0.0.0", port: int = 8080) -> None:
     """Start the WebSocket server (official pattern)."""
     logger.info(f"[Voice] Starting websocket server on {host}:{port}")
+    # Pre-load providers at startup so the first connection doesn't pay
+    # the cold-start cost (ONNX VAD model load ~1 s).
+    _get_shared_vad()
+    _get_shared_stt()
+    _get_shared_tts()
+    _get_executor()
+    logger.info("[Voice] All providers initialized")
     async with websockets.serve(_on_connect, host, port):
         await asyncio.Future()  # run forever
 
