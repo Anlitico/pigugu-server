@@ -89,6 +89,7 @@ class ConnectionHandler:
 
         # ASR audio (official: accumulated PCM for batch fallback)
         self.asr_audio: list[bytes] = []
+        self._pre_turn_audio: list[bytes] = []
 
         # Turn tracking
         self._interrupt_event = asyncio.Event()
@@ -267,6 +268,9 @@ class ConnectionHandler:
     async def _handle_audio(self, pcm_frame: bytes) -> None:
         """Official: VAD → ASR receive_audio. Accumulates audio for batch fallback."""
         if not self._turn_active:
+            # Buffer pre-turn audio (wake word) so it can be sent to Deepgram
+            # once the turn becomes active. Previously this was silently dropped.
+            self._pre_turn_audio.append(pcm_frame)
             return
 
         # VAD: official double-threshold pattern
@@ -290,6 +294,20 @@ class ConnectionHandler:
         if self.stt and self.stt.interface_type == InterfaceType.STREAM:
             if not hasattr(self, "_dg_socket"):
                 await self.stt.open_audio_channels(self)
+                # Flush pre-turn audio (wake word) now that Deepgram is open
+                if self._pre_turn_audio:
+                    logger.info(f"[Voice] Flushing {len(self._pre_turn_audio)} pre-turn audio frames to Deepgram")
+                    for p in self._pre_turn_audio:
+                        if len(p) >= 2:
+                            arr = np.frombuffer(p, dtype=np.int16).astype(np.float32)
+                            arr *= 10.0
+                            np.clip(arr, -32768, 32767, out=arr)
+                            pg = arr.astype(np.int16).tobytes()
+                        else:
+                            pg = p
+                        await self.stt.receive_audio(self, pg, True)
+                        self.asr_audio.append(p)
+                    self._pre_turn_audio.clear()
             await self.stt.receive_audio(self, pcm_gained, have_voice)
 
         # VAD voice → silence transition → auto-stop
@@ -309,6 +327,7 @@ class ConnectionHandler:
         self._vad_pcm_buffer.clear()
         self._voice_window.clear()
         self.asr_audio.clear()
+        self._pre_turn_audio.clear()
 
     # ── Silence watchdog ──────────────────────────────────────────────
 
