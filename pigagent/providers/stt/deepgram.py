@@ -70,7 +70,7 @@ class DeepgramSTT(STTProvider):
             model=self._model, language=self._language,
             encoding="linear16", sample_rate=self._sample_rate,
             channels=1, smart_format=True, interim_results=True,
-            punctuate=True, endpointing=300,
+            punctuate=True, endpointing=1000,
         )
         conn._dg_socket = conn._dg_ctx.__enter__()
         conn._dg_socket.on(EventType.MESSAGE, on_message)
