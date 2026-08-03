@@ -116,9 +116,8 @@ class ConnectionHandler:
         self._pig: Any = None  # PigAgent (lazy-created)
 
         # ---- Listen-mode state ----
-        self._listening = False
         self._audio_frames: list[bytes] = []
-        self._pre_buffer: list[bytes] = []  # frames before detect
+        self._turn_active = False
 
         # ---- VAD state (per the official pattern) ----
         self.client_audio_buffer = bytearray()
@@ -142,7 +141,7 @@ class ConnectionHandler:
         # ---- Silence watchdog config ----
         self._watchdog_started_at: float = 0.0
         self._max_listen_seconds: float = float(
-            os.getenv("MAX_LISTEN_SECONDS", "15.0")
+            os.getenv("MAX_LISTEN_SECONDS", "1.5")
         )
 
         # ---- Opus decoder (reused across frames for state continuity) ----
@@ -227,6 +226,7 @@ class ConnectionHandler:
     # ── Listen state machine ──────────────────────────────────────────
 
     async def _handle_listen(self, data: dict) -> None:
+        """Official xiaozhi pattern: detect=start turn, stop=process turn."""
         state = data.get("state", "")
 
         if state == "detect":
@@ -245,39 +245,31 @@ class ConnectionHandler:
                 self._tts_task.cancel()
 
             self._interrupt_event.clear()
-            self._listening = True
+            self._turn_active = True
 
-            # Flush pre-buffer (wake word frames arrived before detect)
-            self._audio_frames = list(self._pre_buffer)
-            self._pre_buffer.clear()
-
-            # Init VAD state for this turn (both handler + VAD-internal attrs)
+            # Reset all audio/VAD state for fresh turn (official reset_audio_states)
+            self._audio_frames.clear()
             self.client_audio_buffer.clear()
             self.client_have_voice = False
             self.client_voice_stop = False
             self.client_voice_window.clear()
             self.last_is_voice = False
             self.vad_last_voice_time = 0.0
-            # Also clear the VAD's internal buffers
             self._vad_pcm_buffer.clear()
             self._voice_window.clear()
 
             self._start_silence_watchdog()
-            logger.info(
-                f"[Voice] Listening start (from detect) frames={len(self._audio_frames)}"
-            )
+            logger.info("[Voice] Turn started (detect)")
 
         elif state == "start":
-            logger.info(
-                f"[Voice] Firmware start frames={len(self._audio_frames)}"
-            )
+            logger.info(f"[Voice] Firmware start frames={len(self._audio_frames)}")
             self._start_silence_watchdog()
 
         elif state == "stop":
-            self._listening = False
+            self._turn_active = False
             self._cancel_silence_watchdog()
             n = len(self._audio_frames)
-            logger.info(f"[Voice] Listening stop frames={n}")
+            logger.info(f"[Voice] Stop received, frames={n}")
             if n > 0:
                 self._turn_task = asyncio.create_task(self._process_turn())
 
@@ -296,23 +288,20 @@ class ConnectionHandler:
     # ── Binary audio (Opus frames from ESP32) ─────────────────────────
 
     async def _handle_binary(self, data: bytes) -> None:
-        if not self._listening:
-            # Buffer pre-detect frames (wake word audio)
-            self._pre_buffer.append(data)
-            if len(self._pre_buffer) > 200:
-                self._pre_buffer.pop(0)
+        """Official pattern: always decode, accumulate when turn active."""
+        if not self._turn_active:
             return
 
         self._audio_frames.append(data)
 
-        # Decode to PCM for VAD
+        # Decode to PCM for VAD (official: _decode_opus_packet)
         pcm = _opus_decode(data, self._opus_decoder)
         if not pcm or len(pcm) < 2:
             return
         if len(pcm) % 2 != 0:
             pcm = pcm[:-1]
 
-        # Run official-pattern VAD on every frame
+        # Official-pattern VAD: is_vad → have_voice → silence check
         if self.vad is not None:
             have_voice = self.vad.is_vad(self, pcm)
 
@@ -321,9 +310,8 @@ class ConnectionHandler:
                 logger.info(
                     f"[Voice] VAD voice stop frames={len(self._audio_frames)}"
                 )
-                self._listening = False
+                self._turn_active = False
                 self._cancel_silence_watchdog()
-                # Cancel any in-flight turn before creating a new one
                 if self._turn_task and not self._turn_task.done():
                     self._sentence_id += 1
                     self._interrupt_event.set()
@@ -340,14 +328,14 @@ class ConnectionHandler:
         self._silence_timer = asyncio.create_task(self._silence_watchdog())
 
     async def _silence_watchdog(self) -> None:
-        while self._listening:
+        while self._turn_active:
             elapsed = time.time() - self._watchdog_started_at
             if elapsed > self._max_listen_seconds:
                 logger.warning(
                     f"[Voice] Max listen duration ({self._max_listen_seconds}s) "
                     f"reached — auto-stopping frames={len(self._audio_frames)}"
                 )
-                self._listening = False
+                self._turn_active = False
                 if len(self._audio_frames) > 0:
                     self._turn_task = asyncio.create_task(self._process_turn())
                 return

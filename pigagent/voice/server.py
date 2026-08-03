@@ -88,8 +88,8 @@ def _get_shared_vad():
         from providers.vad.onnx import SileroVAD
 
         _shared_vad = SileroVAD(
-            threshold=0.5,
-            threshold_low=0.2,
+            threshold=0.1,
+            threshold_low=0.05,
             min_silence_duration_ms=700,
         )
     return _shared_vad
