@@ -327,7 +327,9 @@ class ConnectionHandler:
         self._vad_pcm_buffer.clear()
         self._voice_window.clear()
         self.asr_audio.clear()
-        self._pre_turn_audio.clear()
+        # IMPORTANT: do NOT clear _pre_turn_audio here — it contains
+        # wake word audio received before the turn became active. It is
+        # flushed to Deepgram when the audio channel opens in _handle_audio.
 
     # ── Silence watchdog ──────────────────────────────────────────────
 
