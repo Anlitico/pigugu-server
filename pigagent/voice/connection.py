@@ -125,10 +125,15 @@ class ConnectionHandler:
 
         try:
             async for message in ws:
-                if isinstance(message, str):
-                    await self._route_message(json.loads(message))
-                elif isinstance(message, bytes):
-                    await self._route_message(message)
+                try:
+                    if isinstance(message, str):
+                        await self._route_message(json.loads(message))
+                    elif isinstance(message, bytes):
+                        await self._route_message(message)
+                except json.JSONDecodeError:
+                    logger.warning(f"[Voice] Bad JSON: {message[:100]}")
+                except Exception:
+                    logger.exception(f"[Voice] Route error")
         except websockets.ConnectionClosed:
             logger.info(f"[Voice] Connection closed session={self.session_id}")
         except Exception:
@@ -152,7 +157,11 @@ class ConnectionHandler:
         elif isinstance(message, bytes):
             if self.vad is None or self.stt is None:
                 return
-            pcm_frame = _decode_opus_packet(message, self.opus_decoder)
+            # Browser sends raw PCM, firmware sends Opus
+            if getattr(self, "_raw_pcm", False):
+                pcm_frame = message
+            else:
+                pcm_frame = _decode_opus_packet(message, self.opus_decoder)
             if pcm_frame:
                 await self._handle_audio(pcm_frame)
 
@@ -162,6 +171,7 @@ class ConnectionHandler:
         self._persona_id = int(data.get("persona_id", 1))
         self._hw_id = str(data.get("hw_id", ""))
         audio_params = data.get("audio_params", {})
+        self._raw_pcm = audio_params.get("format", "opus") == "pcm"
         logger.info(
             f"[Voice] Hello client={self.client_id} persona={self._persona_id} "
             f"hw_id={self._hw_id} version={data.get('version')} "
@@ -169,16 +179,12 @@ class ConnectionHandler:
             f"frame_duration={audio_params.get('frame_duration')}"
         )
 
-        # Open streaming ASR
-        if self.stt and self.stt.interface_type == InterfaceType.STREAM:
-            await self.stt.open_audio_channels(self)
-
         await self._ws.send(json.dumps({
             "type": "hello",
             "transport": "websocket",
             "session_id": self.session_id,
             "audio_params": {
-                "format": "opus",
+                "format": "pcm" if self._raw_pcm else "opus",
                 "sample_rate": 16000,
                 "channels": 1,
                 "frame_duration": 60,
@@ -205,8 +211,8 @@ class ConnectionHandler:
         text = data.get("text", "")
         logger.info(f"[Voice] Wake word '{text}' client={self.client_id}")
 
-        # Abort in-flight turn
-        if self._tts_task and not self._tts_task.done():
+        # Only abort TTS if actively speaking (barge-in), not for consecutive detects
+        if self._tts_task and not self._tts_task.done() and self.client_is_speaking:
             self._sentence_id += 1
             self._interrupt_event.set()
             self._tts_task.cancel()
@@ -215,23 +221,29 @@ class ConnectionHandler:
         self._turn_active = True
         self._reset_audio_states()
 
-        # Start streaming: open ASR channels
-        if self.stt and self.stt.interface_type == InterfaceType.STREAM:
-            self.deepgram_final.clear()
-            self.deepgram_transcript = ""
+        TelemetryCollector.start_turn(
+            user_id=self._user_id or self.client_id,
+            persona_id=self._persona_id,
+        )
+        TelemetryCollector.mark("vad_start")
 
         self._start_silence_watchdog()
         logger.info("[Voice] Turn started (detect)")
 
     async def _on_start(self) -> None:
+        """Official: reset audio states when firmware starts a fresh listening session."""
         logger.info("[Voice] Firmware start")
+        self._reset_audio_states()
         self._start_silence_watchdog()
 
     async def _on_stop(self) -> None:
         """Official: finalize ASR, process turn."""
+        if not self._turn_active:
+            return  # already stopped (guard against double-call)
         self._turn_active = False
         self._cancel_silence_watchdog()
         self.client_voice_stop = True
+        TelemetryCollector.mark("vad_end")
 
         if self.stt and self.stt.interface_type == InterfaceType.STREAM:
             # Streaming: get result from Deepgram callback
@@ -262,14 +274,15 @@ class ConnectionHandler:
         # Accumulate audio (for batch fallback + debug WAV)
         self.asr_audio.append(pcm_frame)
 
-        # Streaming ASR
+        # Lazy-open Deepgram on first frame (avoid timeout)
         if self.stt and self.stt.interface_type == InterfaceType.STREAM:
+            if not hasattr(self, "_dg_socket"):
+                await self.stt.open_audio_channels(self)
             await self.stt.receive_audio(self, pcm_frame, have_voice)
 
         # VAD voice → silence transition → auto-stop
         if not have_voice and self.client_voice_stop:
             logger.info(f"[Voice] VAD voice stop, frames={len(self.asr_audio)}")
-            self._turn_active = False
             self._cancel_silence_watchdog()
             await self._on_stop()
 
@@ -313,14 +326,16 @@ class ConnectionHandler:
 
     async def _on_stt_result(self, text: str) -> None:
         """Handle STT result: send to client, persist, launch LLM."""
+        TelemetryCollector.mark("stt_final")
+
         await self._ws.send(json.dumps({
             "session_id": self.session_id,
             "type": "stt",
             "text": text,
         }))
 
-        # Debug: save WAV
-        self._save_debug_wav(text)
+        # Debug: save user speech WAV
+        self._save_input_wav(text)
 
         # Persist user message
         if self._pig and self._pig.ctx:
@@ -335,9 +350,11 @@ class ConnectionHandler:
             ColdStartMetrics.set_meta("llm_model", self._pig.model)
             TelemetryCollector.set_meta("llm_model", self._pig.model)
             ColdStartMetrics.mark("agent_created")
+            ColdStartMetrics.mark("ready")
             ColdStartMetrics.flush()
 
         TelemetryCollector.mark("agent_req")
+        TelemetryCollector.mark("llm_start")
         sentence_id = self._sentence_id
         self._sentence_id += 1
 
@@ -346,27 +363,48 @@ class ConnectionHandler:
             self._tts_producer_consumer(text, sentence_id)
         )
 
-    def _save_debug_wav(self, stt_text: str) -> None:
-        """TEMP: save accumulated PCM as WAV for diagnostics."""
+    def _save_input_wav(self, stt_text: str) -> str:
+        """Save user speech PCM as WAV. Returns the file path."""
         try:
             pcm = b"".join(self.asr_audio)
-            wav_path = f"/tmp/pigugu_audio_{self.session_id}.wav"
+            wav_path = f"/tmp/pigugu_in_{self.session_id}.wav"
             with wave.open(wav_path, "wb") as wf:
                 wf.setnchannels(1)
                 wf.setsampwidth(2)
                 wf.setframerate(16000)
                 wf.writeframes(pcm)
             logger.warning(
-                f"[Voice] WAV saved: {wav_path} ({len(pcm)} bytes, {len(pcm)/32000:.1f}s) "
-                f"STT='{stt_text[:60]}'"
+                f"[Voice] WAV input saved: {wav_path} ({len(pcm)} bytes, "
+                f"{len(pcm)/32000:.1f}s) STT='{stt_text[:80]}'"
             )
+            return wav_path
         except Exception:
-            logger.exception("[Voice] WAV save failed")
+            logger.exception("[Voice] WAV input save failed")
+            return ""
+
+    def _save_tts_wav(self, tts_pcm: bytes) -> str:
+        """Save TTS output PCM as WAV. Returns the file path."""
+        try:
+            wav_path = f"/tmp/pigugu_out_{self.session_id}.wav"
+            with wave.open(wav_path, "wb") as wf:
+                wf.setnchannels(1)
+                wf.setsampwidth(2)
+                wf.setframerate(16000)
+                wf.writeframes(tts_pcm)
+            logger.warning(
+                f"[Voice] WAV output saved: {wav_path} ({len(tts_pcm)} bytes, "
+                f"{len(tts_pcm)/32000:.1f}s)"
+            )
+            return wav_path
+        except Exception:
+            logger.exception("[Voice] TTS WAV save failed")
+            return ""
 
     # ── TTS producer-consumer ─────────────────────────────────────────
 
     async def _tts_producer_consumer(self, stt_text: str, sentence_id: int) -> None:
         """Official pattern: LLM → text → TTS → Opus → WebSocket."""
+        _tts_start = time.time()
         text_queue: asyncio.Queue[str | None] = asyncio.Queue()
         pig = self._pig
         if pig is None:
@@ -375,6 +413,7 @@ class ConnectionHandler:
         async def _producer() -> str:
             full = ""
             try:
+                logger.info(f"[Voice] LLM producer started")
                 async for chunk in pig.generate_reply(
                     stt_text,
                     persona_id=self._persona_id,
@@ -382,10 +421,13 @@ class ConnectionHandler:
                     session_id=self.session_id,
                 ):
                     if self._interrupt_event.is_set():
+                        logger.info("[Voice] LLM producer interrupted")
                         break
+                    logger.info(f"[Voice] LLM chunk type={type(chunk).__name__} len={len(chunk) if hasattr(chunk,'__len__') else '?'}")
                     if isinstance(chunk, str):
                         await text_queue.put(chunk)
                         full += chunk
+                logger.info(f"[Voice] LLM producer done: {len(full)} chars")
             except Exception:
                 logger.exception("[Voice] LLM producer failed")
             finally:
@@ -393,7 +435,10 @@ class ConnectionHandler:
             return full
 
         async def _consumer() -> None:
+            _cons_start = time.time()
+            logger.info(f"[Voice] TTS consumer started, tts={self.tts}")
             if self.tts is None:
+                logger.warning("[Voice] TTS provider is None!")
                 while True:
                     chunk = await text_queue.get()
                     if chunk is None:
@@ -403,11 +448,13 @@ class ConnectionHandler:
             text_buffer = ""
             tts_started = False
             first_tts = True
+            _first_tts_sent = 0.0
+            tts_pcm = bytearray()  # collect raw PCM for debug WAV
 
             try:
                 while True:
                     try:
-                        chunk = await asyncio.wait_for(text_queue.get(), timeout=0.5)
+                        chunk = await asyncio.wait_for(text_queue.get(), timeout=0.15)
                     except asyncio.TimeoutError:
                         if text_buffer and self.tts:
                             if not tts_started:
@@ -417,14 +464,21 @@ class ConnectionHandler:
                                     "state": "start",
                                 }))
                                 tts_started = True
-                            frames = await self.tts.synthesize(text_buffer.strip())
+                                TelemetryCollector.mark("tts_start")
+                            frames = await self.tts.synthesize(
+                                text_buffer.strip(), raw_pcm=self._raw_pcm,
+                                collect_pcm=tts_pcm,
+                            )
                             text_buffer = ""
                             for frame in frames:
                                 if self._interrupt_event.is_set():
                                     break
                                 await self._ws.send(frame)
                             if first_tts:
+                                elapsed = time.time() - _cons_start
+                                logger.info(f"[Voice] ⏱ First TTS sent: +{elapsed:.2f}s (consumer→tts)")
                                 first_tts = False
+                                TelemetryCollector.mark("agent_spk")
                         continue
 
                     if chunk is None:
@@ -436,8 +490,8 @@ class ConnectionHandler:
                     is_end = text_buffer.rstrip().endswith((".", "!", "?", "\n", "。", "！", "？"))
                     is_clause = text_buffer.rstrip().endswith((",", "，", "、", ":", "：", ";", "；"))
                     should_flush = (
-                        (first_tts and (is_clause or is_end or len(text_buffer) >= 20))
-                        or (not first_tts and (is_end or len(text_buffer) >= 100))
+                        (first_tts and len(text_buffer) >= 10)
+                        or (not first_tts and (is_end or len(text_buffer) >= 80))
                     )
                     if should_flush and text_buffer.strip() and self.tts:
                         if not tts_started:
@@ -447,15 +501,22 @@ class ConnectionHandler:
                                 "state": "start",
                             }))
                             tts_started = True
+                            TelemetryCollector.mark("tts_start")
                         flush_text = text_buffer.strip()
                         text_buffer = ""
-                        frames = await self.tts.synthesize(flush_text)
+                        frames = await self.tts.synthesize(
+                            flush_text, raw_pcm=self._raw_pcm,
+                            collect_pcm=tts_pcm,
+                        )
                         for frame in frames:
                             if self._interrupt_event.is_set():
                                 break
                             await self._ws.send(frame)
                         if first_tts:
+                            elapsed = time.time() - _cons_start
+                            logger.info(f"[Voice] ⏱ First TTS sent: +{elapsed:.2f}s")
                             first_tts = False
+                            TelemetryCollector.mark("agent_spk")
 
                 # Flush remaining
                 if text_buffer.strip() and not self._interrupt_event.is_set() and self.tts:
@@ -465,11 +526,23 @@ class ConnectionHandler:
                             "type": "tts",
                             "state": "start",
                         }))
-                    frames = await self.tts.synthesize(text_buffer.strip())
+                        tts_started = True
+                        TelemetryCollector.mark("tts_start")
+                    frames = await self.tts.synthesize(
+                        text_buffer.strip(), raw_pcm=self._raw_pcm,
+                        collect_pcm=tts_pcm,
+                    )
                     for frame in frames:
                         if self._interrupt_event.is_set():
                             break
                         await self._ws.send(frame)
+                    if first_tts:
+                        first_tts = False
+                        TelemetryCollector.mark("agent_spk")
+
+                # Save TTS output WAV for debugging
+                if len(tts_pcm) > 0:
+                    self._save_tts_wav(bytes(tts_pcm))
 
                 if tts_started:
                     await self._ws.send(json.dumps({
@@ -478,6 +551,7 @@ class ConnectionHandler:
                         "state": "stop",
                     }))
                     TelemetryCollector.mark("tts_end")
+                    TelemetryCollector.finish_turn()
             except asyncio.CancelledError:
                 pass
             except Exception:
@@ -555,11 +629,14 @@ class ConnectionHandler:
         try:
             text = msg.get("text", msg.get("content", ""))
             if self.tts and text:
-                frames = await self.tts.synthesize(text)
+                tts_pcm = bytearray()
+                frames = await self.tts.synthesize(text, collect_pcm=tts_pcm)
                 for frame in frames:
                     if self._interrupt_event.is_set() or sentence_id != self._sentence_id:
                         break
                     await self._ws.send(frame)
+                if len(tts_pcm) > 0:
+                    self._save_tts_wav(bytes(tts_pcm))
             await self._ws.send(json.dumps({
                 "session_id": self.session_id,
                 "type": "tts",

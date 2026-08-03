@@ -48,11 +48,15 @@ class CartesiaTTS(TTSProvider):
             self._http = aiohttp.ClientSession(timeout=timeout)
         return self._http
 
-    async def synthesize(self, text: str, raw_pcm: bool = False) -> list[bytes]:
+    async def synthesize(
+        self, text: str, raw_pcm: bool = False, collect_pcm: bytearray | None = None
+    ) -> list[bytes]:
         """Convert text to a list of Opus-encoded (or raw PCM) binary frames.
 
         Each frame is one 60 ms chunk at the configured sample rate.
         Set ``raw_pcm=True`` to skip Opus encoding (for browser testing).
+        If ``collect_pcm`` is provided, the raw PCM (before Opus encoding) is
+        appended to it — useful for saving debug WAV files.
         """
         if not self._api_key:
             logger.error("[Cartesia] CARTESIA_API_KEY not set")
@@ -97,6 +101,9 @@ class CartesiaTTS(TTSProvider):
         if len(pcm) == 0:
             logger.warning("[Cartesia] Empty PCM returned")
             return []
+
+        if collect_pcm is not None:
+            collect_pcm.extend(pcm)
 
         if raw_pcm:
             # Return raw PCM directly (browser testing)

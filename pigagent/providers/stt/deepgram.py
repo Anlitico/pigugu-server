@@ -1,4 +1,4 @@
-"""Deepgram STT provider — WebSocket streaming + REST batch fallback."""
+"""Deepgram STT provider — WebSocket streaming (v7 SDK) + REST batch fallback."""
 
 from __future__ import annotations
 
@@ -7,14 +7,15 @@ import os
 from typing import Any
 
 import aiohttp
-from deepgram import DeepgramClient, LiveTranscriptionEvents, LiveOptions
+from deepgram import DeepgramClient
+from deepgram.core.events import EventType
 from loguru import logger
 
 from providers.base import InterfaceType, STTProvider
 
 
 class DeepgramSTT(STTProvider):
-    """Deepgram Nova-3 STT — streaming via WebSocket, batch via REST."""
+    """Deepgram Nova-3 STT — streaming via WebSocket v1, batch via REST."""
 
     interface_type = InterfaceType.STREAM
 
@@ -31,80 +32,83 @@ class DeepgramSTT(STTProvider):
         self._sample_rate = sample_rate
         self._http: aiohttp.ClientSession | None = None
 
-    # ── Streaming (receive_audio) ─────────────────────────────────────
+    # ── Streaming (v7 SDK: client.listen.v1.connect()) ────────────────
 
     async def open_audio_channels(self, conn: Any) -> None:
+        """Open Deepgram streaming (sync client in thread — proven pattern)."""
         if not self._api_key:
             logger.error("[Deepgram] DEEPGRAM_API_KEY not set")
             return
 
-        client = DeepgramClient(self._api_key)
-        conn.dg_connection = client.listen.websocket.v("1")
-
-        # Accumulate results on conn for official pattern
-        conn.deepgram_final = asyncio.Event()
+        import threading
+        client = DeepgramClient(api_key=self._api_key)
         conn.deepgram_transcript = ""
+        conn._dg_final_ev = threading.Event()
 
-        def on_open(_, open, **kwargs):
-            logger.debug("[Deepgram] STT WS opened")
-            conn.deepgram_final.clear()
-
-        def on_message(_, result, **kwargs):
+        def on_message(result):
             try:
-                alt = result.channel.alternatives[0]
-                text = alt.transcript
+                if not hasattr(result, "channel"):
+                    return
+                text = result.channel.alternatives[0].transcript
                 if not text:
                     return
                 conn.deepgram_transcript = text
                 if result.is_final:
                     logger.info(f"[Deepgram] FINAL: '{text[:120]}'")
-                    conn.deepgram_final.set()
+                    conn._dg_final_ev.set()
                 else:
                     logger.debug(f"[Deepgram] interim: '{text[:80]}'")
             except Exception:
                 logger.exception("[Deepgram] on_message error")
 
-        def on_error(_, error, **kwargs):
+        def on_error(error):
             logger.error(f"[Deepgram] STT WS error: {error}")
+            conn._dg_final_ev.set()
 
-        conn.dg_connection.on(LiveTranscriptionEvents.Open, on_open)
-        conn.dg_connection.on(LiveTranscriptionEvents.Transcript, on_message)
-        conn.dg_connection.on(LiveTranscriptionEvents.Error, on_error)
-
-        options = LiveOptions(
-            model=self._model,
-            language=self._language,
-            smart_format=True,
-            encoding="linear16",
-            sample_rate=self._sample_rate,
-            channels=1,
-            interim_results=True,
-            punctuate=True,
-            endpointing=300,
+        # Enter sync context manager (connects WS) + register events
+        conn._dg_ctx = client.listen.v1.connect(
+            model=self._model, language=self._language,
+            encoding="linear16", sample_rate=self._sample_rate,
+            channels=1, smart_format=True, interim_results=True,
+            punctuate=True, endpointing=300,
         )
+        conn._dg_socket = conn._dg_ctx.__enter__()
+        conn._dg_socket.on(EventType.MESSAGE, on_message)
+        conn._dg_socket.on(EventType.ERROR, on_error)
 
-        if not conn.dg_connection.start(options):
-            logger.error("[Deepgram] Failed to start Deepgram WS")
-        else:
-            logger.info("[Deepgram] Streaming STT started")
+        # start_listening() blocks on recv — run in daemon thread
+        threading.Thread(target=conn._dg_socket.start_listening, daemon=True).start()
+        logger.info("[Deepgram] Streaming STT started (sync client in thread)")
 
     async def close_audio_channels(self) -> None:
         logger.debug("[Deepgram] Closing STT WS")
 
     async def receive_audio(self, conn: Any, pcm: bytes, have_voice: bool) -> None:
-        if not hasattr(conn, "dg_connection"):
+        if not hasattr(conn, "_dg_socket"):
             return
         try:
-            conn.dg_connection.send(pcm)
-        except Exception:
-            logger.exception("[Deepgram] send failed")
+            # send_media is sync (safe from asyncio — quick send)
+            conn._dg_socket.send_media(pcm)
+        except Exception as e:
+            logger.warning(f"[Deepgram] send_media: {e}")
 
     async def handle_voice_stop(self, conn: Any, audio_data: list[bytes]) -> None:
-        """Voice stopped — wait for Deepgram final result."""
+        if not hasattr(conn, "_dg_socket"):
+            return
         try:
-            await asyncio.wait_for(conn.deepgram_final.wait(), timeout=3.0)
-        except asyncio.TimeoutError:
-            logger.warning("[Deepgram] Timeout waiting for final result")
+            conn._dg_socket.send_finalize()
+        except Exception:
+            pass  # Connection may already be closed, transcript is already set
+        # Wait briefly for any final results
+        conn._dg_final_ev.wait(timeout=2.0)
+        # Cleanup: close and clear socket so next turn creates a fresh one
+        try:
+            if hasattr(conn, "_dg_ctx"):
+                conn._dg_ctx.__exit__(None, None, None)
+        except Exception:
+            pass
+        if hasattr(conn, "_dg_socket"):
+            delattr(conn, "_dg_socket")
 
     # ── Batch fallback (REST) ─────────────────────────────────────────
 
