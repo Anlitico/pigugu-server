@@ -245,6 +245,9 @@ class ConnectionHandler:
         self.client_voice_stop = True
         TelemetryCollector.mark("vad_end")
 
+        # Always save received audio WAV for debugging
+        self._save_input_wav("(stop)")
+
         if self.stt and self.stt.interface_type == InterfaceType.STREAM:
             # Streaming: get result from Deepgram callback
             await self.stt.handle_voice_stop(self, self.asr_audio)
@@ -274,11 +277,20 @@ class ConnectionHandler:
         # Accumulate audio (for batch fallback + debug WAV)
         self.asr_audio.append(pcm_frame)
 
+        # Apply 10x gain for Deepgram (firmware mic level is very low)
+        if len(pcm_frame) >= 2:
+            arr = np.frombuffer(pcm_frame, dtype=np.int16).astype(np.float32)
+            arr *= 10.0
+            np.clip(arr, -32768, 32767, out=arr)
+            pcm_gained = arr.astype(np.int16).tobytes()
+        else:
+            pcm_gained = pcm_frame
+
         # Lazy-open Deepgram on first frame (avoid timeout)
         if self.stt and self.stt.interface_type == InterfaceType.STREAM:
             if not hasattr(self, "_dg_socket"):
                 await self.stt.open_audio_channels(self)
-            await self.stt.receive_audio(self, pcm_frame, have_voice)
+            await self.stt.receive_audio(self, pcm_gained, have_voice)
 
         # VAD voice → silence transition → auto-stop
         if not have_voice and self.client_voice_stop:
@@ -333,9 +345,6 @@ class ConnectionHandler:
             "type": "stt",
             "text": text,
         }))
-
-        # Debug: save user speech WAV
-        self._save_input_wav(text)
 
         # Persist user message
         if self._pig and self._pig.ctx:
