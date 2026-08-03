@@ -17,4 +17,4 @@ RUN python -c "import tomllib, subprocess, sys; \
 
 COPY pigagent/ .
 
-CMD ["python", "main.py", "start"]
+CMD ["python", "main.py"]
