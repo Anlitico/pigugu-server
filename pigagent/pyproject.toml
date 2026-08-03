@@ -22,6 +22,8 @@ dependencies = [
     # HTTP API
     "fastapi~=0.136",
     "uvicorn[standard]~=0.48",
+    # WebSocket server (official xiaozhi pattern)
+    "websockets>=13.0",
     # Storage
     "redis~=7.4",
     "asyncpg~=0.31",
