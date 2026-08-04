@@ -258,6 +258,7 @@ class ConnectionHandler:
             pcm = b"".join(self.asr_audio)
             transcript = await self.stt.transcribe(pcm) if self.stt else ""
 
+        logger.info(f"[Voice] STT transcript: '{transcript[:200]}'")
         if transcript.strip():
             await self._on_stt_result(transcript.strip())
         else:
