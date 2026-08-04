@@ -367,10 +367,6 @@ class ConnectionHandler:
             "text": text,
         }))
 
-        # Persist user message
-        if self._pig and self._pig.ctx:
-            asyncio.ensure_future(self._persist_turn("user", text))
-
         # Create PigAgent (lazy)
         self._user_id = self._user_id or self.client_id
         if self._pig is None:
@@ -382,6 +378,10 @@ class ConnectionHandler:
             ColdStartMetrics.mark("agent_created")
             ColdStartMetrics.mark("ready")
             ColdStartMetrics.flush()
+
+        # Persist user message (must be after _pig creation)
+        if self._pig and self._pig.ctx:
+            asyncio.ensure_future(self._persist_turn("user", text))
 
         TelemetryCollector.mark("agent_req")
         TelemetryCollector.mark("llm_start")
