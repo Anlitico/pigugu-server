@@ -57,7 +57,7 @@ class DeepgramSTT(STTProvider):
                     logger.info(f"[Deepgram] FINAL: '{text[:120]}'")
                     conn._dg_final_ev.set()
                 else:
-                    logger.debug(f"[Deepgram] interim: '{text[:80]}'")
+                    logger.info(f"[Deepgram] interim: '{text[:80]}'")
             except Exception:
                 logger.exception("[Deepgram] on_message error")
 
@@ -97,10 +97,11 @@ class DeepgramSTT(STTProvider):
             return
         try:
             conn._dg_socket.send_finalize()
-        except Exception:
-            pass  # Connection may already be closed, transcript is already set
+        except Exception as e:
+            logger.warning(f"[Deepgram] send_finalize error: {e}")
         # Wait briefly for any final results
-        conn._dg_final_ev.wait(timeout=2.0)
+        got_final = conn._dg_final_ev.wait(timeout=2.0)
+        logger.info(f"[Deepgram] finalize done: got_final={got_final} transcript='{conn.deepgram_transcript[:100]}'")
         # Cleanup: close and clear socket so next turn creates a fresh one
         try:
             if hasattr(conn, "_dg_ctx"):
