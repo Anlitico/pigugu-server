@@ -213,12 +213,6 @@ class ConnectionHandler:
         text = data.get("text", "")
         logger.info(f"[Voice] Wake word '{text}' client={self.client_id}")
 
-        # Only abort TTS if actively speaking (barge-in), not for consecutive detects
-        if self._tts_task and not self._tts_task.done() and self.client_is_speaking:
-            self._sentence_id += 1
-            self._interrupt_event.set()
-            self._tts_task.cancel()
-
         self._interrupt_event.clear()
         self._turn_active = True
         self._reset_audio_states()
@@ -270,10 +264,19 @@ class ConnectionHandler:
     async def _handle_audio(self, pcm_frame: bytes) -> None:
         """Official: VAD → ASR receive_audio. Accumulates audio for batch fallback."""
         if not self._turn_active:
-            # Buffer pre-turn audio (wake word) so it can be sent to Deepgram
-            # once the turn becomes active. Previously this was silently dropped.
-            self._pre_turn_audio.append(pcm_frame)
-            return
+            if self.client_is_speaking:
+                # Barge-in: user is speaking during TTS → start a fresh turn
+                # to capture this speech for VAD → STT → abort.
+                logger.info("[Voice] Barge-in: audio detected during TTS, starting new turn")
+                self._turn_active = True
+                self._reset_audio_states()
+                self._start_silence_watchdog()
+                TelemetryCollector.mark("vad_start")
+            else:
+                # Buffer pre-turn audio (wake word) so it can be sent to Deepgram
+                # once the turn becomes active. Previously this was silently dropped.
+                self._pre_turn_audio.append(pcm_frame)
+                return
 
         # VAD: official double-threshold pattern
         have_voice = False
@@ -362,6 +365,20 @@ class ConnectionHandler:
     async def _on_stt_result(self, text: str) -> None:
         """Handle STT result: send to client, persist, launch LLM."""
         TelemetryCollector.mark("stt_final")
+
+        # Barge-in: if TTS is still playing when new STT text arrives,
+        # abort the current TTS before starting a new conversation.
+        if self._tts_task and not self._tts_task.done() and self.client_is_speaking:
+            logger.info(f"[Voice] Barge-in: STT text='{text[:60]}' while speaking, aborting TTS")
+            self._sentence_id += 1
+            self._interrupt_event.set()
+            self._tts_task.cancel()
+            await self._ws.send(json.dumps({
+                "session_id": self.session_id,
+                "type": "tts",
+                "state": "stop",
+            }))
+            self.client_is_speaking = False
 
         await self._ws.send(json.dumps({
             "session_id": self.session_id,
@@ -496,6 +513,7 @@ class ConnectionHandler:
                                     "state": "start",
                                 }))
                                 tts_started = True
+                                self.client_is_speaking = True
                                 TelemetryCollector.mark("tts_start")
                             frames = await self.tts.synthesize(
                                 text_buffer.strip(), raw_pcm=self._raw_pcm,
@@ -534,6 +552,7 @@ class ConnectionHandler:
                                 "state": "start",
                             }))
                             tts_started = True
+                            self.client_is_speaking = True
                             TelemetryCollector.mark("tts_start")
                         flush_text = text_buffer.strip()
                         text_buffer = ""
@@ -560,6 +579,7 @@ class ConnectionHandler:
                             "state": "start",
                         }))
                         tts_started = True
+                        self.client_is_speaking = True
                         TelemetryCollector.mark("tts_start")
                     frames = await self.tts.synthesize(
                         text_buffer.strip(), raw_pcm=self._raw_pcm,
@@ -583,10 +603,12 @@ class ConnectionHandler:
                         "type": "tts",
                         "state": "stop",
                     }))
+                    self.client_is_speaking = False
                     TelemetryCollector.mark("tts_end")
                     TelemetryCollector.finish_turn()
             except asyncio.CancelledError:
-                pass
+                self.client_is_speaking = False
+                logger.info("[Voice] TTS consumer cancelled")
             except Exception:
                 logger.exception("[Voice] TTS consumer failed")
 
@@ -612,6 +634,7 @@ class ConnectionHandler:
         self._interrupt_event.set()
         if self._tts_task and not self._tts_task.done():
             self._tts_task.cancel()
+        self.client_is_speaking = False
         await self._ws.send(json.dumps({
             "session_id": self.session_id,
             "type": "tts",
