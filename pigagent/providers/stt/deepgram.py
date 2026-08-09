@@ -35,7 +35,9 @@ class DeepgramSTT(STTProvider):
     # ── Streaming (v7 SDK: client.listen.v1.connect()) ────────────────
 
     async def open_audio_channels(self, conn: Any) -> None:
-        """Open Deepgram streaming (sync client in thread — proven pattern)."""
+        """Open Deepgram streaming once — stays open for the session.
+        Deepgram handles endpointing internally (1000ms silence → final).
+        Final results delivered via conn._on_stt_final(text)."""
         if not self._api_key:
             logger.error("[Deepgram] DEEPGRAM_API_KEY not set")
             return
@@ -43,7 +45,6 @@ class DeepgramSTT(STTProvider):
         import threading
         client = DeepgramClient(api_key=self._api_key)
         conn.deepgram_transcript = ""
-        conn._dg_final_ev = threading.Event()
 
         def on_message(result):
             try:
@@ -55,7 +56,11 @@ class DeepgramSTT(STTProvider):
                 conn.deepgram_transcript = text
                 if result.is_final:
                     logger.info(f"[Deepgram] FINAL: '{text[:120]}'")
-                    conn._dg_final_ev.set()
+                    # Schedule on the asyncio event loop
+                    if hasattr(conn, "_loop") and conn._loop and conn._loop.is_running():
+                        asyncio.run_coroutine_threadsafe(
+                            conn._on_stt_final(text), conn._loop
+                        )
                 else:
                     logger.info(f"[Deepgram] interim: '{text[:80]}'")
             except Exception:
@@ -63,7 +68,6 @@ class DeepgramSTT(STTProvider):
 
         def on_error(error):
             logger.error(f"[Deepgram] STT WS error: {error}")
-            conn._dg_final_ev.set()
 
         # Enter sync context manager (connects WS) + register events
         conn._dg_ctx = client.listen.v1.connect(
@@ -91,25 +95,6 @@ class DeepgramSTT(STTProvider):
             conn._dg_socket.send_media(pcm)
         except Exception as e:
             logger.warning(f"[Deepgram] send_media: {e}")
-
-    async def handle_voice_stop(self, conn: Any, audio_data: list[bytes]) -> None:
-        if not hasattr(conn, "_dg_socket"):
-            return
-        try:
-            conn._dg_socket.send_finalize()
-        except Exception as e:
-            logger.warning(f"[Deepgram] send_finalize error: {e}")
-        # Wait briefly for any final results
-        got_final = conn._dg_final_ev.wait(timeout=2.0)
-        logger.info(f"[Deepgram] finalize done: got_final={got_final} transcript='{conn.deepgram_transcript[:100]}'")
-        # Cleanup: close and clear socket so next turn creates a fresh one
-        try:
-            if hasattr(conn, "_dg_ctx"):
-                conn._dg_ctx.__exit__(None, None, None)
-        except Exception:
-            pass
-        if hasattr(conn, "_dg_socket"):
-            delattr(conn, "_dg_socket")
 
     # ── Batch fallback (REST) ─────────────────────────────────────────
 
