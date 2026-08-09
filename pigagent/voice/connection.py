@@ -34,6 +34,7 @@ from metrics.turn import TelemetryCollector
 from providers.base import InterfaceType, STTProvider, TTSProvider, VADProvider
 
 TAG = __name__
+TTS_FRAME_INTERVAL = 0.06  # 60 ms per Opus frame at 16 kHz
 
 # ── Opus helpers ──────────────────────────────────────────────────────
 
@@ -505,6 +506,7 @@ class ConnectionHandler:
                                 if self._interrupt_event.is_set():
                                     break
                                 await self._ws.send(frame)
+                                await asyncio.sleep(TTS_FRAME_INTERVAL)
                             if first_tts:
                                 elapsed = time.time() - _cons_start
                                 logger.info(f"[Voice] ⏱ First TTS sent: +{elapsed:.2f}s (consumer→tts)")
