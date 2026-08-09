@@ -88,21 +88,17 @@ class ConnectionHandler:
         self._vad_pcm_buffer: bytearray = bytearray()
         self._voice_window: deque[bool] = deque(maxlen=5)
 
+        # Idle timeout (reference: no_voice_close_connect)
+        self.last_voice_activity: float = 0.0
+
         # ASR audio (official: accumulated PCM for batch fallback)
         self.asr_audio: list[bytes] = []
-        self._pre_turn_audio: list[bytes] = []
 
         # Turn tracking
         self._interrupt_event = asyncio.Event()
         self._sentence_id: int = 0
         self._tts_task: asyncio.Task | None = None
-        self._turn_active = False
         self.client_is_speaking = False
-
-        # Silence watchdog (safety net only — VAD should handle normal stop)
-        self._watchdog_started_at: float = 0.0
-        self._max_listen_seconds: float = float(os.getenv("MAX_LISTEN_SECONDS", "15.0"))
-        self._silence_timer: asyncio.Task | None = None
 
         # Deepgram state (set by STT provider)
         self.dg_connection: Any = None
@@ -120,6 +116,7 @@ class ConnectionHandler:
     async def handle_connection(self, ws: websockets.ServerConnection) -> None:
         """Official pattern: accept WS, loop dispatch, cleanup."""
         self._ws = ws
+        self._loop = asyncio.get_running_loop()
         ColdStartMetrics.start(session_id=self.session_id, room_name=self.client_id)
         ColdStartMetrics.mark("entry")
         logger.info(f"[Voice] Connected client={self.client_id} session={self.session_id}")
@@ -206,87 +203,60 @@ class ConnectionHandler:
         elif state == "start":
             await self._on_start()
         elif state == "stop":
-            await self._on_stop()
+            # Client stopped listening — Deepgram handles endpointing automatically
+            self._reset_audio_states()
 
     async def _on_detect(self, data: dict) -> None:
-        """Official: reset audio states, start turn."""
+        """Wake word from client: reset audio states, suppress VAD briefly."""
         text = data.get("text", "")
         logger.info(f"[Voice] Wake word '{text}' client={self.client_id}")
 
         self._interrupt_event.clear()
-        self._turn_active = True
         self._reset_audio_states()
+
+        # Suppress VAD for 2s to prevent wake word audio from triggering
+        # a false voice detection (reference: just_woken_up)
+        self.just_woken_up = True
+        if hasattr(self, "vad_resume_task") and self.vad_resume_task and not self.vad_resume_task.done():
+            self.vad_resume_task.cancel()
+        self.vad_resume_task = asyncio.ensure_future(self._resume_vad())
 
         TelemetryCollector.start_turn(
             user_id=self._user_id or self.client_id,
             persona_id=self._persona_id,
         )
-        TelemetryCollector.mark("vad_start")
 
-        self._start_silence_watchdog()
-        logger.info("[Voice] Turn started (detect)")
+    async def _resume_vad(self) -> None:
+        await asyncio.sleep(2)
+        self.just_woken_up = False
+        logger.debug("[Voice] VAD resumed after wake word suppression")
 
     async def _on_start(self) -> None:
-        """Official: reset audio states when firmware starts a fresh listening session."""
+        """Client listening session start: reset audio states."""
         logger.info("[Voice] Firmware start")
         self._reset_audio_states()
-        self._start_silence_watchdog()
-
-    async def _on_stop(self) -> None:
-        """Official: finalize ASR, process turn."""
-        if not self._turn_active:
-            return  # already stopped (guard against double-call)
-        self._turn_active = False
-        self._cancel_silence_watchdog()
-        self.client_voice_stop = True
-        TelemetryCollector.mark("vad_end")
-
-        # Always save received audio WAV for debugging
-        self._save_input_wav("(stop)")
-
-        if self.stt and self.stt.interface_type == InterfaceType.STREAM:
-            # Streaming: get result from Deepgram callback
-            await self.stt.handle_voice_stop(self, self.asr_audio)
-            transcript = self.deepgram_transcript
-        else:
-            # Batch fallback
-            pcm = b"".join(self.asr_audio)
-            transcript = await self.stt.transcribe(pcm) if self.stt else ""
-
-        logger.info(f"[Voice] STT transcript: '{transcript[:200]}'")
-        if transcript.strip():
-            await self._on_stt_result(transcript.strip())
-        else:
-            logger.info("[Voice] STT empty, skipping turn")
 
     # ── Audio handling (official: handleAudioMessage) ─────────────────
 
     async def _handle_audio(self, pcm_frame: bytes) -> None:
-        """Official: VAD → ASR receive_audio. Accumulates audio for batch fallback."""
-        if not self._turn_active:
-            if self.client_is_speaking:
-                # Barge-in: user is speaking during TTS → start a fresh turn
-                # to capture this speech for VAD → STT → abort.
-                logger.info("[Voice] Barge-in: audio detected during TTS, starting new turn")
-                self._turn_active = True
-                self._reset_audio_states()
-                self._start_silence_watchdog()
-                TelemetryCollector.mark("vad_start")
-            else:
-                # Buffer pre-turn audio (wake word) so it can be sent to Deepgram
-                # once the turn becomes active. Previously this was silently dropped.
-                self._pre_turn_audio.append(pcm_frame)
-                return
-
-        # VAD: official double-threshold pattern
+        """Reference pattern: VAD always runs, Deepgram always receives.
+        No turn gate — VAD provider manages voice state internally."""
+        # 1. VAD: always active on every frame
         have_voice = False
         if self.vad is not None:
             have_voice = self.vad.is_vad(self, pcm_frame)
 
-        # Accumulate audio (for batch fallback + debug WAV)
-        self.asr_audio.append(pcm_frame)
+        # Suppress VAD after wake word to avoid false trigger (reference: just_woken_up)
+        if getattr(self, "just_woken_up", False):
+            have_voice = False
 
-        # Apply 10x gain for Deepgram (firmware mic level is very low)
+        # Track voice activity (reference: no_voice_close_connect)
+        now_ms = time.time() * 1000
+        if have_voice:
+            self.last_voice_activity = now_ms
+
+        # 2. Accumulate + gain + feed Deepgram (always)
+        self.asr_audio.append(pcm_frame)
         if len(pcm_frame) >= 2:
             arr = np.frombuffer(pcm_frame, dtype=np.int16).astype(np.float32)
             arr *= 10.0
@@ -295,31 +265,26 @@ class ConnectionHandler:
         else:
             pcm_gained = pcm_frame
 
-        # Lazy-open Deepgram on first frame (avoid timeout)
         if self.stt and self.stt.interface_type == InterfaceType.STREAM:
             if not hasattr(self, "_dg_socket"):
                 await self.stt.open_audio_channels(self)
-                # Flush pre-turn audio (wake word) now that Deepgram is open
-                if self._pre_turn_audio:
-                    logger.info(f"[Voice] Flushing {len(self._pre_turn_audio)} pre-turn audio frames to Deepgram")
-                    for p in self._pre_turn_audio:
-                        if len(p) >= 2:
-                            arr = np.frombuffer(p, dtype=np.int16).astype(np.float32)
-                            arr *= 10.0
-                            np.clip(arr, -32768, 32767, out=arr)
-                            pg = arr.astype(np.int16).tobytes()
-                        else:
-                            pg = p
-                        await self.stt.receive_audio(self, pg, True)
-                        self.asr_audio.append(p)
-                    self._pre_turn_audio.clear()
             await self.stt.receive_audio(self, pcm_gained, have_voice)
 
-        # VAD voice → silence transition → auto-stop
-        if not have_voice and self.client_voice_stop:
-            logger.info(f"[Voice] VAD voice stop, frames={len(self.asr_audio)}")
-            self._cancel_silence_watchdog()
-            await self._on_stop()
+        # 3. Idle timeout: close WS after 120s of no voice (reference: no_voice_close_connect)
+        if self.last_voice_activity > 0 and not self.client_is_speaking:
+            idle_sec = (now_ms - self.last_voice_activity) / 1000
+            _idle_timeout = float(os.getenv("VOICE_IDLE_TIMEOUT_SEC", "120"))
+            if idle_sec > _idle_timeout:
+                logger.info(f"[Voice] Idle {idle_sec:.0f}s, closing connection")
+                await self._ws.close()
+
+    async def _on_stt_final(self, text: str) -> None:
+        """Called by Deepgram callback when a final utterance is ready.
+        Replaces manual send_finalize pattern — Deepgram handles endpointing."""
+        logger.info(f"[Voice] STT final: '{text[:200]}'")
+        TelemetryCollector.mark("vad_end")
+        await self._on_stt_result(text.strip())
+        self._reset_audio_states()
 
     def _reset_audio_states(self) -> None:
         """Official reset_audio_states."""
@@ -332,33 +297,9 @@ class ConnectionHandler:
         self._vad_pcm_buffer.clear()
         self._voice_window.clear()
         self.asr_audio.clear()
-        # IMPORTANT: do NOT clear _pre_turn_audio here — it contains
-        # wake word audio received before the turn became active. It is
-        # flushed to Deepgram when the audio channel opens in _handle_audio.
+        self.just_woken_up = False
 
     # ── Silence watchdog ──────────────────────────────────────────────
-
-    def _start_silence_watchdog(self) -> None:
-        if self._silence_timer and not self._silence_timer.done():
-            self._silence_timer.cancel()
-        self._watchdog_started_at = time.time()
-        self._silence_timer = asyncio.ensure_future(self._silence_watchdog())
-
-    async def _silence_watchdog(self) -> None:
-        while self._turn_active:
-            elapsed = time.time() - self._watchdog_started_at
-            if elapsed > self._max_listen_seconds:
-                logger.warning(f"[Voice] Watchdog ({self._max_listen_seconds}s) auto-stop")
-                self._turn_active = False
-                if len(self.asr_audio) > 0:
-                    await self._on_stop()
-                return
-            await asyncio.sleep(1.0)
-
-    def _cancel_silence_watchdog(self) -> None:
-        if self._silence_timer and not self._silence_timer.done():
-            self._silence_timer.cancel()
-        self._silence_timer = None
 
     # ── STT result → LLM → TTS (official: speech_to_text_wrapper → startToChat → chat) ──
 
@@ -705,7 +646,6 @@ class ConnectionHandler:
 
     async def _cleanup(self) -> None:
         self._closed = True
-        self._cancel_silence_watchdog()
         self._interrupt_event.set()
         if self._tts_task and not self._tts_task.done():
             self._tts_task.cancel()
