@@ -133,6 +133,7 @@ class SileroVAD(VADProvider):
                     last = getattr(conn, "vad_last_voice_time", 0.0)
                     if now_ms - last >= self.silence_threshold_ms:
                         conn.client_voice_stop = True
+                        conn.client_have_voice = False  # reset for next voice cycle
                         logger.info(
                             f"[VAD] Voice stop: silence={now_ms - last:.0f}ms"
                         )
