@@ -282,6 +282,7 @@ class ConnectionHandler:
         """Called by Deepgram callback when a final utterance is ready.
         Replaces manual send_finalize pattern — Deepgram handles endpointing."""
         logger.info(f"[Voice] STT final: '{text[:200]}'")
+        self._save_input_wav(text)
         TelemetryCollector.mark("vad_end")
         await self._on_stt_result(text.strip())
         self._reset_audio_states()
