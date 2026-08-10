@@ -159,14 +159,31 @@ class ConnectionHandler:
                 logger.debug(f"[Voice] Unhandled: {msg_type}")
         elif isinstance(message, bytes):
             if self.vad is None or self.stt is None:
+                logger.warning(f"[Voice] DIAG binary dropped: vad={self.vad is not None} stt={self.stt is not None}")
                 return
+            # Diagnostic: count binary messages
+            if not hasattr(self, "_diag_bin_count"):
+                self._diag_bin_count = 0
+            self._diag_bin_count += 1
             # Browser sends raw PCM, firmware sends Opus
             if getattr(self, "_raw_pcm", False):
                 pcm_frame = message
             else:
                 pcm_frame = _decode_opus_packet(message, self.opus_decoder)
+                if self._diag_bin_count <= 3 or self._diag_bin_count % 50 == 0:
+                    logger.info(
+                        f"[Voice] DIAG bin #{self._diag_bin_count} opus_in={len(message)} "
+                        f"pcm_out={'OK' if pcm_frame else 'NONE'} decoder={'OK' if self.opus_decoder else 'MISSING'}"
+                    )
             if pcm_frame:
+                if self._diag_bin_count <= 3:
+                    # Show PCM energy
+                    arr = np.frombuffer(pcm_frame, dtype=np.int16).astype(np.float32)
+                    rms = float(np.sqrt(np.mean(arr ** 2)))
+                    logger.info(f"[Voice] DIAG pcm #{self._diag_bin_count} len={len(pcm_frame)} rms={rms:.1f}")
                 await self._handle_audio(pcm_frame)
+            elif self._diag_bin_count <= 3:
+                logger.warning(f"[Voice] DIAG pcm_frame is None, skipping _handle_audio")
 
     # ── Hello ─────────────────────────────────────────────────────────
 
@@ -322,7 +339,6 @@ class ConnectionHandler:
     async def _on_stt_final(self, text: str) -> None:
         """Deepgram speech_final — start EOU bounce timer before committing."""
         logger.info(f"[Voice] STT final (bounce {self._eou_bounce_delay*1000:.0f}ms): '{text[:200]}'")
-        self._save_input_wav(text)
         self._pending_speech_final = text.strip()
         # Cancel any previous bounce
         if self._eou_bounce_task and not self._eou_bounce_task.done():
@@ -751,6 +767,12 @@ class ConnectionHandler:
         self._interrupt_event.set()
         if self._tts_task and not self._tts_task.done():
             self._tts_task.cancel()
+        # Save accumulated audio even if STT never fired — diagnostic
+        if self.asr_audio:
+            try:
+                self._save_input_wav("(no_stt_result)")
+            except Exception:
+                pass
         if self.stt:
             await self.stt.close_audio_channels()
         try:
