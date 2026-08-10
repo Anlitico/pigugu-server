@@ -92,6 +92,10 @@ class ConnectionHandler:
         self._turn_type: str = "follow_up"  # overwritten by _on_detect for wake word
         self._vad_start_marked: bool = False
         self._vad_end_marked: bool = False
+        self._barge_in_eligible: bool = False  # new voice detected during TTS
+        self._eou_bounce_delay: float = float(os.getenv("EOU_BOUNCE_MS", "500")) / 1000.0
+        self._pending_speech_final: str = ""
+        self._eou_bounce_task: asyncio.Task | None = None
 
         # ASR audio (official: accumulated PCM for batch fallback)
         self.asr_audio: list[bytes] = []
@@ -261,6 +265,17 @@ class ConnectionHandler:
         if getattr(self, "just_woken_up", False):
             have_voice = False
 
+        # Track if new voice was detected during TTS → eligible for barge-in.
+        if have_voice and self.client_is_speaking and not self._barge_in_eligible:
+            self._barge_in_eligible = True
+
+        # Cancel EOU bounce if user resumes speaking (LiveKit pattern)
+        if have_voice and self._pending_speech_final:
+            logger.info("[Voice] EOU bounce cancelled — user resumed speaking")
+            self._pending_speech_final = ""
+            if self._eou_bounce_task and not self._eou_bounce_task.done():
+                self._eou_bounce_task.cancel()
+
         # Latency marks: vad_start / vad_end based on VAD state transitions.
         # Lazily start turn for follow-up utterances (wake word started in _on_detect).
         if self.client_have_voice and not self._vad_start_marked:
@@ -305,11 +320,27 @@ class ConnectionHandler:
                 await self._ws.close()
 
     async def _on_stt_final(self, text: str) -> None:
-        """Called by Deepgram callback when a final utterance is ready.
-        Replaces manual send_finalize pattern — Deepgram handles endpointing."""
-        logger.info(f"[Voice] STT final: '{text[:200]}'")
+        """Deepgram speech_final — start EOU bounce timer before committing."""
+        logger.info(f"[Voice] STT final (bounce {self._eou_bounce_delay*1000:.0f}ms): '{text[:200]}'")
         self._save_input_wav(text)
-        await self._on_stt_result(text.strip())
+        self._pending_speech_final = text.strip()
+        # Cancel any previous bounce
+        if self._eou_bounce_task and not self._eou_bounce_task.done():
+            self._eou_bounce_task.cancel()
+        self._eou_bounce_task = asyncio.ensure_future(self._eou_bounce())
+
+    async def _eou_bounce(self) -> None:
+        """LiveKit pattern: wait bounce delay, then commit if not cancelled."""
+        await asyncio.sleep(self._eou_bounce_delay)
+        text = self._pending_speech_final
+        self._pending_speech_final = ""
+        if not text:
+            return  # cancelled by VAD detecting new voice
+        logger.info(f"[Voice] EOU bounce complete, committing: '{text[:120]}'")
+        # Clear Deepgram buffer — utterance committed
+        if hasattr(self, "_dg_final_buffer"):
+            self._dg_final_buffer.clear()
+        await self._on_stt_result(text)
         self._reset_audio_states()
         self._turn_type = "follow_up"  # next VAD detection starts a follow-up turn
 
@@ -352,6 +383,10 @@ class ConnectionHandler:
         self.just_woken_up = False
         self._vad_start_marked = False
         self._vad_end_marked = False
+        self._barge_in_eligible = False
+        self._pending_speech_final = ""
+        if self._eou_bounce_task and not self._eou_bounce_task.done():
+            self._eou_bounce_task.cancel()
 
     # ── Silence watchdog ──────────────────────────────────────────────
 
@@ -369,19 +404,26 @@ class ConnectionHandler:
             self._e2e_stt_start = time.time()  # start of LLM+Cartesia segment
             TelemetryCollector.set_meta("fw_gap_s", self._e2e_fw_gap)
 
-        # Barge-in: if TTS is still playing when new STT text arrives,
-        # abort the current TTS before starting a new conversation.
+        # Barge-in: only if the user *actively interrupted* (new voice detected
+        # during TTS). Multi-sentence finals from Deepgram's endpointing on
+        # the same audio stream should NOT trigger barge-in.
         if self._tts_task and not self._tts_task.done() and self.client_is_speaking:
-            logger.info(f"[Voice] Barge-in: STT text='{text[:60]}' while speaking, aborting TTS")
-            self._sentence_id += 1
-            self._interrupt_event.set()
-            self._tts_task.cancel()
-            await self._ws.send(json.dumps({
-                "session_id": self.session_id,
-                "type": "tts",
-                "state": "stop",
-            }))
-            self.client_is_speaking = False
+            if getattr(self, "_barge_in_eligible", False):
+                logger.info(f"[Voice] Barge-in: STT text='{text[:60]}' while speaking, aborting TTS")
+                self._sentence_id += 1
+                self._interrupt_event.set()
+                self._tts_task.cancel()
+                await self._ws.send(json.dumps({
+                    "session_id": self.session_id,
+                    "type": "tts",
+                    "state": "stop",
+                }))
+                self.client_is_speaking = False
+                self._barge_in_eligible = False
+            else:
+                # Same utterance, continue current TTS — don't abort
+                logger.info(f"[Voice] Skipping STT (TTS still playing, no new voice): '{text[:60]}'")
+                return
 
         await self._ws.send(json.dumps({
             "session_id": self.session_id,
@@ -413,7 +455,8 @@ class ConnectionHandler:
         """Save user speech PCM as WAV. Returns the file path."""
         try:
             pcm = b"".join(self.asr_audio)
-            wav_path = f"/tmp/pigugu_in_{self.session_id}.wav"
+            sid = getattr(self, "_sentence_id", 0)
+            wav_path = f"/tmp/pigugu_in_{self.session_id}_{sid}.wav"
             with wave.open(wav_path, "wb") as wf:
                 wf.setnchannels(1)
                 wf.setsampwidth(2)

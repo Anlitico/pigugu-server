@@ -45,6 +45,7 @@ class DeepgramSTT(STTProvider):
         import threading
         client = DeepgramClient(api_key=self._api_key)
         conn.deepgram_transcript = ""
+        conn._dg_final_buffer: list[str] = []  # accumulate is_final until speech_final
 
         def on_message(result):
             try:
@@ -53,16 +54,21 @@ class DeepgramSTT(STTProvider):
                 text = result.channel.alternatives[0].transcript
                 if not text:
                     return
-                conn.deepgram_transcript = text
                 if result.is_final:
-                    logger.info(f"[Deepgram] FINAL: '{text[:120]}'")
-                    # Schedule on the asyncio event loop
-                    if hasattr(conn, "_loop") and conn._loop and conn._loop.is_running():
-                        asyncio.run_coroutine_threadsafe(
-                            conn._on_stt_final(text), conn._loop
-                        )
+                    logger.info(f"[Deepgram] is_final: '{text[:80]}'")
+                    conn._dg_final_buffer.append(text)
                 else:
                     logger.info(f"[Deepgram] interim: '{text[:80]}'")
+                # speech_final = endpoint detected → user finished speaking
+                # Don't clear buffer here — EOU bounce may cancel; only clear on commit.
+                if getattr(result, "speech_final", False):
+                    full_text = " ".join(conn._dg_final_buffer).strip()
+                    conn.deepgram_transcript = full_text
+                    logger.info(f"[Deepgram] speech_final: '{full_text[:120]}'")
+                    if full_text and hasattr(conn, "_loop") and conn._loop and conn._loop.is_running():
+                        asyncio.run_coroutine_threadsafe(
+                            conn._on_stt_final(full_text), conn._loop
+                        )
             except Exception:
                 logger.exception("[Deepgram] on_message error")
 
@@ -74,7 +80,7 @@ class DeepgramSTT(STTProvider):
             model=self._model, language=self._language,
             encoding="linear16", sample_rate=self._sample_rate,
             channels=1, smart_format=True, interim_results=True,
-            punctuate=True, endpointing=1000,
+            punctuate=True, endpointing=350, utterance_end_ms=2000,
         )
         conn._dg_socket = conn._dg_ctx.__enter__()
         conn._dg_socket.on(EventType.MESSAGE, on_message)
