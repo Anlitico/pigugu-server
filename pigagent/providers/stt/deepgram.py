@@ -59,12 +59,14 @@ class DeepgramSTT(STTProvider):
                     conn._dg_final_buffer.append(text)
                 else:
                     logger.info(f"[Deepgram] interim: '{text[:80]}'")
-                # speech_final = endpoint detected → user finished speaking
-                # Don't clear buffer here — EOU bounce may cancel; only clear on commit.
-                if getattr(result, "speech_final", False):
+                # is_final = finalized segment → trigger EOU bounce.
+                # EOU bounce handles multi-final dedup — only commits
+                # after bounce delay with no new voice detected.
+                if result.is_final:
+                    conn._dg_final_buffer.append(text)
                     full_text = " ".join(conn._dg_final_buffer).strip()
                     conn.deepgram_transcript = full_text
-                    logger.info(f"[Deepgram] speech_final: '{full_text[:120]}'")
+                    logger.info(f"[Deepgram] is_final → EOU bounce: '{full_text[:120]}'")
                     if full_text and hasattr(conn, "_loop") and conn._loop and conn._loop.is_running():
                         asyncio.run_coroutine_threadsafe(
                             conn._on_stt_final(full_text), conn._loop
