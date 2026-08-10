@@ -29,7 +29,6 @@ import websockets
 from loguru import logger
 
 from bootstrap.factory import create_pig_agent, get_pg_pool, get_redis
-from metrics.session import ColdStartMetrics
 from metrics.turn import TelemetryCollector
 from providers.base import InterfaceType, STTProvider, TTSProvider, VADProvider
 
@@ -90,6 +89,9 @@ class ConnectionHandler:
 
         # Idle timeout (reference: no_voice_close_connect)
         self.last_voice_activity: float = 0.0
+        self._turn_type: str = "follow_up"  # overwritten by _on_detect for wake word
+        self._vad_start_marked: bool = False
+        self._vad_end_marked: bool = False
 
         # ASR audio (official: accumulated PCM for batch fallback)
         self.asr_audio: list[bytes] = []
@@ -117,8 +119,6 @@ class ConnectionHandler:
         """Official pattern: accept WS, loop dispatch, cleanup."""
         self._ws = ws
         self._loop = asyncio.get_running_loop()
-        ColdStartMetrics.start(session_id=self.session_id, room_name=self.client_id)
-        ColdStartMetrics.mark("entry")
         logger.info(f"[Voice] Connected client={self.client_id} session={self.session_id}")
         self._start_inject_consumer()
 
@@ -200,6 +200,8 @@ class ConnectionHandler:
 
         if state == "detect":
             await self._on_detect(data)
+        elif state == "vad_silence":
+            await self._on_vad_silence(data)
         elif state == "start":
             await self._on_start()
         elif state == "stop":
@@ -211,6 +213,7 @@ class ConnectionHandler:
         text = data.get("text", "")
         logger.info(f"[Voice] Wake word '{text}' client={self.client_id}")
 
+        self._turn_type = "wake_word"
         self._interrupt_event.clear()
         self._reset_audio_states()
 
@@ -225,6 +228,14 @@ class ConnectionHandler:
             user_id=self._user_id or self.client_id,
             persona_id=self._persona_id,
         )
+        TelemetryCollector.set_meta("turn_type", "wake_word")
+
+    async def _on_vad_silence(self, data: dict) -> None:
+        """Firmware VAD silence — stores user_stop_ms for E2E on every turn."""
+        user_stop_ms = data.get("user_stop_ms", 0)
+        if user_stop_ms > 0:
+            self._e2e_user_stop = user_stop_ms / 1000.0
+            self._e2e_detect = time.time()
 
     async def _resume_vad(self) -> None:
         await asyncio.sleep(2)
@@ -249,6 +260,21 @@ class ConnectionHandler:
         # Suppress VAD after wake word to avoid false trigger (reference: just_woken_up)
         if getattr(self, "just_woken_up", False):
             have_voice = False
+
+        # Latency marks: vad_start / vad_end based on VAD state transitions.
+        # Lazily start turn for follow-up utterances (wake word started in _on_detect).
+        if self.client_have_voice and not self._vad_start_marked:
+            if getattr(self, "_turn_type", "follow_up") != "wake_word":
+                TelemetryCollector.start_turn(
+                    user_id=self._user_id or self.client_id,
+                    persona_id=self._persona_id,
+                )
+                TelemetryCollector.set_meta("turn_type", "follow_up")
+            TelemetryCollector.mark("vad_start")
+            self._vad_start_marked = True
+        if self.client_voice_stop and not self._vad_end_marked:
+            TelemetryCollector.mark("vad_end")
+            self._vad_end_marked = True
 
         # Track voice activity (reference: no_voice_close_connect)
         now_ms = time.time() * 1000
@@ -283,9 +309,34 @@ class ConnectionHandler:
         Replaces manual send_finalize pattern — Deepgram handles endpointing."""
         logger.info(f"[Voice] STT final: '{text[:200]}'")
         self._save_input_wav(text)
-        TelemetryCollector.mark("vad_end")
         await self._on_stt_result(text.strip())
         self._reset_audio_states()
+        self._turn_type = "follow_up"  # next VAD detection starts a follow-up turn
+
+    def _log_e2e_if_present(self) -> None:
+        """Log wall-clock E2E: user_stop(固件) → agent_spk(服务端).
+        Segments:
+          fw_gap:      user_stop → detect_received   (WS + audio buffer)
+          server_stt:  detect_received → stt_final    (VAD + Deepgram)
+          llm_tts:     stt_final → agent_spk          (LLM + Cartesia)
+        """
+        user_stop = getattr(self, "_e2e_user_stop", 0.0)
+        if user_stop <= 0:
+            return
+        now = time.time()
+        fw_gap = getattr(self, "_e2e_fw_gap", 0.0)
+        server_stt = getattr(self, "_e2e_server_stt", 0.0)
+        llm_tts = round(now - getattr(self, "_e2e_stt_start", now), 3)
+        e2e = round(now - user_stop, 3)
+        logger.info(
+            f"[Voice] ⏱ TRUE E2E={e2e:.3f}s "
+            f"(fw_gap={fw_gap:.3f}s server_stt={server_stt:.3f}s llm_tts={llm_tts:.3f}s)"
+        )
+        TelemetryCollector.set_meta("e2e_true_s", e2e)
+        TelemetryCollector.set_meta("fw_gap_s", fw_gap)
+        TelemetryCollector.set_meta("server_stt_s", server_stt)
+        TelemetryCollector.set_meta("llm_tts_s", llm_tts)
+        self._e2e_user_stop = 0  # one-shot
 
     def _reset_audio_states(self) -> None:
         """Official reset_audio_states."""
@@ -299,6 +350,8 @@ class ConnectionHandler:
         self._voice_window.clear()
         self.asr_audio.clear()
         self.just_woken_up = False
+        self._vad_start_marked = False
+        self._vad_end_marked = False
 
     # ── Silence watchdog ──────────────────────────────────────────────
 
@@ -307,6 +360,14 @@ class ConnectionHandler:
     async def _on_stt_result(self, text: str) -> None:
         """Handle STT result: send to client, persist, launch LLM."""
         TelemetryCollector.mark("stt_final")
+
+        # E2E wall-clock tracking: firmware user_stop → server segments
+        user_stop = getattr(self, "_e2e_user_stop", 0.0)
+        if user_stop > 0:
+            self._e2e_fw_gap = round(self._e2e_detect - user_stop, 3)    # firmware→detect
+            self._e2e_server_stt = round(time.time() - self._e2e_detect, 3) # detect→STT final
+            self._e2e_stt_start = time.time()  # start of LLM+Cartesia segment
+            TelemetryCollector.set_meta("fw_gap_s", self._e2e_fw_gap)
 
         # Barge-in: if TTS is still playing when new STT text arrives,
         # abort the current TTS before starting a new conversation.
@@ -332,13 +393,7 @@ class ConnectionHandler:
         self._user_id = self._user_id or self.client_id
         if self._pig is None:
             self._pig = await create_pig_agent(self._user_id, hw_id=self._hw_id)
-            ColdStartMetrics.set_meta("user_id", self._user_id)
-            ColdStartMetrics.set_meta("persona_id", self._persona_id)
-            ColdStartMetrics.set_meta("llm_model", self._pig.model)
             TelemetryCollector.set_meta("llm_model", self._pig.model)
-            ColdStartMetrics.mark("agent_created")
-            ColdStartMetrics.mark("ready")
-            ColdStartMetrics.flush()
 
         # Persist user message (must be after _pig creation)
         if self._pig and self._pig.ctx:
@@ -472,6 +527,7 @@ class ConnectionHandler:
                                 logger.info(f"[Voice] ⏱ First TTS sent: +{elapsed:.2f}s (consumer→tts)")
                                 first_tts = False
                                 TelemetryCollector.mark("agent_spk")
+                                self._log_e2e_if_present()
                         continue
 
                     if chunk is None:
@@ -511,6 +567,7 @@ class ConnectionHandler:
                             logger.info(f"[Voice] ⏱ First TTS sent: +{elapsed:.2f}s")
                             first_tts = False
                             TelemetryCollector.mark("agent_spk")
+                            self._log_e2e_if_present()
 
                 # Flush remaining
                 if text_buffer.strip() and not self._interrupt_event.is_set() and self.tts:
@@ -534,6 +591,7 @@ class ConnectionHandler:
                     if first_tts:
                         first_tts = False
                         TelemetryCollector.mark("agent_spk")
+                        self._log_e2e_if_present()
 
                 # Save TTS output WAV for debugging
                 if len(tts_pcm) > 0:
