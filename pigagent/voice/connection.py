@@ -90,6 +90,8 @@ class ConnectionHandler:
 
         # Idle timeout (reference: no_voice_close_connect)
         self.last_voice_activity: float = 0.0
+        self._vad_start_marked: bool = False
+        self._vad_end_marked: bool = False
 
         # ASR audio (official: accumulated PCM for batch fallback)
         self.asr_audio: list[bytes] = []
@@ -214,6 +216,14 @@ class ConnectionHandler:
         self._interrupt_event.clear()
         self._reset_audio_states()
 
+        # Firmware-provided timestamp: when local VAD detected user stopped speaking.
+        # Used to correct first-turn E2E that would otherwise be inflated by WS
+        # connection time (audio buffered on device, not yet streaming to server).
+        user_stop_ms = data.get("user_stop_ms", 0)
+        if user_stop_ms > 0:
+            self._user_stop_ms = user_stop_ms / 1000.0  # ms → seconds (wall clock)
+            self._detect_received = time.time()
+
         # Suppress VAD for 2s to prevent wake word audio from triggering
         # a false voice detection (reference: just_woken_up)
         self.just_woken_up = True
@@ -250,6 +260,19 @@ class ConnectionHandler:
         if getattr(self, "just_woken_up", False):
             have_voice = False
 
+        # Latency marks: vad_start / vad_end based on VAD state transitions.
+        # Lazily start turn so barge-in utterances get metrics too.
+        if self.client_have_voice and not self._vad_start_marked:
+            TelemetryCollector.start_turn(
+                user_id=self._user_id or self.client_id,
+                persona_id=self._persona_id,
+            )
+            TelemetryCollector.mark("vad_start")
+            self._vad_start_marked = True
+        if self.client_voice_stop and not self._vad_end_marked:
+            TelemetryCollector.mark("vad_end")
+            self._vad_end_marked = True
+
         # Track voice activity (reference: no_voice_close_connect)
         now_ms = time.time() * 1000
         if have_voice:
@@ -283,7 +306,6 @@ class ConnectionHandler:
         Replaces manual send_finalize pattern — Deepgram handles endpointing."""
         logger.info(f"[Voice] STT final: '{text[:200]}'")
         self._save_input_wav(text)
-        TelemetryCollector.mark("vad_end")
         await self._on_stt_result(text.strip())
         self._reset_audio_states()
 
@@ -299,6 +321,8 @@ class ConnectionHandler:
         self._voice_window.clear()
         self.asr_audio.clear()
         self.just_woken_up = False
+        self._vad_start_marked = False
+        self._vad_end_marked = False
 
     # ── Silence watchdog ──────────────────────────────────────────────
 
@@ -307,6 +331,15 @@ class ConnectionHandler:
     async def _on_stt_result(self, text: str) -> None:
         """Handle STT result: send to client, persist, launch LLM."""
         TelemetryCollector.mark("stt_final")
+
+        # First-turn E2E correction: firmware sent user_stop_ms (wall clock).
+        # Server-side vad_end is delayed by WS connection time (~2s),
+        # so we record the gap for accurate user-perceived latency.
+        user_stop_ms = getattr(self, "_user_stop_ms", 0.0)
+        if user_stop_ms > 0:
+            gap = self._detect_received - user_stop_ms
+            TelemetryCollector.set_meta("fw_vad_gap_s", round(gap, 3))
+            self._user_stop_ms = 0  # only first turn
 
         # Barge-in: if TTS is still playing when new STT text arrives,
         # abort the current TTS before starting a new conversation.
