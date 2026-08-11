@@ -32,7 +32,7 @@ class SileroVAD(VADProvider):
         threshold: float = 0.5,
         threshold_low: float = 0.2,
         min_silence_duration_ms: int = 700,
-        frame_window_threshold: int = 3,
+        min_speech_duration_ms: int = 500,  # LiveKit: 500ms min voice to confirm
     ):
         import onnxruntime
 
@@ -46,17 +46,19 @@ class SileroVAD(VADProvider):
         self.vad_threshold = threshold
         self.vad_threshold_low = threshold_low
         self.silence_threshold_ms = min_silence_duration_ms
-        self.frame_window_threshold = frame_window_threshold
-        logger.info(f"[VAD] ONNX model loaded threshold={threshold}")
+        self.min_speech_duration_ms = min_speech_duration_ms
+        logger.info(f"[VAD] ONNX model loaded threshold={threshold} min_speech={min_speech_duration_ms}ms")
 
     def _init_connection_state(self, conn: Any) -> None:
         if not hasattr(conn, "_vad_state"):
             conn._vad_state = np.zeros((2, 1, 128), dtype=np.float32)
         if not hasattr(conn, "_vad_context"):
             conn._vad_context = np.zeros((1, 64), dtype=np.float32)
+        if not hasattr(conn, "_voice_start_ms"):
+            conn._voice_start_ms = 0
 
     def release_conn_resources(self, conn: Any) -> None:
-        for attr in ("_vad_state", "_vad_context"):
+        for attr in ("_vad_state", "_vad_context", "_voice_start_ms"):
             if hasattr(conn, attr):
                 try:
                     delattr(conn, attr)
@@ -122,25 +124,37 @@ class SileroVAD(VADProvider):
 
                 conn.last_is_voice = is_voice
 
-                conn.client_voice_window.append(is_voice)
-                client_have_voice = (
-                    conn.client_voice_window.count(True)
-                    >= self.frame_window_threshold
-                )
+                # Time-based voice confirmation (LiveKit min_duration pattern):
+                # voice must persist ≥ min_speech_duration_ms before confirming.
+                # Single-frame spikes (door, cough) are filtered out.
+                now_ms = time.time() * 1000
+                if is_voice:
+                    if not hasattr(conn, "_voice_start_ms") or conn._voice_start_ms == 0:
+                        conn._voice_start_ms = now_ms
+                else:
+                    conn._voice_start_ms = 0
 
-                if conn.client_have_voice and not client_have_voice:
-                    now_ms = time.time() * 1000
+                if conn._voice_start_ms > 0:
+                    voice_duration_ms = now_ms - conn._voice_start_ms
+                    if voice_duration_ms >= self.min_speech_duration_ms:
+                        client_have_voice = True
+                        conn.client_have_voice = True
+                        conn.vad_last_voice_time = now_ms
+                    else:
+                        client_have_voice = getattr(conn, "client_have_voice", False)
+                else:
+                    client_have_voice = False
+
+                # Voice stop: sustained silence after confirmed speech
+                if getattr(conn, "client_have_voice", False) and not is_voice:
                     last = getattr(conn, "vad_last_voice_time", 0.0)
                     if now_ms - last >= self.silence_threshold_ms:
                         conn.client_voice_stop = True
-                        conn.client_have_voice = False  # reset for next voice cycle
+                        conn.client_have_voice = False
+                        conn._voice_start_ms = 0
                         logger.info(
                             f"[VAD] Voice stop: silence={now_ms - last:.0f}ms"
                         )
-
-                if client_have_voice:
-                    conn.client_have_voice = True
-                    conn.vad_last_voice_time = time.time() * 1000
 
             return client_have_voice
 

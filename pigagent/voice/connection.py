@@ -92,7 +92,6 @@ class ConnectionHandler:
         self._turn_type: str = "follow_up"  # overwritten by _on_detect for wake word
         self._vad_start_marked: bool = False
         self._vad_end_marked: bool = False
-        self._barge_in_eligible: bool = False  # new voice detected during TTS
         self._eou_bounce_delay: float = float(os.getenv("EOU_BOUNCE_MS", "500")) / 1000.0
         self._pending_speech_final: str = ""
         self._eou_bounce_task: asyncio.Task | None = None
@@ -282,13 +281,10 @@ class ConnectionHandler:
         if getattr(self, "just_woken_up", False):
             have_voice = False
 
-        # Track if new voice was detected during TTS → eligible for barge-in.
-        # Use both confirmed voice (sliding window) and per-frame voice
-        # (faster, catches brief barge-in speech the window might miss).
-        is_voice_frame = getattr(self, "last_is_voice", False)
-        if (have_voice or is_voice_frame) and self.client_is_speaking and not self._barge_in_eligible:
-            self._barge_in_eligible = True
-            logger.info("[Voice] Barge-in eligible (have_voice=%s is_voice_frame=%s)", have_voice, is_voice_frame)
+        # Barge-in is handled by Deepgram on_message: when interim reaches
+        # ≥3 words during TTS → _on_interim_barge_in() triggers abort.
+        # VAD here only manages voice state for turn tracking; it does NOT
+        # trigger barge-in directly — avoids false positives from noise.
 
         # Cancel EOU bounce if user resumes speaking (LiveKit pattern)
         if have_voice and self._pending_speech_final:
@@ -348,6 +344,21 @@ class ConnectionHandler:
         if self._eou_bounce_task and not self._eou_bounce_task.done():
             self._eou_bounce_task.cancel()
         self._eou_bounce_task = asyncio.ensure_future(self._eou_bounce())
+
+    async def _on_interim_barge_in(self) -> None:
+        """Pipecat-style: Deepgram interim ≥3 words during TTS → abort immediately."""
+        if not self.client_is_speaking:
+            return
+        logger.info("[Voice] Barge-in abort (Pipecat min_words=3)")
+        self._interrupt_event.set()
+        if self._tts_task and not self._tts_task.done():
+            self._tts_task.cancel()
+        await self._ws.send(json.dumps({
+            "session_id": self.session_id,
+            "type": "tts",
+            "state": "abort",
+        }))
+        self.client_is_speaking = False
 
     async def _eou_bounce(self) -> None:
         """LiveKit pattern: wait bounce delay, then commit if not cancelled."""
@@ -409,7 +420,6 @@ class ConnectionHandler:
         self.just_woken_up = False
         self._vad_start_marked = False
         self._vad_end_marked = False
-        self._barge_in_eligible = False
         self._pending_speech_final = ""
         if self._eou_bounce_task and not self._eou_bounce_task.done():
             self._eou_bounce_task.cancel()
@@ -430,26 +440,15 @@ class ConnectionHandler:
             self._e2e_stt_start = time.time()  # start of LLM+Cartesia segment
             TelemetryCollector.set_meta("fw_gap_s", self._e2e_fw_gap)
 
-        # Barge-in: only if the user *actively interrupted* (new voice detected
-        # during TTS). Multi-sentence finals from Deepgram's endpointing on
-        # the same audio stream should NOT trigger barge-in.
-        if self._tts_task and not self._tts_task.done() and self.client_is_speaking:
-            if getattr(self, "_barge_in_eligible", False):
-                logger.info(f"[Voice] Barge-in: STT text='{text[:60]}' while speaking, aborting TTS")
-                self._sentence_id += 1
-                self._interrupt_event.set()
-                self._tts_task.cancel()
-                await self._ws.send(json.dumps({
-                    "session_id": self.session_id,
-                    "type": "tts",
-                    "state": "stop",
-                }))
-                self.client_is_speaking = False
-                self._barge_in_eligible = False
-            else:
-                # Same utterance, continue current TTS — don't abort
-                logger.info(f"[Voice] Skipping STT (TTS still playing, no new voice): '{text[:60]}'")
-                return
+        # If TTS is still playing, skip — barge-in (Deepgram interim) handles
+        # interruption. If an LLM/TTS task is still in progress but TTS hasn't
+        # started yet (LLM generation phase), cancel it before launching a new one.
+        if self.client_is_speaking:
+            logger.info(f"[Voice] Skipping STT (TTS still playing): '{text[:60]}'")
+            return
+        if self._tts_task and not self._tts_task.done():
+            logger.info(f"[Voice] Cancelling previous TTS task for new turn")
+            self._tts_task.cancel()
 
         await self._ws.send(json.dumps({
             "session_id": self.session_id,
@@ -469,6 +468,10 @@ class ConnectionHandler:
 
         TelemetryCollector.mark("agent_req")
         TelemetryCollector.mark("llm_start")
+
+        # H3: clear interrupt before launching new LLM, after old TTS has yielded
+        self._interrupt_event.clear()
+
         sentence_id = self._sentence_id
         self._sentence_id += 1
 
@@ -482,7 +485,8 @@ class ConnectionHandler:
         try:
             pcm = b"".join(self.asr_audio)
             sid = getattr(self, "_sentence_id", 0)
-            wav_path = f"/tmp/pigugu_in_{self.session_id}_{sid}.wav"
+            ts = int(time.time() * 1000)  # prevent overwrite from duplicate saves
+            wav_path = f"/tmp/pigugu_in_{self.session_id}_{sid}_{ts}.wav"
             with wave.open(wav_path, "wb") as wf:
                 wf.setnchannels(1)
                 wf.setsampwidth(2)
@@ -680,6 +684,7 @@ class ConnectionHandler:
                 logger.info("[Voice] TTS consumer cancelled")
             except Exception:
                 logger.exception("[Voice] TTS consumer failed")
+                self.client_is_speaking = False
 
         # Run concurrently
         full_text = ""
@@ -704,11 +709,14 @@ class ConnectionHandler:
         if self._tts_task and not self._tts_task.done():
             self._tts_task.cancel()
         self.client_is_speaking = False
+        # M1: abort (not stop) so firmware flushes decode queue
         await self._ws.send(json.dumps({
             "session_id": self.session_id,
             "type": "tts",
-            "state": "stop",
+            "state": "abort",
         }))
+        # H1: clear interrupt so next turn's LLM can run
+        self._interrupt_event.clear()
 
     # ── Persistence ───────────────────────────────────────────────────
 
