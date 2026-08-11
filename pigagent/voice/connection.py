@@ -283,8 +283,12 @@ class ConnectionHandler:
             have_voice = False
 
         # Track if new voice was detected during TTS → eligible for barge-in.
-        if have_voice and self.client_is_speaking and not self._barge_in_eligible:
+        # Use both confirmed voice (sliding window) and per-frame voice
+        # (faster, catches brief barge-in speech the window might miss).
+        is_voice_frame = getattr(self, "last_is_voice", False)
+        if (have_voice or is_voice_frame) and self.client_is_speaking and not self._barge_in_eligible:
             self._barge_in_eligible = True
+            logger.info("[Voice] Barge-in eligible (have_voice=%s is_voice_frame=%s)", have_voice, is_voice_frame)
 
         # Cancel EOU bounce if user resumes speaking (LiveKit pattern)
         if have_voice and self._pending_speech_final:
