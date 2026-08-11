@@ -387,6 +387,12 @@ class ConnectionHandler:
 
     def _reset_audio_states(self) -> None:
         """Official reset_audio_states."""
+        # Save accumulated audio before clearing — captures barge-in speech
+        if self.asr_audio:
+            try:
+                self._save_input_wav(f"(turn_{self._sentence_id})")
+            except Exception:
+                pass
         self.client_audio_buffer.clear()
         self.client_have_voice = False
         self.client_voice_stop = False

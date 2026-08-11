@@ -51,18 +51,17 @@ class DeepgramSTT(STTProvider):
             try:
                 if not hasattr(result, "channel"):
                     return
-                text = result.channel.alternatives[0].transcript
+                # UtteranceEnd: channel is List[int], not a Channel object
+                if not hasattr(result.channel, "alternatives"):
+                    return
+                alternatives = result.channel.alternatives
+                if not alternatives:
+                    return
+                text = alternatives[0].transcript
                 if not text:
                     return
                 if result.is_final:
                     logger.info(f"[Deepgram] is_final: '{text[:80]}'")
-                    conn._dg_final_buffer.append(text)
-                else:
-                    logger.info(f"[Deepgram] interim: '{text[:80]}'")
-                # is_final = finalized segment → trigger EOU bounce.
-                # EOU bounce handles multi-final dedup — only commits
-                # after bounce delay with no new voice detected.
-                if result.is_final:
                     conn._dg_final_buffer.append(text)
                     full_text = " ".join(conn._dg_final_buffer).strip()
                     conn.deepgram_transcript = full_text
@@ -71,6 +70,8 @@ class DeepgramSTT(STTProvider):
                         asyncio.run_coroutine_threadsafe(
                             conn._on_stt_final(full_text), conn._loop
                         )
+                else:
+                    logger.info(f"[Deepgram] interim: '{text[:80]}'")
             except Exception:
                 logger.exception("[Deepgram] on_message error")
 
