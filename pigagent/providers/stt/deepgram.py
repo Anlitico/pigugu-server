@@ -72,16 +72,16 @@ class DeepgramSTT(STTProvider):
                         )
                 else:
                     logger.info(f"[Deepgram] interim: '{text[:80]}'")
-                    # Pipecat-style barge-in: ≥3 words during TTS → abort immediately.
-                    # VAD alone is unreliable; word count confirms real speech vs. noise.
-                    if getattr(conn, "client_is_speaking", False):
-                        words = text.strip().split()
-                        if len(words) >= 3:
-                            logger.info(f"[Deepgram] Barge-in triggered: {len(words)} words: '{text[:80]}'")
-                            if hasattr(conn, "_loop") and conn._loop and conn._loop.is_running():
-                                asyncio.run_coroutine_threadsafe(
-                                    conn._on_interim_barge_in(), conn._loop
-                                )
+                    # Pipecat-style barge-in: ≥3 words → abort immediately.
+                    # Not gated on client_is_speaking — the STT word count IS the
+                    # definitive signal. Firmware safely ignores tts abort if idle.
+                    words = text.strip().split()
+                    if len(words) >= 3:
+                        logger.info(f"[Deepgram] Barge-in triggered: {len(words)} words: '{text[:80]}'")
+                        if hasattr(conn, "_loop") and conn._loop and conn._loop.is_running():
+                            asyncio.run_coroutine_threadsafe(
+                                conn._on_interim_barge_in(), conn._loop
+                            )
             except Exception:
                 logger.exception("[Deepgram] on_message error")
 
