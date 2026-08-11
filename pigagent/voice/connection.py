@@ -104,6 +104,7 @@ class ConnectionHandler:
         self._sentence_id: int = 0
         self._tts_task: asyncio.Task | None = None
         self.client_is_speaking = False
+        self._last_abort_time: float = 0.0
 
         # Deepgram state (set by STT provider)
         self.dg_connection: Any = None
@@ -347,8 +348,6 @@ class ConnectionHandler:
 
     async def _on_interim_barge_in(self) -> None:
         """Pipecat-style: Deepgram interim ≥3 words during TTS → abort immediately."""
-        if not self.client_is_speaking:
-            return
         logger.info("[Voice] Barge-in abort (Pipecat min_words=3)")
         self._interrupt_event.set()
         if self._tts_task and not self._tts_task.done():
