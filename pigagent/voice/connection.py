@@ -282,8 +282,8 @@ class ConnectionHandler:
         if getattr(self, "just_woken_up", False):
             have_voice = False
 
-        # Barge-in is handled by Deepgram on_message: when interim reaches
-        # ≥3 words during TTS → _on_interim_barge_in() triggers abort.
+        # Barge-in is handled by Deepgram on_message: any short interim speech
+        # while TTS is playing → _on_interim_barge_in() triggers abort.
         # VAD here only manages voice state for turn tracking; it does NOT
         # trigger barge-in directly — avoids false positives from noise.
 
@@ -347,8 +347,12 @@ class ConnectionHandler:
         self._eou_bounce_task = asyncio.ensure_future(self._eou_bounce())
 
     async def _on_interim_barge_in(self) -> None:
-        """Pipecat-style: Deepgram interim ≥3 words during TTS → abort immediately."""
-        logger.info("[Voice] Barge-in abort (Pipecat min_words=3)")
+        """Pipecat-style: Deepgram interim speech during TTS → abort immediately."""
+        now = time.time()
+        if now - self._last_abort_time < 1.0:
+            return  # abort in flight — ignore repeats from queued interims
+        self._last_abort_time = now
+        logger.info("[Voice] Barge-in abort")
         self._interrupt_event.set()
         if self._tts_task and not self._tts_task.done():
             self._tts_task.cancel()
@@ -520,6 +524,19 @@ class ConnectionHandler:
 
     # ── TTS producer-consumer ─────────────────────────────────────────
 
+    async def _send_tts_frames(self, frames) -> None:
+        """Send synthesized frames at playback rate (60 ms/frame), aborting on interrupt.
+
+        Pacing is required: the ESP32 decodes and plays in real time. Sending
+        faster than playback rate overflows its decode queue — the device keeps
+        playing the backlog long after the protocol says TTS stopped.
+        """
+        for frame in frames:
+            if self._interrupt_event.is_set():
+                break
+            await self._ws.send(frame)
+            await asyncio.sleep(TTS_FRAME_INTERVAL)
+
     async def _tts_producer_consumer(self, stt_text: str, sentence_id: int) -> None:
         """Official pattern: LLM → text → TTS → Opus → WebSocket."""
         _tts_start = time.time()
@@ -574,6 +591,8 @@ class ConnectionHandler:
                     try:
                         chunk = await asyncio.wait_for(text_queue.get(), timeout=0.15)
                     except asyncio.TimeoutError:
+                        if self._interrupt_event.is_set():
+                            continue  # abort in flight — never send start after abort
                         if text_buffer and self.tts:
                             if not tts_started:
                                 await self._ws.send(json.dumps({
@@ -589,17 +608,13 @@ class ConnectionHandler:
                                 collect_pcm=tts_pcm,
                             )
                             text_buffer = ""
-                            for frame in frames:
-                                if self._interrupt_event.is_set():
-                                    break
-                                await self._ws.send(frame)
-                                await asyncio.sleep(TTS_FRAME_INTERVAL)
                             if first_tts:
                                 elapsed = time.time() - _cons_start
                                 logger.info(f"[Voice] ⏱ First TTS sent: +{elapsed:.2f}s (consumer→tts)")
                                 first_tts = False
                                 TelemetryCollector.mark("agent_spk")
                                 self._log_e2e_if_present()
+                            await self._send_tts_frames(frames)
                         continue
 
                     if chunk is None:
@@ -630,16 +645,13 @@ class ConnectionHandler:
                             flush_text, raw_pcm=self._raw_pcm,
                             collect_pcm=tts_pcm,
                         )
-                        for frame in frames:
-                            if self._interrupt_event.is_set():
-                                break
-                            await self._ws.send(frame)
                         if first_tts:
                             elapsed = time.time() - _cons_start
                             logger.info(f"[Voice] ⏱ First TTS sent: +{elapsed:.2f}s")
                             first_tts = False
                             TelemetryCollector.mark("agent_spk")
                             self._log_e2e_if_present()
+                        await self._send_tts_frames(frames)
 
                 # Flush remaining
                 if text_buffer.strip() and not self._interrupt_event.is_set() and self.tts:
@@ -656,14 +668,11 @@ class ConnectionHandler:
                         text_buffer.strip(), raw_pcm=self._raw_pcm,
                         collect_pcm=tts_pcm,
                     )
-                    for frame in frames:
-                        if self._interrupt_event.is_set():
-                            break
-                        await self._ws.send(frame)
                     if first_tts:
                         first_tts = False
                         TelemetryCollector.mark("agent_spk")
                         self._log_e2e_if_present()
+                    await self._send_tts_frames(frames)
 
                 # Save TTS output WAV for debugging
                 if len(tts_pcm) > 0:
@@ -746,16 +755,27 @@ class ConnectionHandler:
             if self._tts_task and not self._tts_task.done():
                 self._interrupt_event.set()
                 self._tts_task.cancel()
+                try:
+                    await self._tts_task
+                except asyncio.CancelledError:
+                    # Old task's cleanup (client_is_speaking=False) has run by
+                    # now — must precede our True write below, else a late
+                    # cleanup could clobber the flag mid-inject.
+                    pass
             self._interrupt_event.clear()
             await self._ws.send(json.dumps({
                 "session_id": self.session_id,
                 "type": "tts",
                 "state": "start",
             }))
+            self.client_is_speaking = True
             self._tts_task = asyncio.ensure_future(
                 self._inject_tts(msg, sentence_id)
             )
-            await self._tts_task
+            try:
+                await self._tts_task
+            except asyncio.CancelledError:
+                logger.info("[Voice] Inject cancelled by new turn")
 
     async def _inject_tts(self, msg: dict, sentence_id: int) -> None:
         try:
@@ -767,6 +787,7 @@ class ConnectionHandler:
                     if self._interrupt_event.is_set() or sentence_id != self._sentence_id:
                         break
                     await self._ws.send(frame)
+                    await asyncio.sleep(TTS_FRAME_INTERVAL)
                 if len(tts_pcm) > 0:
                     self._save_tts_wav(bytes(tts_pcm))
             await self._ws.send(json.dumps({
@@ -776,6 +797,8 @@ class ConnectionHandler:
             }))
         except Exception:
             logger.exception("[Voice] Inject TTS failed")
+        finally:
+            self.client_is_speaking = False
 
     # ── Cleanup ───────────────────────────────────────────────────────
 

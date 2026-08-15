@@ -14,6 +14,23 @@ from loguru import logger
 from providers.base import InterfaceType, STTProvider
 
 
+def _should_barge_in(conn: Any, text: str) -> bool:
+    """Decide whether this interim transcript should abort TTS playback.
+
+    Only meaningful while the assistant is speaking — during listening the
+    interim is the user's own utterance and there is nothing to abort.
+    Short interrupts are the norm ("what", "stop it"), so the bar is low:
+    ≥2 words, or a single word ≥4 chars, or ≥2 CJK chars (Chinese interims
+    arrive without spaces, so word counts don't apply).
+    """
+    if not getattr(conn, "client_is_speaking", False):
+        return False
+    stripped = text.strip()
+    words = stripped.split()
+    cjk = sum(1 for ch in stripped if "一" <= ch <= "鿿")
+    return len(words) >= 2 or (len(words) == 1 and len(stripped) >= 4) or cjk >= 2
+
+
 class DeepgramSTT(STTProvider):
     """Deepgram Nova-3 STT — streaming via WebSocket v1, batch via REST."""
 
@@ -72,12 +89,8 @@ class DeepgramSTT(STTProvider):
                         )
                 else:
                     logger.info(f"[Deepgram] interim: '{text[:80]}'")
-                    # Pipecat-style barge-in: ≥3 words → abort immediately.
-                    # Not gated on client_is_speaking — the STT word count IS the
-                    # definitive signal. Firmware safely ignores tts abort if idle.
-                    words = text.strip().split()
-                    if len(words) >= 3:
-                        logger.info(f"[Deepgram] Barge-in triggered: {len(words)} words: '{text[:80]}'")
+                    if _should_barge_in(conn, text):
+                        logger.info(f"[Deepgram] Barge-in triggered: '{text[:80]}'")
                         if hasattr(conn, "_loop") and conn._loop and conn._loop.is_running():
                             asyncio.run_coroutine_threadsafe(
                                 conn._on_interim_barge_in(), conn._loop
