@@ -619,8 +619,12 @@ class ConnectionHandler:
             first = True
             try:
                 while True:
+                    # First segment: wait up to 1.5s of LLM stall before flushing
+                    # (keeps the first segment big enough to cover the next
+                    # synthesis). Later phases: 0.15s stall flush.
+                    timeout = 1.5 if first else 0.15
                     try:
-                        chunk = await asyncio.wait_for(text_queue.get(), timeout=0.15)
+                        chunk = await asyncio.wait_for(text_queue.get(), timeout=timeout)
                     except asyncio.TimeoutError:
                         if self._interrupt_event.is_set():
                             break
@@ -637,7 +641,7 @@ class ConnectionHandler:
                     is_end = text_buffer.rstrip().endswith((".", "!", "?", "\n", "。", "！", "？"))
                     is_clause = text_buffer.rstrip().endswith((",", "，", "、", ":", "：", ";", "；"))
                     should_flush = (
-                        (first and len(text_buffer) >= 10)
+                        (first and (is_end or len(text_buffer) >= 40))
                         or (not first and (is_end or is_clause or len(text_buffer) >= 80))
                     )
                     if should_flush and text_buffer.strip() and self.tts:
