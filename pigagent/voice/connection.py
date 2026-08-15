@@ -34,6 +34,7 @@ from providers.base import InterfaceType, STTProvider, TTSProvider, VADProvider
 
 TAG = __name__
 TTS_FRAME_INTERVAL = 0.06  # 60 ms per Opus frame at 16 kHz
+TTS_MAX_SEND_AHEAD = 1.2   # keep the device decode queue ~1.2s ahead (xiaozhi rate-controller pattern)
 
 # ── Opus helpers ──────────────────────────────────────────────────────
 
@@ -105,6 +106,9 @@ class ConnectionHandler:
         self._tts_task: asyncio.Task | None = None
         self.client_is_speaking = False
         self._last_abort_time: float = 0.0
+        # Virtual playback clock for TTS send pacing (xiaozhi AudioRateController pattern)
+        self._tts_play_position: float = 0.0
+        self._tts_clock_start: float = time.monotonic()
 
         # Deepgram state (set by STT provider)
         self.dg_connection: Any = None
@@ -353,6 +357,7 @@ class ConnectionHandler:
             return  # abort in flight — ignore repeats from queued interims
         self._last_abort_time = now
         logger.info("[Voice] Barge-in abort")
+        self._reset_tts_clock()
         self._interrupt_event.set()
         if self._tts_task and not self._tts_task.done():
             self._tts_task.cancel()
@@ -524,18 +529,52 @@ class ConnectionHandler:
 
     # ── TTS producer-consumer ─────────────────────────────────────────
 
-    async def _send_tts_frames(self, frames) -> None:
-        """Send synthesized frames at playback rate (60 ms/frame), aborting on interrupt.
+    async def _send_tts_frames(self, frames, extra_break=None) -> None:
+        """Send frames paced by a virtual playback clock (xiaozhi
+        AudioRateController pattern), aborting on interrupt.
 
-        Pacing is required: the ESP32 decodes and plays in real time. Sending
-        faster than playback rate overflows its decode queue — the device keeps
-        playing the backlog long after the protocol says TTS stopped.
+        Frames may run up to TTS_MAX_SEND_AHEAD ahead of real time so the
+        device's decode queue stays prefilled. Its software AEC reference
+        resets after 100 ms without playback, so TTS synthesis gaps between
+        sentences must never starve the queue. Waits are computed against
+        the clock — no per-frame sleep drift. A negative lead (long stall)
+        re-anchors the clock so the refill burst is capped at
+        TTS_MAX_SEND_AHEAD.
         """
         for frame in frames:
-            if self._interrupt_event.is_set():
+            if self._interrupt_event.is_set() or (extra_break and extra_break()):
                 break
             await self._ws.send(frame)
-            await asyncio.sleep(TTS_FRAME_INTERVAL)
+            self._tts_play_position += TTS_FRAME_INTERVAL
+            lead = self._tts_play_position - (time.monotonic() - self._tts_clock_start)
+            if lead < 0:
+                self._tts_clock_start = time.monotonic() - self._tts_play_position
+                lead = 0.0
+            if lead > TTS_MAX_SEND_AHEAD:
+                await asyncio.sleep(lead - TTS_MAX_SEND_AHEAD)
+
+    async def _wait_playback_drain(self) -> bool:
+        """Wait until queued TTS audio has finished playing on the device
+        (xiaozhi _wait_for_audio_completion pattern) — send "stop" only when
+        the device is actually done, keeping protocol state and audible
+        playback aligned. Returns True if playback drained naturally, False
+        if interrupted (abort already sent)."""
+        while True:
+            lead = self._tts_play_position - (time.monotonic() - self._tts_clock_start)
+            if lead <= 0:
+                return True
+            try:
+                await asyncio.wait_for(self._interrupt_event.wait(), timeout=lead)
+                return False
+            except asyncio.TimeoutError:
+                pass
+
+    def _reset_tts_clock(self) -> None:
+        """Re-anchor the playback clock after an abort flushed the device
+        queue — otherwise the stale lead would delay the next turn's first
+        frames by up to TTS_MAX_SEND_AHEAD."""
+        self._tts_play_position = 0.0
+        self._tts_clock_start = time.monotonic()
 
     async def _tts_producer_consumer(self, stt_text: str, sentence_id: int) -> None:
         """Official pattern: LLM → text → TTS → Opus → WebSocket."""
@@ -679,14 +718,15 @@ class ConnectionHandler:
                     self._save_tts_wav(bytes(tts_pcm))
 
                 if tts_started:
-                    await self._ws.send(json.dumps({
-                        "session_id": self.session_id,
-                        "type": "tts",
-                        "state": "stop",
-                    }))
+                    if await self._wait_playback_drain() and not self._interrupt_event.is_set():
+                        await self._ws.send(json.dumps({
+                            "session_id": self.session_id,
+                            "type": "tts",
+                            "state": "stop",
+                        }))
+                        TelemetryCollector.mark("tts_end")
+                        TelemetryCollector.finish_turn()
                     self.client_is_speaking = False
-                    TelemetryCollector.mark("tts_end")
-                    TelemetryCollector.finish_turn()
             except asyncio.CancelledError:
                 self.client_is_speaking = False
                 logger.info("[Voice] TTS consumer cancelled")
@@ -713,6 +753,7 @@ class ConnectionHandler:
         reason = data.get("reason", "unknown")
         logger.info(f"[Voice] Abort reason={reason}")
         self._sentence_id += 1
+        self._reset_tts_clock()
         self._interrupt_event.set()
         if self._tts_task and not self._tts_task.done():
             self._tts_task.cancel()
@@ -752,6 +793,7 @@ class ConnectionHandler:
             logger.info(f"[Voice] Inject: {msg.get('type', '?')}")
             sentence_id = self._sentence_id
             self._sentence_id += 1
+            was_speaking = self.client_is_speaking
             if self._tts_task and not self._tts_task.done():
                 self._interrupt_event.set()
                 self._tts_task.cancel()
@@ -763,6 +805,15 @@ class ConnectionHandler:
                     # cleanup could clobber the flag mid-inject.
                     pass
             self._interrupt_event.clear()
+            if was_speaking:
+                # The device may still hold up to TTS_MAX_SEND_AHEAD of queued
+                # audio — flush it so the inject starts promptly.
+                self._reset_tts_clock()
+                await self._ws.send(json.dumps({
+                    "session_id": self.session_id,
+                    "type": "tts",
+                    "state": "abort",
+                }))
             await self._ws.send(json.dumps({
                 "session_id": self.session_id,
                 "type": "tts",
@@ -783,18 +834,17 @@ class ConnectionHandler:
             if self.tts and text:
                 tts_pcm = bytearray()
                 frames = await self.tts.synthesize(text, collect_pcm=tts_pcm)
-                for frame in frames:
-                    if self._interrupt_event.is_set() or sentence_id != self._sentence_id:
-                        break
-                    await self._ws.send(frame)
-                    await asyncio.sleep(TTS_FRAME_INTERVAL)
+                await self._send_tts_frames(
+                    frames, extra_break=lambda: sentence_id != self._sentence_id
+                )
                 if len(tts_pcm) > 0:
                     self._save_tts_wav(bytes(tts_pcm))
-            await self._ws.send(json.dumps({
-                "session_id": self.session_id,
-                "type": "tts",
-                "state": "stop",
-            }))
+            if await self._wait_playback_drain() and not self._interrupt_event.is_set():
+                await self._ws.send(json.dumps({
+                    "session_id": self.session_id,
+                    "type": "tts",
+                    "state": "stop",
+                }))
         except Exception:
             logger.exception("[Voice] Inject TTS failed")
         finally:
