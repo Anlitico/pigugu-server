@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import time
 from collections.abc import AsyncIterator
 from typing import Any
 
@@ -204,6 +205,28 @@ class CartesiaTTS(TTSProvider):
                 feed_task = asyncio.ensure_future(_feed())
                 received_audio = False
 
+                # ── Chunk cadence diagnostics (locate the stutter source) ──
+                last_chunk_at: float | None = None
+                chunk_count = 0
+                chunk_bytes = 0
+
+                def _note_chunk(size: int) -> None:
+                    nonlocal last_chunk_at, chunk_count, chunk_bytes
+                    now = time.monotonic()
+                    if last_chunk_at is not None:
+                        gap = now - last_chunk_at
+                        if gap > 0.5:
+                            logger.warning(f"[Cartesia] chunk gap {gap:.2f}s (chunk #{chunk_count})")
+                    last_chunk_at = now
+                    chunk_count += 1
+                    chunk_bytes += size
+                    if chunk_count % 20 == 0:
+                        avg = chunk_bytes / chunk_count
+                        logger.info(
+                            f"[Cartesia] chunk stats: {chunk_count} chunks, "
+                            f"avg {avg:.0f} bytes ({avg/32000*1000:.0f}ms audio)"
+                        )
+
                 try:
                     async for event in ctx.receive():
                         if interrupt_event.is_set():
@@ -215,6 +238,7 @@ class CartesiaTTS(TTSProvider):
                         if event.type != "chunk" or not getattr(event, "audio", None):
                             continue
                         received_audio = True
+                        _note_chunk(len(event.audio))
                         if collect_pcm is not None:
                             collect_pcm.extend(event.audio)
                         frames = encoder.feed(event.audio)

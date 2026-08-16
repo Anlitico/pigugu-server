@@ -35,6 +35,13 @@ from providers.base import InterfaceType, STTProvider, TTSProvider, VADProvider
 TAG = __name__
 TTS_FRAME_INTERVAL = 0.06  # 60 ms per Opus frame at 16 kHz
 TTS_MAX_SEND_AHEAD = 1.2   # keep the device decode queue ~1.2s ahead (xiaozhi rate-controller pattern)
+# Warm-up gate for the streamed first audio: Cartesia's first chunk is often
+# tiny (1-2 frames) and the next chunk can lag 1-2s. Hold the first frames
+# until enough audio has accumulated, then release in one go — otherwise the
+# device plays 60ms and starves at the very start. Frame-count only: no
+# artificial time wait — Cartesia streams at faster-than-realtime, so 5
+# frames (300ms) accumulate quickly and the start stays snappy.
+TTS_STREAM_WARMUP_FRAMES = 5
 
 # ── Opus helpers ──────────────────────────────────────────────────────
 
@@ -548,6 +555,11 @@ class ConnectionHandler:
             self._tts_play_position += TTS_FRAME_INTERVAL
             lead = self._tts_play_position - (time.monotonic() - self._tts_clock_start)
             if lead < 0:
+                # Fell behind real time — the send side (loop stall or socket
+                # backpressure) couldn't keep the 60ms cadence. Diagnostic for
+                # locating mid-play stutter.
+                if lead < -0.3:
+                    logger.warning(f"[Voice] send fell behind {lead:.2f}s — re-anchoring")
                 self._tts_clock_start = time.monotonic() - self._tts_play_position
                 lead = 0.0
             if lead > TTS_MAX_SEND_AHEAD:
@@ -652,15 +664,35 @@ class ConnectionHandler:
 
         try:
             try:
-                first_batch = True
+                pending: list[bytes] = []
                 async for frames in self.tts.stream_audio(
                     _iter_text(), self._interrupt_event, collect_pcm=tts_pcm
                 ):
                     if self._interrupt_event.is_set():
                         break
-                    await _send_batch(frames, first=first_batch and bool(frames))
-                    if frames:
-                        first_batch = False
+                    if not tts_started:
+                        # Warm-up gate: accumulate the first frames so a tiny
+                        # first chunk + slow next chunk doesn't stutter the
+                        # start of playback.
+                        pending.extend(frames)
+                        if len(pending) >= TTS_STREAM_WARMUP_FRAMES:
+                            # Re-anchor the clock here so the warm-up wait
+                            # isn't counted as the send side falling behind.
+                            self._reset_tts_clock()
+                            await _send_start()
+                            tts_started = True
+                            await _mark_first_tts()
+                            await _send_tts_frames(pending)
+                            pending = []
+                    else:
+                        await _send_batch(frames)
+                # Stream ended while still warming up (very short reply):
+                # release whatever audio accumulated.
+                if not tts_started and pending and not self._interrupt_event.is_set():
+                    await _send_start()
+                    tts_started = True
+                    await _mark_first_tts()
+                    await _send_tts_frames(pending)
             except RuntimeError:
                 # Degraded mode: one whole-reply REST synthesis. Only when
                 # nothing has been played yet — a mid-stream failure must not
