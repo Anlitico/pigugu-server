@@ -824,7 +824,7 @@ class ConnectionHandler:
 
     async def _inject_tts(self, msg: dict, sentence_id: int) -> None:
         try:
-            text = msg.get("text", msg.get("content", ""))
+            text = msg.get("text", msg.get("content", msg.get("prompt", "")))
             if self.tts and text:
                 tts_pcm = bytearray()
                 frames = await self.tts.synthesize(text, collect_pcm=tts_pcm)
