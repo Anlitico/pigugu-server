@@ -682,7 +682,7 @@ class ConnectionHandler:
                             await _send_start()
                             tts_started = True
                             await _mark_first_tts()
-                            await _send_tts_frames(pending)
+                            await self._send_tts_frames(pending)
                             pending = []
                     else:
                         await _send_batch(frames)
@@ -692,7 +692,7 @@ class ConnectionHandler:
                     await _send_start()
                     tts_started = True
                     await _mark_first_tts()
-                    await _send_tts_frames(pending)
+                    await self._send_tts_frames(pending)
             except RuntimeError:
                 # Degraded mode: one whole-reply REST synthesis. Only when
                 # nothing has been played yet — a mid-stream failure must not
