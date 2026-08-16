@@ -15,12 +15,12 @@ from __future__ import annotations
 import asyncio
 import json
 import os
-import queue
 import tempfile
 import time
 import uuid
 import wave
 from collections import deque
+from collections.abc import AsyncIterator
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
@@ -577,13 +577,14 @@ class ConnectionHandler:
         self._tts_clock_start = time.monotonic()
 
     async def _tts_producer_consumer(self, stt_text: str, sentence_id: int) -> None:
-        """LLM → text segments → pipelined TTS synthesis + paced send (xiaozhi
-        two-stage pattern): the next segment synthesizes while the current one
-        plays, so per-segment synthesis gaps never starve the device queue.
-        "start" goes out only when the first frames are ready — no silent gap
-        between the speaking state and the first audio."""
+        """LLM → Cartesia WS streaming TTS → paced send (xiaozhi rate
+        controller). Text flows straight from the LLM into Cartesia
+        (continue_=True keeps prosody across chunks); audio is sent through
+        the virtual playback clock as it arrives. No text segmentation, no
+        per-segment synthesis — the device never starves between segments.
+        On stream failure the turn degrades to one whole-reply REST
+        synthesis."""
         text_queue: asyncio.Queue[str | None] = asyncio.Queue()
-        segment_queue: asyncio.Queue[str | None] = asyncio.Queue()
         pig = self._pig
         if pig is None:
             return
@@ -602,7 +603,6 @@ class ConnectionHandler:
                     if self._interrupt_event.is_set():
                         logger.info("[Voice] LLM producer interrupted")
                         break
-                    logger.info(f"[Voice] LLM chunk type={type(chunk).__name__} len={len(chunk) if hasattr(chunk,'__len__') else '?'}")
                     if isinstance(chunk, str):
                         await text_queue.put(chunk)
                         full += chunk
@@ -613,192 +613,102 @@ class ConnectionHandler:
                 await text_queue.put(None)
             return full
 
-        async def _accumulate() -> None:
-            """Stage 1: buffer LLM text, push flushable segments downstream."""
-            text_buffer = ""
-            first = True
-            try:
-                while True:
-                    # First segment: wait up to 1.5s of LLM stall before flushing
-                    # (keeps the first segment big enough to cover the next
-                    # synthesis). Later phases: 0.15s stall flush.
-                    timeout = 1.5 if first else 0.15
-                    try:
-                        chunk = await asyncio.wait_for(text_queue.get(), timeout=timeout)
-                    except asyncio.TimeoutError:
-                        if self._interrupt_event.is_set():
-                            break
-                        if text_buffer.strip() and self.tts:
-                            segment_queue.put_nowait(text_buffer.strip())
-                            text_buffer = ""
-                            first = False
-                        continue
-                    if chunk is None:
-                        break
-                    if self._interrupt_event.is_set():
-                        break
-                    text_buffer += chunk
-                    is_end = text_buffer.rstrip().endswith((".", "!", "?", "\n", "。", "！", "？"))
-                    is_clause = text_buffer.rstrip().endswith((",", "，", "、", ":", "：", ";", "；"))
-                    should_flush = (
-                        (first and (is_end or len(text_buffer) >= 40))
-                        or (not first and (is_end or is_clause or len(text_buffer) >= 80))
-                    )
-                    if should_flush and text_buffer.strip() and self.tts:
-                        segment_queue.put_nowait(text_buffer.strip())
-                        text_buffer = ""
-                        first = False
-                if text_buffer.strip() and not self._interrupt_event.is_set() and self.tts:
-                    segment_queue.put_nowait(text_buffer.strip())
-            finally:
-                await segment_queue.put(None)  # sentinel
+        async def _iter_text() -> AsyncIterator[str]:
+            while True:
+                chunk = await text_queue.get()
+                if chunk is None:
+                    return
+                yield chunk
 
-        async def _sender() -> None:
-            """Stage 2: keep one synthesis in flight while sending paced frames."""
-            _send_start = time.time()
-            tts_started = False
-            first_tts = True
-            synth_task: asyncio.Task | None = None
-            synth_start = 0.0
-            frames_ready = None
-            try:
-                while True:
-                    if self._interrupt_event.is_set():
-                        break
-                    # Harvest a finished synthesis (empty results are treated as
-                    # "no segment" — no start/marks fire for them).
-                    if synth_task is not None and synth_task.done():
-                        try:
-                            result = synth_task.result()
-                        except Exception:
-                            logger.exception("[Voice] TTS segment synth failed")
-                            result = None
-                        synth_task = None
-                        if result:
-                            frames_ready = result
-                            logger.info(
-                                f"[Voice] TTS segment synth done: {len(frames_ready)} frames "
-                                f"in {time.monotonic() - synth_start:.2f}s"
-                            )
-                        else:
-                            logger.warning("[Voice] TTS segment synth produced no frames")
-                    if frames_ready is not None:
-                        # Start synthesizing the next segment while this one plays.
-                        # Distinguish "queue empty" (keep polling later) from the
-                        # None sentinel (end of stream).
-                        eos = False
-                        try:
-                            next_text = segment_queue.get_nowait()
-                        except asyncio.QueueEmpty:
-                            next_text = None
-                        else:
-                            eos = next_text is None
-                        if next_text is not None:
-                            logger.info(f"[Voice] TTS segment synth start: {len(next_text)} chars")
-                            synth_start = time.monotonic()
-                            synth_task = asyncio.ensure_future(
-                                self.tts.synthesize(next_text, raw_pcm=self._raw_pcm, collect_pcm=tts_pcm)
-                            )
-                        if not tts_started:
-                            await self._ws.send(json.dumps({
-                                "session_id": self.session_id,
-                                "type": "tts",
-                                "state": "start",
-                            }))
-                            tts_started = True
-                            self.client_is_speaking = True
-                            TelemetryCollector.mark("tts_start")
-                        if first_tts:
-                            elapsed = time.time() - _send_start
-                            logger.info(f"[Voice] ⏱ First TTS sent: +{elapsed:.2f}s (consumer→tts)")
-                            first_tts = False
-                            TelemetryCollector.mark("agent_spk")
-                            self._log_e2e_if_present()
-                        logger.info(f"[Voice] TTS segment send: {len(frames_ready)} frames")
-                        await self._send_tts_frames(frames_ready)
-                        frames_ready = None
-                        if eos:
-                            break
-                        continue
-                    if synth_task is not None:
-                        # Synthesis in flight — await it instead of fetching the
-                        # next segment, which would orphan this one. Abort
-                        # cancellation lands here and propagates.
-                        try:
-                            result = await synth_task
-                        except Exception:
-                            logger.exception("[Voice] TTS segment synth failed")
-                            result = None
-                        synth_task = None
-                        if result:
-                            frames_ready = result
-                        continue
-                    # Nothing in flight — fetch the next segment.
-                    try:
-                        next_text = await asyncio.wait_for(segment_queue.get(), timeout=0.15)
-                    except asyncio.TimeoutError:
-                        continue
-                    if next_text is None:
-                        break
-                    logger.info(f"[Voice] TTS segment synth start: {len(next_text)} chars")
-                    synth_start = time.monotonic()
-                    synth_task = asyncio.ensure_future(
-                        self.tts.synthesize(next_text, raw_pcm=self._raw_pcm, collect_pcm=tts_pcm)
-                    )
+        async def _send_start() -> None:
+            await self._ws.send(json.dumps({
+                "session_id": self.session_id,
+                "type": "tts",
+                "state": "start",
+            }))
+            self.client_is_speaking = True
+            TelemetryCollector.mark("tts_start")
 
-                # Abandon any in-flight synthesis we are not going to send.
-                if synth_task is not None and not synth_task.done():
-                    synth_task.cancel()
+        async def _mark_first_tts() -> None:
+            elapsed = time.time() - send_phase_start
+            logger.info(f"[Voice] ⏱ First TTS sent: +{elapsed:.2f}s (stream)")
+            TelemetryCollector.mark("agent_spk")
+            self._log_e2e_if_present()
 
-                # Save TTS output WAV for debugging
-                if len(tts_pcm) > 0:
-                    self._save_tts_wav(bytes(tts_pcm))
+        async def _send_batch(frames: list[bytes], *, first: bool = False) -> None:
+            nonlocal tts_started
+            if self._interrupt_event.is_set() or not frames:
+                return
+            if not tts_started:
+                await _send_start()
+                tts_started = True
+            if first:
+                await _mark_first_tts()
+            await self._send_tts_frames(frames)
 
-                if tts_started:
-                    if await self._wait_playback_drain() and not self._interrupt_event.is_set():
-                        await self._ws.send(json.dumps({
-                            "session_id": self.session_id,
-                            "type": "tts",
-                            "state": "stop",
-                        }))
-                        TelemetryCollector.mark("tts_end")
-                        TelemetryCollector.finish_turn()
-                    self.client_is_speaking = False
-            except asyncio.CancelledError:
-                if synth_task is not None and not synth_task.done():
-                    synth_task.cancel()
-                self.client_is_speaking = False
-                logger.info("[Voice] TTS sender cancelled")
-            except Exception:
-                logger.exception("[Voice] TTS sender failed")
-                self.client_is_speaking = False
-
-        # Run the three stages concurrently
-        full_text = ""
         producer_task = asyncio.ensure_future(_producer())
-        accum_task = asyncio.ensure_future(_accumulate())
-        sender_task = asyncio.ensure_future(_sender())
+        tts_started = False
+        send_phase_start = time.time()
+
         try:
-            full_text = await producer_task
-            await accum_task
-            await sender_task
+            try:
+                first_batch = True
+                async for frames in self.tts.stream_audio(
+                    _iter_text(), self._interrupt_event, collect_pcm=tts_pcm
+                ):
+                    if self._interrupt_event.is_set():
+                        break
+                    await _send_batch(frames, first=first_batch and bool(frames))
+                    if frames:
+                        first_batch = False
+            except RuntimeError:
+                # Degraded mode: one whole-reply REST synthesis. Only when
+                # nothing has been played yet — a mid-stream failure must not
+                # replay the whole reply over already-played audio.
+                if tts_started:
+                    logger.warning("[Voice] WS stream died mid-turn — ending turn")
+                elif not self._interrupt_event.is_set():
+                    logger.warning("[Voice] WS stream failed — falling back to REST")
+                    full = await producer_task
+                    if full.strip() and self.tts:
+                        frames = await self.tts.synthesize(full.strip(), collect_pcm=tts_pcm)
+                        await _send_batch(frames, first=True)
         except asyncio.CancelledError:
-            producer_task.cancel()
-            accum_task.cancel()
-            sender_task.cancel()
-            # Await the children so their cleanup (client_is_speaking=False)
-            # completes before this task returns — callers such as the inject
-            # consumer await self._tts_task and rely on that ordering.
-            for task in (producer_task, accum_task, sender_task):
+            if not producer_task.done():
+                producer_task.cancel()
                 try:
-                    await task
+                    await producer_task
                 except (asyncio.CancelledError, Exception):
                     pass
+            raise
+        finally:
+            self.client_is_speaking = False
+
+        if not producer_task.done():
+            full_text = await producer_task
+        else:
+            try:
+                full_text = producer_task.result()
+            except (asyncio.CancelledError, Exception):
+                full_text = ""
+
+        # Save TTS output WAV for debugging
+        if len(tts_pcm) > 0:
+            self._save_tts_wav(bytes(tts_pcm))
+
+        if tts_started:
+            if await self._wait_playback_drain() and not self._interrupt_event.is_set():
+                await self._ws.send(json.dumps({
+                    "session_id": self.session_id,
+                    "type": "tts",
+                    "state": "stop",
+                }))
+                TelemetryCollector.mark("tts_end")
+                TelemetryCollector.finish_turn()
 
         # Persist assistant message
         if full_text.strip() and self._pig and self._pig.ctx:
             asyncio.ensure_future(self._persist_turn("assistant", full_text.strip()))
-
     # ── Abort ─────────────────────────────────────────────────────────
 
     async def _handle_abort(self, data: dict) -> None:

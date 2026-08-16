@@ -15,6 +15,7 @@ dependencies = [
     "sounddevice~=0.5",
     # Direct API SDKs (for latency testing)
     "deepgram-sdk~=7.2",
+    "cartesia~=3.2",
     # Configuration
     "pydantic~=2.12",
     "pydantic-settings~=2.14",

@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import asyncio
 import os
+from collections.abc import AsyncIterator
+from typing import Any
 
 import aiohttp
 from loguru import logger
@@ -41,6 +44,7 @@ class CartesiaTTS(TTSProvider):
         self._model_id = model_id
         self._sample_rate = sample_rate
         self._http: aiohttp.ClientSession | None = None
+        self._cartesia_client: Any | None = None
 
     async def _ensure_http(self) -> aiohttp.ClientSession:
         if self._http is None:
@@ -117,13 +121,142 @@ class CartesiaTTS(TTSProvider):
             frame_duration_ms=60,
         )
 
+    async def stream_audio(
+        self,
+        text_source: AsyncIterator[str],
+        interrupt_event: asyncio.Event,
+        collect_pcm: bytearray | None = None,
+        receive_timeout: float = 15.0,
+    ) -> AsyncIterator[list[bytes]]:
+        """Stream LLM text through the Cartesia WebSocket TTS.
+
+        Yields lists of Opus-encoded 60 ms frames as audio arrives —
+        the caller paces them out with the playback clock. Cancelling the
+        iterator aborts the context (barge-in). Raises ``RuntimeError`` on
+        connection failures — the caller falls back to REST synthesis.
+
+        Cartesia specifics (docs.cartesia.ai):
+          - inputs are concatenated verbatim, so text chunks must carry
+            their own spacing (LLM chunks already do);
+          - ``continue_=True`` keeps prosody across chunks;
+          - contexts expire ~1 s after the last audio — one per turn;
+          - ``no_more_inputs()`` ends the stream; the receive loop then
+            terminates on the ``done`` event.
+        """
+        if not self._api_key:
+            logger.error("[Cartesia] CARTESIA_API_KEY not set")
+            raise RuntimeError("Cartesia API key not set")
+
+        try:
+            from cartesia import AsyncCartesia  # pyright: ignore[reportMissingImports]
+        except ImportError:
+            logger.error("[Cartesia] SDK not installed — cannot stream")
+            raise RuntimeError("cartesia SDK not installed")
+
+        output_format = {
+            "container": "raw",
+            "encoding": "pcm_s16le",
+            "sample_rate": self._sample_rate,
+        }
+        voice = {"mode": "id", "id": self._voice_id}
+
+        # Reuse one SDK client per provider — creating a fresh one per turn
+        # leaks httpx connection pools (the client is never closed per turn).
+        if self._cartesia_client is None:
+            self._cartesia_client = AsyncCartesia(api_key=self._api_key)
+        client = self._cartesia_client
+        encoder = _StreamOpusEncoder(self._sample_rate, channels=1, frame_duration_ms=60)
+
+        try:
+            manager = client.tts.websocket_connect()
+            async with manager as ws:
+                # timeout guards against a silent server (hang detection)
+                ctx = ws.context(
+                    model_id=self._model_id,
+                    voice=voice,
+                    output_format=output_format,
+                    language="en",
+                    timeout=receive_timeout,
+                )
+
+                async def _feed() -> None:
+                    """Consume LLM text → Cartesia context (continue_=True)."""
+                    try:
+                        async for text in text_source:
+                            if interrupt_event.is_set():
+                                break
+                            if not text:
+                                continue
+                            await ctx.send(transcript=text, continue_=True)
+                    except Exception:
+                        logger.exception("[Cartesia] feed failed")
+                    finally:
+                        try:
+                            await ctx.no_more_inputs()
+                        except Exception:
+                            logger.warning("[Cartesia] no_more_inputs failed")
+
+                feed_task = asyncio.ensure_future(_feed())
+                received_audio = False
+
+                try:
+                    async for event in ctx.receive():
+                        if interrupt_event.is_set():
+                            break
+                        if event.type == "error":
+                            raise RuntimeError(
+                                f"[Cartesia] stream error: {getattr(event, 'error', 'unknown')}"
+                            )
+                        if event.type != "chunk" or not getattr(event, "audio", None):
+                            continue
+                        received_audio = True
+                        if collect_pcm is not None:
+                            collect_pcm.extend(event.audio)
+                        frames = encoder.feed(event.audio)
+                        if frames:
+                            yield frames
+                except asyncio.CancelledError:
+                    # barge-in: cancel generation, then propagate
+                    await ctx.cancel()
+                    raise
+                except TimeoutError:
+                    # A slow LLM can leave the audio queue idle longer than the
+                    # receive timeout before the first chunk arrives. With no
+                    # audio yet, surface the failure so the caller falls back
+                    # to REST (the LLM text is still flowing and will be
+                    # picked up there); with audio already played, end the
+                    # turn gracefully.
+                    if not received_audio:
+                        raise RuntimeError("no audio before receive timeout") from None
+                    logger.warning("[Cartesia] receive timeout — ending stream")
+                finally:
+                    if not feed_task.done():
+                        feed_task.cancel()
+                        try:
+                            await feed_task
+                        except (asyncio.CancelledError, Exception):
+                            pass
+
+            # flush any trailing partial frame at stream end
+            tail = encoder.flush()
+            if tail:
+                yield tail
+        except RuntimeError:
+            raise
+        except Exception as e:
+            logger.exception("[Cartesia] streaming failed")
+            raise RuntimeError(f"Cartesia streaming failed: {e}") from e
+
     async def close(self) -> None:
         if self._http:
             await self._http.close()
             self._http = None
+        if self._cartesia_client is not None:
+            await self._cartesia_client.close()
+            self._cartesia_client = None
 
 
-# ── Opus encoding helper ──────────────────────────────────────────────
+# ── Opus encoding helpers ─────────────────────────────────────────────
 
 def _opus_encode_chunks(
     pcm: bytes, sample_rate: int = 16000, channels: int = 1, frame_duration_ms: int = 60
@@ -149,3 +282,54 @@ def _opus_encode_chunks(
     except ImportError:
         logger.warning("[Cartesia] opuslib not available — returning raw PCM")
         return [pcm]
+
+
+class _StreamOpusEncoder:
+    """Incremental PCM → Opus encoder with a carry buffer.
+
+    Cartesia WS chunks arrive at arbitrary sizes; playback needs fixed
+    60 ms frames. ``feed()`` returns all complete frames produced by the
+    new data, keeping the remainder for the next call. ``flush()`` emits
+    the final partial frame (padded) so no tail audio is dropped.
+    """
+
+    def __init__(self, sample_rate: int, channels: int = 1, frame_duration_ms: int = 60):
+        try:
+            import opuslib  # pyright: ignore[reportMissingImports]
+
+            self._encoder = opuslib.Encoder(sample_rate, channels, "voip")
+        except ImportError:
+            self._encoder = None
+        self._frame_samples = frame_duration_ms * sample_rate // 1000
+        self._frame_bytes = self._frame_samples * channels * 2
+        self._carry = bytearray()
+
+    def feed(self, pcm: bytes) -> list[bytes]:
+        if not pcm:
+            return []
+        self._carry.extend(pcm)
+        frames: list[bytes] = []
+        while len(self._carry) >= self._frame_bytes:
+            chunk = bytes(self._carry[: self._frame_bytes])
+            del self._carry[: self._frame_bytes]
+            if self._encoder is not None:
+                try:
+                    frames.append(self._encoder.encode(chunk, self._frame_samples))
+                except Exception:
+                    logger.warning("[Cartesia] opus encode failed for one frame")
+            else:
+                frames.append(chunk)  # raw PCM fallback (no opuslib)
+        return frames
+
+    def flush(self) -> list[bytes]:
+        """Encode the final partial frame, zero-padded. Clears the carry."""
+        if not self._carry:
+            return []
+        padded = bytes(self._carry) + b"\x00" * (self._frame_bytes - len(self._carry))
+        self._carry.clear()
+        if self._encoder is not None:
+            try:
+                return [self._encoder.encode(padded, self._frame_samples)]
+            except Exception:
+                return []
+        return [padded]
