@@ -180,14 +180,19 @@ class CartesiaTTS(TTSProvider):
                 )
 
                 async def _feed() -> None:
-                    """Consume LLM text → Cartesia context (continue_=True)."""
+                    """Consume LLM text → Cartesia context (continue_=True).
+
+                    Uses ctx.push() — unlike ctx.send(), it injects the
+                    context defaults (voice/model/output_format). send()
+                    requires `voice` as an explicit keyword argument.
+                    """
                     try:
                         async for text in text_source:
                             if interrupt_event.is_set():
                                 break
                             if not text:
                                 continue
-                            await ctx.send(transcript=text, continue_=True)
+                            await ctx.push(text, continue_=True)
                     except Exception:
                         logger.exception("[Cartesia] feed failed")
                     finally:
