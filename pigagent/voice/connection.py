@@ -268,6 +268,9 @@ class ConnectionHandler:
         if user_stop_ms > 0:
             self._e2e_user_stop = user_stop_ms / 1000.0
             self._e2e_detect = time.time()
+            logger.info(
+                f"[Voice] vad_silence user_stop_ms={user_stop_ms} client={self.client_id}"
+            )
 
     async def _resume_vad(self) -> None:
         await asyncio.sleep(2)
