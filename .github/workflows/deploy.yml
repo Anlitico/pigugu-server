@@ -16,6 +16,7 @@ env:
   ECR_REPOSITORY_API: pigugu-api
   ECR_REPOSITORY_AGENT: pigugu-agent
   ECR_REPOSITORY_CRAWLER: pigugu-crawler
+  ECR_REPOSITORY_TOOLS: pigugu-tools
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 jobs:
@@ -74,6 +75,18 @@ jobs:
         tags: |
           ${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_REPOSITORY_CRAWLER }}:${{ github.sha }}
           ${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_REPOSITORY_CRAWLER }}:latest
+        cache-from: type=gha
+        cache-to: type=gha,mode=max
+
+    - name: Build and push tools image
+      uses: docker/build-push-action@v6
+      with:
+        context: .
+        file: .cicd/Dockerfile.tools
+        push: true
+        tags: |
+          ${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_REPOSITORY_TOOLS }}:${{ github.sha }}
+          ${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_REPOSITORY_TOOLS }}:latest
         cache-from: type=gha
         cache-to: type=gha,mode=max
 

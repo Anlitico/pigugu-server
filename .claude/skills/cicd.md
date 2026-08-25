@@ -34,6 +34,8 @@ PR Merge → CI (auto) → User Confirmation → CD (manual)
 1. Checkout → AWS login → ECR login
 2. Build `pigugu-api` Docker image → push to ECR
 3. Build `pigugu-agent` Docker image → push to ECR
+4. Build `pigugu-tools` Docker image → push to ECR (ops scripts:
+   `analyze_latency.py`, `migrate_metrics_format.py`)
 
 **How to check**:
 ```bash
@@ -139,5 +141,6 @@ Migrations run as part of CD (before pod restart). If a migration fails:
 | ElastiCache (Redis) | `pigugu-redis.feoudk.ng.0001.usw1.cache.amazonaws.com:6379` |
 | ECR API | `pigugu-api` |
 | ECR Agent | `pigugu-agent` |
+| ECR Tools | `pigugu-tools` |
 | K8s Namespace | `default` |
 | Proxy | Clash HTTP 127.0.0.1:7897 |
