@@ -25,6 +25,7 @@ RDS and Redis are in private subnet — only reachable from within VPC (EKS pods
 | `/ops:redis` | [redis](ops/redis.md) | Redis queries — check keys, get values |
 | `/ops:eks` | [eks](ops/eks.md) | EKS operations — pods, logs, restart, deploy |
 | `/ops:livekit` | [livekit](ops/livekit.md) | LiveKit — list rooms, participants, dispatch agents |
+| `/ops:metrics` | [metrics](ops/metrics.md) | Latency analysis — run `analyze_latency.py` against the `metrics` table |
 
 ## File Layout
 
@@ -35,7 +36,8 @@ RDS and Redis are in private subnet — only reachable from within VPC (EKS pods
     ├── pg.md           ← PostgreSQL queries
     ├── redis.md        ← Redis queries
     ├── eks.md          ← EKS pod/logs/deploy
-    └── livekit.md      ← LiveKit operations
+    ├── livekit.md      ← LiveKit operations
+    └── metrics.md      ← Latency analysis (E2E, segments, anomalies)
 ```
 
 ## K8s Secrets

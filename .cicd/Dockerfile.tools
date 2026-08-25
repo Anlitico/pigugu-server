@@ -1,0 +1,30 @@
+FROM python:3.13-slim
+
+# Mirror the voice agent's environment for the ops scripts.
+# This image is INTENTIONALLY SEPARATE from pigugu-agent so changes to
+# the scripts never trigger an agent rebuild / restart.
+
+ENV PYTHONDONTWRITEBYTECODE=1
+ENV PYTHONUNBUFFERED=1
+
+# asyncpg is the only runtime dep the analyze / migrate scripts need.
+# Installing at build time avoids the 10s "pip install asyncpg" hit on
+# every kubectl run invocation.
+RUN pip install --no-cache-dir 'asyncpg~=0.31'
+
+WORKDIR /scripts
+
+# Copy only what's needed: the two ops scripts. No pyproject, no
+# pigagent/ source — keeps the image small (~165MB vs the ~700MB
+# pigugu-agent image).
+COPY scripts/analyze_latency.py /scripts/analyze_latency.py
+COPY scripts/migrate_metrics_format.py /scripts/migrate_metrics_format.py
+
+# No ENTRYPOINT — the skill invokes the script explicitly so it can
+# pass arbitrary args. This keeps the image flexible: same image can
+# run analyze OR migrate without rebuilding.
+#
+# Default WORKDIR=/scripts means callers can do
+#   kubectl run ... -- python /scripts/analyze_latency.py --hours 24
+# or equivalently
+#   kubectl run ... -- python analyze_latency.py --hours 24

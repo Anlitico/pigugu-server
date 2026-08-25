@@ -211,7 +211,9 @@ class PigAgent:
             f"roast={roast_state is not None} msgs={len(messages)}"
         )
 
-        first_yield = True
+        # L1: 只在首个真实字符串 chunk 上打 llm_first_token,避免 FlushSentinel
+        # 或工具 filler 把"首 token"语义错位。
+        first_string_yield = True
         pre_stream_count = len(messages)  # messages added after this = runner output
 
         TelemetryCollector.mark("llm_req")
@@ -229,18 +231,20 @@ class PigAgent:
                     wc=self.ctx._last_wc if self.ctx else None,
                     current_msg=new_msg,
                 ):
-                    if first_yield:
-                        TelemetryCollector.mark("llm_internal")
-                        first_yield = False
                     if isinstance(text, str):
+                        if first_string_yield:
+                            # L1: 首 token 必须是真实字符串,排除 FlushSentinel
+                            TelemetryCollector.mark("llm_first_token")
+                            first_string_yield = False
                         response_chunks.append(text)
                     yield text
             else:
                 async for text in self.runner.stream(messages, interrupt_event=interrupt_event, session_id=session_id):
-                    if first_yield:
-                        TelemetryCollector.mark("llm_internal")
-                        first_yield = False
                     if isinstance(text, str):
+                        if first_string_yield:
+                            # L1: 首 token 必须是真实字符串
+                            TelemetryCollector.mark("llm_first_token")
+                            first_string_yield = False
                         response_chunks.append(text)
                     yield text
         finally:
