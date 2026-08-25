@@ -99,7 +99,28 @@ class ConnectionHandler:
         self.last_voice_activity: float = 0.0
         self._turn_type: str = "follow_up"  # overwritten by _on_detect for wake word
         self._vad_start_marked: bool = False
-        self._vad_end_marked: bool = False
+        self._stt_commit_marked: bool = False
+        self._first_turn_done: bool = False
+        # Reconstructed end-of-utterance on the server clock (perf_counter),
+        # derived from the firmware's user_stop_age_ms duration. None until
+        # the first vad_silence arrives.
+        self._vad_end_mark: float | None = None
+        # C1: ConnectionHandler 持有当前 turn dict 的显式引用,供跨线程
+        # 调度 (Deepgram on_message) 的协程在入口处恢复 ContextVar。
+        # 避免依赖子线程的 run_coroutine_threadsafe 看到正确的 ctx。
+        self._active_turn: dict | None = None
+        # M1: 当前正在播放 TTS 的 sentence_id,tts_played 到达时校验
+        # 是否对应当前 turn,防止挂错 turn 或晚到丢失。
+        self._current_tts_sentence_id: int | None = None
+        # N3: buffer for device_playback_ms that arrived AFTER the parent
+        # task flushed the turn. The very next tts_played / start of next
+        # turn reads this and applies it to the new turn's meta with a
+        # `device_playback_ms_late=true` flag, so we never silently lose
+        # a device playback delay measurement.
+        self._late_tts_played: dict | None = None
+        # Device-side playback delay reported by firmware for the current turn
+        # (first TTS packet received -> first DAC sample) via tts_played.
+        self._device_playback_ms: int = 0
         self._eou_bounce_delay: float = float(os.getenv("EOU_BOUNCE_MS", "500")) / 1000.0
         self._pending_speech_final: str = ""
         self._eou_bounce_task: asyncio.Task | None = None
@@ -234,6 +255,8 @@ class ConnectionHandler:
             await self._on_detect(data)
         elif state == "vad_silence":
             await self._on_vad_silence(data)
+        elif state == "tts_played":
+            await self._on_tts_played(data)
         elif state == "start":
             await self._on_start()
         elif state == "stop":
@@ -260,17 +283,160 @@ class ConnectionHandler:
             user_id=self._user_id or self.client_id,
             persona_id=self._persona_id,
         )
-        TelemetryCollector.set_meta("turn_type", "wake_word")
+        # C1: 抓住 turn dict 引用,供跨线程回调恢复 ctx
+        self._capture_turn_context()
+        TelemetryCollector.set_meta(
+            "turn_phase",
+            "first_after_connect" if not self._first_turn_done else "wake_word",
+        )
+        TelemetryCollector.mark("detect")
 
     async def _on_vad_silence(self, data: dict) -> None:
-        """Firmware VAD silence — stores user_stop_ms for E2E on every turn."""
-        user_stop_ms = data.get("user_stop_ms", 0)
-        if user_stop_ms > 0:
-            self._e2e_user_stop = user_stop_ms / 1000.0
-            self._e2e_detect = time.time()
+        """Firmware VAD silence — carries a duration, not a timestamp.
+
+        ``user_stop_age_ms`` is how long ago (on the device clock) the AFE VAD
+        declared the user stopped speaking. The server reconstructs the true
+        end-of-utterance on its own perf_counter clock, which keeps every
+        segment of the turn metric on a single time base.
+
+        H3: 同时记录 server_received_vad_at = 实际收到 vad_silence 消息的
+        服务器本地 perf_counter。这是另一条 E2E 口径起点 ——
+        "服务器看到固件停嘴 → 服务器发出首包音频",不包含上行 RTT。
+        旧 vad_end 是"用户停嘴 → 服务器首包",会少算设备到服务器的上行
+        网络时延。下游可以基于这两个 mark 选用不同口径。新口径对应的
+        segment 名为 server_recv_vad_to_spk (diagnostic)。
+        """
+        user_stop_age_ms = int(data.get("user_stop_age_ms", 0) or 0)
+
+        # H3: 不管 user_stop_age_ms 是否有效,都记 server_received_vad_at。
+        # 这给下游提供一个稳定可对比的"服务器收到停嘴消息"时间锚。
+        server_received_at = time.perf_counter()
+        if TelemetryCollector.has_mark("vad_start"):
+            TelemetryCollector.set_mark("server_received_vad_at", server_received_at)
+            # E2E 起点口径选择写到 meta,让下游消费时能识别用的是哪条口径
+            TelemetryCollector.set_meta("vad_end_source", "reconstructed_from_age_ms")
+
+        if user_stop_age_ms > 0:
+            self._vad_end_mark = server_received_at - user_stop_age_ms / 1000.0
+            # Set the authoritative vad_end as soon as the turn is active;
+            # if the server-side VAD hasn't started this turn yet, _handle_audio
+            # will apply the stored mark lazily.
+            if TelemetryCollector.has_mark("vad_start"):
+                TelemetryCollector.set_mark("vad_end", self._vad_end_mark)
             logger.info(
-                f"[Voice] vad_silence user_stop_ms={user_stop_ms} client={self.client_id}"
+                f"[Voice] vad_silence user_stop_age_ms={user_stop_age_ms} "
+                f"client={self.client_id}"
             )
+        else:
+            # 固件没发 user_stop_age_ms 或为 0,vad_end 用 server_received_vad_at 兜底
+            self._vad_end_mark = server_received_at
+            if TelemetryCollector.has_mark("vad_start"):
+                TelemetryCollector.set_mark("vad_end", self._vad_end_mark)
+            logger.info(
+                f"[Voice] vad_silence (no age_ms, fall back to receive time) "
+                f"client={self.client_id}"
+            )
+
+    def _flush_late_tts_played(self) -> None:
+        """N3: flush a late tts_played into the current turn's meta.
+
+        Called from two places:
+        1. At the top of ``_on_tts_played`` — if a tts_played arrives for the
+           current turn after the previous one was buffered, write it to the
+           current turn with `device_playback_ms_late=true` so the late data
+           is preserved instead of dropped.
+        2. At the start of every new turn (in ``_on_stt_result``) — absorb
+           any device playback delay that arrived after the parent task
+           already flushed the previous turn.
+
+        One-slot buffer is enough: we only care about the most recent late
+        arrival, since each turn produces at most one tts_played.
+        """
+        if self._late_tts_played is None:
+            return
+        ms = self._late_tts_played.get("device_playback_ms")
+        sid = self._late_tts_played.get("sentence_id")
+        if ms is not None and ms > 0:
+            # N3-fix v2: 用独立 key 存 late value,**绝不** 覆盖
+            # device_playback_ms(否则新 turn 自己的 tts_played 到达时
+            # 会被旧轮的数据覆盖,且 device_playback_ms_late=true 这个标记
+            # 永远挂在新 turn meta 上不清掉)
+            TelemetryCollector.set_meta("device_playback_ms_late_value", ms)
+            TelemetryCollector.set_meta("device_playback_ms_late_sid", sid)
+            TelemetryCollector.set_meta("device_playback_ms_late", True)
+            logger.info(
+                f"[Voice] flushed late tts_played value={ms} "
+                f"sid={sid} client={self.client_id}"
+            )
+        self._late_tts_played = None
+
+    async def _on_tts_played(self, data: dict) -> None:
+        """Firmware ack: first TTS packet received -> first DAC write (ms).
+
+        The device sends this once per TTS turn as soon as playback actually
+        starts, so the delay is attached to the *current* turn before it is
+        finalized at ``tts/stop``.
+
+        M1: validate sentence_id to avoid attaching device_playback_ms to the
+        wrong turn (e.g. short reply where device playback ack arrives after
+        the next turn has already started).
+
+        N3: if the parent task has already flushed the turn this message was
+        for, stash it in ``_late_tts_played`` so the next turn can pick it up
+        instead of dropping the data.
+        """
+        device_playback_ms = int(data.get("device_playback_ms", 0) or 0)
+        if device_playback_ms <= 0:
+            return
+
+        # M1 + round-3 fix: 校验 sentence_id。三种 buffer 场景:
+        # 1. cur_sid is None: 处于 turn 边界(上一个 turn 已 flush,下一个
+        #    turn 还没开始),tts_played 是上一轮晚到的,应该 buffer
+        # 2. cur_sid is not None, played_sid != cur_sid: sentence_id 不匹配
+        # 3. played_sid is None(固件没发或 parse 失败):旧固件路径,无法
+        #    校验,直接 set_meta(向后兼容)
+        played_sid_raw = data.get("sentence_id")
+        played_sid: int | None = None
+        if played_sid_raw is not None:
+            try:
+                played_sid = int(played_sid_raw)
+            except (TypeError, ValueError):
+                played_sid = None
+        cur_sid = self._current_tts_sentence_id
+        if played_sid is not None and (
+            cur_sid is None or played_sid != cur_sid
+        ):
+            # cur_sid None 或 mismatch → buffer
+            if cur_sid is None:
+                logger.warning(
+                    f"[Voice] tts_played arrived with no active TTS turn "
+                    f"(between turns), buffer for next turn "
+                    f"device_playback_ms={device_playback_ms} sid={played_sid} "
+                    f"client={self.client_id}"
+                )
+            else:
+                logger.warning(
+                    f"[Voice] tts_played sentence_id mismatch: "
+                    f"device={played_sid} current={cur_sid}, buffer for next turn "
+                    f"device_playback_ms={device_playback_ms} "
+                    f"client={self.client_id}"
+                )
+            self._late_tts_played = {
+                "device_playback_ms": device_playback_ms,
+                "sentence_id": played_sid,
+            }
+            return
+
+        # N3: 如果有上一轮晚到的 device_playback_ms,先 flush 到当前 turn
+        # meta,带 late 标记
+        self._flush_late_tts_played()
+        # M1: device_playback_ms 仅作为 meta 写入当前 turn, _device_playback_ms
+        # 实例属性目前没有读路径,属于死字段,不再写。
+        TelemetryCollector.set_meta("device_playback_ms", device_playback_ms)
+        logger.info(
+            f"[Voice] tts_played device_playback_ms={device_playback_ms} "
+            f"client={self.client_id}"
+        )
 
     async def _resume_vad(self) -> None:
         await asyncio.sleep(2)
@@ -308,7 +474,9 @@ class ConnectionHandler:
             if self._eou_bounce_task and not self._eou_bounce_task.done():
                 self._eou_bounce_task.cancel()
 
-        # Latency marks: vad_start / vad_end based on VAD state transitions.
+        # Latency marks: vad_start + stt_commit from the server VAD state
+        # transitions. The authoritative vad_end (user stopped speaking) is
+        # reconstructed separately from the firmware vad_silence duration.
         # Lazily start turn for follow-up utterances (wake word started in _on_detect).
         if self.client_have_voice and not self._vad_start_marked:
             if getattr(self, "_turn_type", "follow_up") != "wake_word":
@@ -316,12 +484,20 @@ class ConnectionHandler:
                     user_id=self._user_id or self.client_id,
                     persona_id=self._persona_id,
                 )
-                TelemetryCollector.set_meta("turn_type", "follow_up")
+                # C1: 抓住 turn dict 引用
+                self._capture_turn_context()
+                TelemetryCollector.set_meta("turn_phase", "follow_up")
             TelemetryCollector.mark("vad_start")
             self._vad_start_marked = True
-        if self.client_voice_stop and not self._vad_end_marked:
-            TelemetryCollector.mark("vad_end")
-            self._vad_end_marked = True
+            # A firmware vad_silence may have arrived before the server-side
+            # VAD confirmed speech — apply the reconstructed vad_end lazily.
+            if self._vad_end_mark is not None:
+                TelemetryCollector.set_mark("vad_end", self._vad_end_mark)
+        if self.client_voice_stop and not self._stt_commit_marked:
+            # Server-side Silero VAD confirms end-of-utterance. This is the
+            # "EOU detection delay" segment, not the authoritative user-stop.
+            TelemetryCollector.mark("stt_commit")
+            self._stt_commit_marked = True
 
         # Track voice activity (reference: no_voice_close_connect)
         now_ms = time.time() * 1000
@@ -351,8 +527,58 @@ class ConnectionHandler:
                 logger.info(f"[Voice] Idle {idle_sec:.0f}s, closing connection")
                 await self._ws.close()
 
+    # ── Cross-thread turn context (C1 fix) ────────────────────────
+    #
+    # Background: Deepgram's on_message runs in a background thread. When it
+    # calls `asyncio.run_coroutine_threadsafe(coro, conn._loop)`, the
+    # coroutine is scheduled into the main asyncio loop, but it runs in the
+    # **default context** — WebSocket handler task's turn dict is invisible.
+    # Result: every TelemetryCollector.mark(...) inside that coroutine
+    # becomes a no-op, and the turn never gets E2E / segments logged.
+    #
+    # Fix pattern (two ends):
+    #   1. After `TelemetryCollector.start_turn(...)` in the asyncio task
+    #      that owns the turn, call `_capture_turn_context()` to save the
+    #      dict reference to `self._active_turn`.
+    #   2. At the **top of every coroutine that may be dispatched from a
+    #      non-asyncio thread** (Deepgram thread, future STT providers,
+    #      webhook callbacks, etc.), call `_restore_turn_context()` to
+    #      re-bind the ContextVar before any mark/finish_turn call.
+    #
+    # ⚠ If you add a new cross-thread entry point, call
+    # `_restore_turn_context()` FIRST, before any other mark. Forgetting
+    # this is a **silent** bug: marks become no-ops, the turn dict never
+    # accumulates marks, and the E2E never lands in the DB. Always pair
+    # the new entry with an explicit call here.
+
+    def _restore_turn_context(self) -> None:
+        """Re-bind the saved turn dict into the current ContextVar.
+
+        C1 fix, entry side. Call at the top of any coroutine dispatched
+        from another thread (Deepgram on_message, etc.) before any
+        TelemetryCollector call. Idempotent and cheap: O(1) dict ref set.
+        """
+        if self._active_turn is not None:
+            from metrics.turn import _current_var as _turn_var
+            _turn_var.set(self._active_turn)
+
+    def _capture_turn_context(self) -> None:
+        """Snapshot the active turn dict for cross-thread callbacks.
+
+        C1 fix, dispatch side. Call from the asyncio task that owns the
+        turn, immediately after `TelemetryCollector.start_turn(...)`.
+        Stores the dict reference in `self._active_turn` so the
+        cross-thread entry coroutine can re-bind it via
+        `_restore_turn_context()`.
+        """
+        from metrics.turn import _current_var as _turn_var
+        self._active_turn = _turn_var.get()
+
     async def _on_stt_final(self, text: str) -> None:
-        """Deepgram speech_final — start EOU bounce timer before committing."""
+        """Deepgram speech_final — start EOU bounce timer before committing.
+        C1: 这是从 Deepgram 线程通过 run_coroutine_threadsafe 调度的协程,
+        入口必须显式恢复 turn context,否则 mark 都打不上。"""
+        self._restore_turn_context()
         logger.info(f"[Voice] STT final (bounce {self._eou_bounce_delay*1000:.0f}ms): '{text[:200]}'")
         self._pending_speech_final = text.strip()
         # Cancel any previous bounce
@@ -393,31 +619,6 @@ class ConnectionHandler:
         self._reset_audio_states()
         self._turn_type = "follow_up"  # next VAD detection starts a follow-up turn
 
-    def _log_e2e_if_present(self) -> None:
-        """Log wall-clock E2E: user_stop(固件) → agent_spk(服务端).
-        Segments:
-          fw_gap:      user_stop → detect_received   (WS + audio buffer)
-          server_stt:  detect_received → stt_final    (VAD + Deepgram)
-          llm_tts:     stt_final → agent_spk          (LLM + Cartesia)
-        """
-        user_stop = getattr(self, "_e2e_user_stop", 0.0)
-        if user_stop <= 0:
-            return
-        now = time.time()
-        fw_gap = getattr(self, "_e2e_fw_gap", 0.0)
-        server_stt = getattr(self, "_e2e_server_stt", 0.0)
-        llm_tts = round(now - getattr(self, "_e2e_stt_start", now), 3)
-        e2e = round(now - user_stop, 3)
-        logger.info(
-            f"[Voice] ⏱ TRUE E2E={e2e:.3f}s "
-            f"(fw_gap={fw_gap:.3f}s server_stt={server_stt:.3f}s llm_tts={llm_tts:.3f}s)"
-        )
-        TelemetryCollector.set_meta("e2e_true_s", e2e)
-        TelemetryCollector.set_meta("fw_gap_s", fw_gap)
-        TelemetryCollector.set_meta("server_stt_s", server_stt)
-        TelemetryCollector.set_meta("llm_tts_s", llm_tts)
-        self._e2e_user_stop = 0  # one-shot
-
     def _reset_audio_states(self) -> None:
         """Official reset_audio_states."""
         # Save accumulated audio before clearing — captures barge-in speech
@@ -437,7 +638,8 @@ class ConnectionHandler:
         self.asr_audio.clear()
         self.just_woken_up = False
         self._vad_start_marked = False
-        self._vad_end_marked = False
+        self._stt_commit_marked = False
+        self._vad_end_mark = None
         self._pending_speech_final = ""
         if self._eou_bounce_task and not self._eou_bounce_task.done():
             self._eou_bounce_task.cancel()
@@ -448,15 +650,41 @@ class ConnectionHandler:
 
     async def _on_stt_result(self, text: str) -> None:
         """Handle STT result: send to client, persist, launch LLM."""
+        # C1: 入口恢复 turn context(可能被 Deepgram 线程或 _eou_bounce 调度)
+        self._restore_turn_context()
         TelemetryCollector.mark("stt_final")
-
-        # E2E wall-clock tracking: firmware user_stop → server segments
-        user_stop = getattr(self, "_e2e_user_stop", 0.0)
-        if user_stop > 0:
-            self._e2e_fw_gap = round(self._e2e_detect - user_stop, 3)    # firmware→detect
-            self._e2e_server_stt = round(time.time() - self._e2e_detect, 3) # detect→STT final
-            self._e2e_stt_start = time.time()  # start of LLM+Cartesia segment
-            TelemetryCollector.set_meta("fw_gap_s", self._e2e_fw_gap)
+        # Authoritative vad_end normally comes from the firmware's local VAD
+        # (user_stop_age_ms). If that path is unavailable — e.g. the device is
+        # running with a reference channel / device-side AEC, where the AFE VAD
+        # is intentionally disabled — fall back to the server Silero VAD
+        # (stt_commit) first, and only as a last resort use the wake-word
+        # instant (detect). H1: detect is "wake word moment", not "user
+        # stopped speaking"; using it as vad_end inflates E2E by the entire
+        # wake-to-stop interval and breaks consistency with follow-up turns.
+        if not TelemetryCollector.has_mark("vad_end"):
+            if self._vad_end_mark is not None:
+                # H3: 走 user_stop_age_ms 重建路径
+                TelemetryCollector.set_mark("vad_end", self._vad_end_mark)
+                TelemetryCollector.set_meta("vad_end_source", "reconstructed_from_age_ms")
+            else:
+                stt_commit_time = TelemetryCollector.mark_time("stt_commit")
+                if stt_commit_time is not None:
+                    # H1 fallback: 用服务端 Silero VAD
+                    TelemetryCollector.set_mark("vad_end", stt_commit_time)
+                    TelemetryCollector.set_meta("vad_end_fallback", "stt_commit")
+                    TelemetryCollector.set_meta("vad_end_source", "stt_commit_fallback")
+                else:
+                    detect_time = TelemetryCollector.mark_time("detect")
+                    if detect_time is not None:
+                        # H1 fallback: 没有 stt_commit 只能用 detect 时,在
+                        # meta 里显式标注,wake-word turn 的 E2E 数字会偏高,
+                        # 需要在下游消费时单独识别。
+                        TelemetryCollector.set_mark("vad_end", detect_time)
+                        TelemetryCollector.set_meta("vad_end_fallback", "detect")
+                        TelemetryCollector.set_meta("vad_end_source", "detect_fallback")
+                    else:
+                        TelemetryCollector.set_meta("vad_end_fallback", "none")
+                        TelemetryCollector.set_meta("vad_end_source", "none")
 
         # If TTS is still playing, skip — barge-in (Deepgram interim) handles
         # interruption. If an LLM/TTS task is still in progress but TTS hasn't
@@ -479,13 +707,12 @@ class ConnectionHandler:
         if self._pig is None:
             self._pig = await create_pig_agent(self._user_id, hw_id=self._hw_id)
             TelemetryCollector.set_meta("llm_model", self._pig.model)
+            TelemetryCollector.mark("agent_init")
+            self._first_turn_done = True
 
         # Persist user message (must be after _pig creation)
         if self._pig and self._pig.ctx:
             asyncio.ensure_future(self._persist_turn("user", text))
-
-        TelemetryCollector.mark("agent_req")
-        TelemetryCollector.mark("llm_start")
 
         # H3: clear interrupt before launching new LLM, after old TTS has yielded
         self._interrupt_event.clear()
@@ -493,10 +720,26 @@ class ConnectionHandler:
         sentence_id = self._sentence_id
         self._sentence_id += 1
 
+        # N3: 新一轮 turn 启动,如果有上一轮晚到的 device_playback_ms,
+        # 先写到这一轮 meta(带 late 标记),再开新 tts_task
+        self._flush_late_tts_played()
+        # M1: 记录当前正在播放 TTS 的 sentence_id,tts_played 到达时校验
+        self._current_tts_sentence_id = sentence_id
+
         # LLM → TTS
         self._tts_task = asyncio.ensure_future(
             self._tts_producer_consumer(text, sentence_id)
         )
+
+        # H5: 等子 task 完成后,由父 task 真正 flush turn。
+        # 子 task 内部已调 finish_turn 标 _finished,这里只 _flush_turn
+        # (log + 清 ctx)。如果子 task 抛错被取消,也要保证 ctx 被清。
+        try:
+            await self._tts_task
+        except (asyncio.CancelledError, Exception):
+            pass
+        finally:
+            TelemetryCollector._flush_turn()
 
     def _save_input_wav(self, stt_text: str) -> str:
         """Save user speech PCM as WAV. Returns the file path."""
@@ -636,19 +879,28 @@ class ConnectionHandler:
                 yield chunk
 
         async def _send_start() -> None:
-            await self._ws.send(json.dumps({
+            # M1: tts/start 带 sentence_id,设备 tts_played 回带,
+            # 服务端按序号写入对应 turn,避免晚到/挂错。
+            # 注意:用 self._sentence_id 已经被 _on_stst_result 加过 1,
+            # 这里我们用 _current_tts_sentence_id 拿到的就是正在播放的
+            # 那一句(在 _on_stst_result 里同步设置过)。
+            sid = self._current_tts_sentence_id
+            payload = {
                 "session_id": self.session_id,
                 "type": "tts",
                 "state": "start",
-            }))
+            }
+            if sid is not None and sid > 0:
+                payload["sentence_id"] = sid
+            await self._ws.send(json.dumps(payload))
             self.client_is_speaking = True
             TelemetryCollector.mark("tts_start")
 
         async def _mark_first_tts() -> None:
             elapsed = time.time() - send_phase_start
             logger.info(f"[Voice] ⏱ First TTS sent: +{elapsed:.2f}s (stream)")
+            TelemetryCollector.mark("tts_first_ready")
             TelemetryCollector.mark("agent_spk")
-            self._log_e2e_if_present()
 
         async def _send_batch(frames: list[bytes], *, first: bool = False) -> None:
             nonlocal tts_started
@@ -739,7 +991,12 @@ class ConnectionHandler:
                     "state": "stop",
                 }))
                 TelemetryCollector.mark("tts_end")
-                TelemetryCollector.finish_turn()
+            # H5: 不在这里 finish_turn。子 task 调 finish_turn 只能 mark
+            # _finished,真正 flush (_log + 清 ctx) 由父 task 在 await
+            # tts_task 之后做。这里只 mark _finished。
+            TelemetryCollector.finish_turn()
+            # M1: TTS 结束,清掉当前 sentence_id 跟踪
+            self._current_tts_sentence_id = None
 
         # Persist assistant message
         if full_text.strip() and self._pig and self._pig.ctx:
