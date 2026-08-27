@@ -1,0 +1,121 @@
+# One-shot Job that runs the ClickHouse schema migration.
+#
+# Apply with:
+#   kubectl apply -f k8s/clickhouse-migration-job.yaml
+#   kubectl wait --for=condition=complete --timeout=60s job/clickhouse-migrate
+#
+# Idempotent: the SQL uses CREATE TABLE IF NOT EXISTS. Re-running the
+# job against an already-migrated cluster is a no-op.
+#
+# To rotate the schema (e.g. add a column), create a new
+# `00NN_*.sql` file, update the ConfigMap, and run the job again —
+# ClickHouse's ALTER TABLE ADD COLUMN is cheap.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: clickhouse-migrations
+data:
+  0001_voice_turns.sql: |
+    CREATE DATABASE IF NOT EXISTS voice;
+
+    CREATE TABLE IF NOT EXISTS voice.turns
+    (
+        turn_id            String,
+        session_id         String,
+        turn_idx           UInt32,
+        device_id          LowCardinality(String),
+        user_id            LowCardinality(String),
+        persona_id         UInt16,
+        utc_start_ms       Int64,
+        utc_end_ms         Int64,
+        duration_ms        Int32,
+        turn_type          LowCardinality(String),
+        turn_phase         LowCardinality(String) DEFAULT '',
+        stt_text           String DEFAULT '',
+        stt_model          LowCardinality(String) DEFAULT '',
+        stt_interims       Array(String) DEFAULT [],
+        abandoned_stts     Array(String) DEFAULT [],
+        stt_status         LowCardinality(String) DEFAULT '',
+        tts_text           String DEFAULT '',
+        tts_model          LowCardinality(String) DEFAULT '',
+        tts_status         LowCardinality(String) DEFAULT '',
+        tts_truncated_reason LowCardinality(String) DEFAULT '',
+        s3_input_wav       String DEFAULT '',
+        s3_input_json      String DEFAULT '',
+        s3_tts_wav         String DEFAULT '',
+        s3_tts_json        String DEFAULT '',
+        s3_turn_json       String DEFAULT '',
+        voice_segments     Array(Tuple(start_ms Int32, end_ms Int32, duration_ms Int32)) DEFAULT [],
+        input_pcm_bytes    UInt32 DEFAULT 0,
+        input_pcm_ms       UInt32 DEFAULT 0,
+        tts_pcm_bytes      UInt32 DEFAULT 0,
+        tts_pcm_ms         UInt32 DEFAULT 0,
+        e2e_ms             Int32 DEFAULT 0,
+        stt_ms             Int32 DEFAULT 0,
+        llm_ttft_ms        Int32 DEFAULT 0,
+        tts_ttfb_ms        Int32 DEFAULT 0,
+        device_playback_ms Int32 DEFAULT 0,
+        llm_model          LowCardinality(String) DEFAULT '',
+        inserted_at        DateTime DEFAULT now()
+    )
+    ENGINE = MergeTree
+    PARTITION BY toYYYYMM(fromUnixTimestamp64Milli(utc_start_ms))
+    ORDER BY (device_id, fromUnixTimestamp64Milli(utc_start_ms), turn_id)
+    TTL fromUnixTimestamp64Milli(utc_start_ms) + INTERVAL 365 DAY;
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: clickhouse-migrate
+spec:
+  backoffLimit: 2
+  template:
+    spec:
+      restartPolicy: OnFailure
+      nodeSelector:
+        workload: clickhouse
+        kubernetes.io/arch: arm64
+      tolerations:
+      - key: workload
+        operator: Equal
+        value: clickhouse
+        effect: NoSchedule
+      containers:
+      - name: migrate
+        image: clickhouse/clickhouse-server:24.3
+        command:
+        - sh
+        - -c
+        - |
+          set -eu
+          # Run every .sql file in the mounted ConfigMap in lexical order.
+          for f in /migrations/*.sql; do
+            echo ">>> Applying $f"
+            clickhouse-client \
+              --host clickhouse \
+              --port 9000 \
+              --user default \
+              --password "$CLICKHOUSE_PASSWORD" \
+              --multiquery < "$f"
+          done
+          echo ">>> All migrations applied."
+          # Quick sanity check.
+          clickhouse-client \
+            --host clickhouse \
+            --port 9000 \
+            --user default \
+            --password "$CLICKHOUSE_PASSWORD" \
+            --query "SELECT count() FROM voice.turns"
+        env:
+        - name: CLICKHOUSE_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: clickhouse-password
+              key: password
+        volumeMounts:
+        - name: migrations
+          mountPath: /migrations
+      volumes:
+      - name: migrations
+        configMap:
+          name: clickhouse-migrations

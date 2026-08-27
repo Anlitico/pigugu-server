@@ -1,0 +1,36 @@
+# ServiceAccount for the pigugu-agent to access the audio S3 bucket
+# via IRSA (IAM Roles for Service Accounts).
+#
+# BEFORE applying: replace <ROLE-ARN> with the actual IAM role ARN.
+# The role's trust policy must allow the cluster's OIDC provider to
+# assume it, e.g.:
+#
+#   {
+#     "Version": "2012-10-17",
+#     "Statement": [{
+#       "Effect": "Allow",
+#       "Principal": {"Federated": "arn:aws:iam::537557168531:oidc-provider/oidc.eks.us-west-1.amazonaws.com/id/<OIDC-ID>"},
+#       "Action": "sts:AssumeRoleWithWebIdentity",
+#       "Condition": {
+#         "StringEquals": {
+#           "oidc.eks.us-west-1.amazonaws.com/id/<OIDC-ID>:sub": "system:serviceaccount:default:pigugu-s3-sa"
+#         }
+#       }
+#     }]
+#   }
+#
+# Required IAM permissions on the role:
+#   - s3:PutObject       on arn:aws:s3:::pigugu-clickhouse-audio/*
+#   - s3:GetObject       on arn:aws:s3:::pigugu-clickhouse-audio/*
+#   - s3:ListBucket      on arn:aws:s3:::pigugu-clickhouse-audio
+#   - s3:DeleteObject    on arn:aws:s3:::pigugu-clickhouse-audio/*  (janitor v2)
+#
+# The pigugu-agent Deployment must set:
+#   serviceAccountName: pigugu-s3-sa
+# in its pod template (see k8s/agent.yaml).
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: pigugu-s3-sa
+  annotations:
+    eks.amazonaws.com/role-arn: "arn:aws:iam::537557168531:role/<ROLE-NAME>"

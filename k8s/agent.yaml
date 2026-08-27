@@ -15,6 +15,16 @@ data:
   AWS_REGION: "us-west-1"
   LOG_LEVEL: "INFO"
   LOG_TO_FILE: "false"
+  # ClickHouse voice.turns (see k8s/clickhouse.yaml).
+  CLICKHOUSE_URL: "http://clickhouse:8123"
+  CLICKHOUSE_DATABASE: "voice"
+  CLICKHOUSE_TABLE: "voice.turns"
+  # S3 audio storage (see k8s/sa-pigugu-s3.yaml for the IRSA role).
+  AUDIO_S3_BUCKET: "pigugu-clickhouse-audio"
+  AUDIO_S3_PREFIX: "voice-turns"
+  # Feature flag — set "false" to disable the new S3+ClickHouse path
+  # entirely (turns still go through the legacy /tmp WAV saves).
+  ENABLE_TURN_STORAGE: "true"
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -30,6 +40,10 @@ spec:
       labels:
         app: pigugu-agent
     spec:
+      # IRSA service account for S3 access to the audio bucket.
+      # Trust policy and IAM role must be configured per
+      # k8s/sa-pigugu-s3.yaml BEFORE this pod can write audio.
+      serviceAccountName: pigugu-s3-sa
       containers:
       - name: agent
         image: 537557168531.dkr.ecr.us-west-1.amazonaws.com/pigugu-agent:latest
@@ -118,6 +132,15 @@ spec:
             secretKeyRef:
               name: pigugu-secrets
               key: DATABASE_URL
+        - name: CLICKHOUSE_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              # Single source of truth for the ClickHouse password
+              # (see k8s/clickhouse-secret.yaml). The same Secret
+              # also holds the sha256-hex for the StatefulSet
+              # initContainer, so the two consumers cannot drift.
+              name: clickhouse-password
+              key: password
 ---
 apiVersion: v1
 kind: Service

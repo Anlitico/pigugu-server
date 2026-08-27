@@ -1,0 +1,78 @@
+# ClickHouse server configuration mounted into the pod.
+#
+# Three files, all under /etc/clickhouse-server/config.d/:
+#   - config.xml: listen, timezone, memory limit
+#   - users.xml:  default user with password from k8s secret
+#   - storage.xml: empty placeholder (S3 tiered storage deferred to v2)
+#
+# The default user's password is injected from a sha256 hex digest via
+# an initContainer that patches users.xml at startup. See
+# clickhouse.yaml for the initContainer spec.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: clickhouse-config
+data:
+  config.xml: |
+    <clickhouse>
+        <listen_host>0.0.0.0</listen_host>
+        <timezone>UTC</timezone>
+        <max_server_memory_usage>3000000000</max_server_memory_usage>
+        <max_concurrent_queries>100</max_concurrent_queries>
+        <mark_cache_size>1073741824</mark_cache_size>
+        <uncompressed_cache_size>536870912</uncompressed_cache_size>
+        <merge_with_ttl_timeout>3600</merge_with_ttl_timeout>
+        <path>/var/lib/clickhouse/</path>
+        <tmp_path>/var/lib/clickhouse/tmp/</tmp_path>
+        <user_files_path>/var/lib/clickhouse/user_files/</user_files_path>
+        <format_schema_path>/var/lib/clickhouse/format_schemas/</format_schema_path>
+        <logger>
+            <level>information</level>
+            <log>/var/log/clickhouse-server/clickhouse-server.log</log>
+            <errorlog>/var/log/clickhouse-server/clickhouse-server.err.log</errorlog>
+            <size>1000M</size>
+            <count>10</count>
+        </logger>
+    </clickhouse>
+
+  users.xml: |
+    <clickhouse>
+        <profiles>
+            <default>
+                <readonly>0</readonly>
+            </default>
+        </profiles>
+        <users>
+            <!-- Password is injected at startup by the initContainer that
+                 reads CLICKHOUSE_PASSWORD_HASH from a Secret. See
+                 clickhouse.yaml for the init spec. -->
+            <default>
+                <password_sha256_hex>PLACEHOLDER_REPLACED_BY_INITCONTAINER</password_sha256_hex>
+                <networks>
+                    <ip>::/0</ip>
+                </networks>
+                <profile>default</profile>
+                <quota>default</quota>
+                <access_management>1</access_management>
+            </default>
+        </users>
+        <quotas>
+            <default>
+                <interval>
+                    <duration>3600</duration>
+                    <queries>0</queries>
+                    <errors>0</errors>
+                    <result_rows>0</result_rows>
+                    <read_rows>0</read_rows>
+                    <execution_time>0</execution_time>
+                </interval>
+            </default>
+        </quotas>
+    </clickhouse>
+
+  storage.xml: |
+    <clickhouse>
+        <!-- S3 tiered storage policy deferred to v2. For v1, voice.turns
+             lives on the local disk and the 365d TTL just drops the row.
+             Audio files remain in S3 (see docs/clickhouse-audio-storage.md). -->
+    </clickhouse>
