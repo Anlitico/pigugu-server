@@ -17,7 +17,7 @@ data:
     <clickhouse>
         <listen_host>0.0.0.0</listen_host>
         <timezone>UTC</timezone>
-        <max_server_memory_usage>3000000000</max_server_memory_usage>
+        <max_server_memory_usage>2000000000</max_server_memory_usage>
         <max_concurrent_queries>100</max_concurrent_queries>
         <mark_cache_size>1073741824</mark_cache_size>
         <uncompressed_cache_size>536870912</uncompressed_cache_size>

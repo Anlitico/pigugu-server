@@ -124,7 +124,7 @@ Deepgram 每次发 `is_final=false` 的 interim 消息时，agent 把它记到 `
 | `k8s/clickhouse.yaml` | StatefulSet (1) + Service (ClusterIP) | CH server, ports 8123/9000 |
 | `k8s/clickhouse-pvc.yaml` | PVC 50GB | 绑 `pigugu-gp3` |
 | `k8s/clickhouse-storageclass.yaml` | StorageClass | `gp3`, iops=3000, throughput=125, WaitForFirstConsumer |
-| `k8s/clickhouse-configmap.yaml` | ConfigMap | `config.xml`（listen 0.0.0.0, timezone UTC, max_server_memory_usage 3G）+ `users.xml`（password sha256 hex placeholder，由 initContainer 替换）|
+| `k8s/clickhouse-configmap.yaml` | ConfigMap | `config.xml`（listen 0.0.0.0, timezone UTC, max_server_memory_usage 2G）+ `users.xml`（password sha256 hex placeholder，由 initContainer 替换）|
 | `k8s/clickhouse-secret.yaml` | Secret | `password` + `password-sha256-hex` |
 | `k8s/clickhouse-migration-job.yaml` | Job (one-shot) | 跑 `migrations/0001_voice_turns.sql` |
 | `k8s/sa-pigugu-s3.yaml` | ServiceAccount | IRSA 注解指向 `pigugu-clickhouse-audio-writer` IAM role |

@@ -61,7 +61,7 @@ data:
     ENGINE = MergeTree
     PARTITION BY toYYYYMM(fromUnixTimestamp64Milli(utc_start_ms))
     ORDER BY (device_id, fromUnixTimestamp64Milli(utc_start_ms), turn_id)
-    TTL fromUnixTimestamp64Milli(utc_start_ms) + INTERVAL 365 DAY;
+    TTL toDateTime(fromUnixTimestamp64Milli(utc_start_ms)) + INTERVAL 365 DAY;
 ---
 apiVersion: batch/v1
 kind: Job
