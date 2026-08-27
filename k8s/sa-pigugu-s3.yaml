@@ -33,4 +33,4 @@ kind: ServiceAccount
 metadata:
   name: pigugu-s3-sa
   annotations:
-    eks.amazonaws.com/role-arn: "arn:aws:iam::537557168531:role/<ROLE-NAME>"
+    eks.amazonaws.com/role-arn: "arn:aws:iam::537557168531:role/pigugu-clickhouse-audio-writer"

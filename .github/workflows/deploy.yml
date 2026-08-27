@@ -176,6 +176,37 @@ jobs:
         kubectl logs job/pigugu-db-migration
         kubectl delete job pigugu-db-migration --ignore-not-found
 
+    - name: Deploy ClickHouse infrastructure
+      env:
+        CLICKHOUSE_PASSWORD: ${{ secrets.CLICKHOUSE_PASSWORD }}
+      run: |
+        # clickhouse-secret.yaml is the only manifest with placeholders;
+        # inject the password and its sha256 hex before applying.
+        HASH=$(printf '%s' "$CLICKHOUSE_PASSWORD" | sha256sum | awk '{print $1}')
+        sed -e "s|__CLICKHOUSE_PASSWORD__|$CLICKHOUSE_PASSWORD|g" \
+            -e "s|__CLICKHOUSE_PASSWORD_SHA256_HEX__|$HASH|g" \
+            k8s/clickhouse-secret.yaml | kubectl apply -f -
+        kubectl apply -f k8s/clickhouse-storageclass.yaml
+        kubectl apply -f k8s/clickhouse-configmap.yaml
+        kubectl apply -f k8s/sa-pigugu-s3.yaml
+        kubectl apply -f k8s/clickhouse-pvc.yaml
+        kubectl apply -f k8s/clickhouse.yaml
+        # First deploy provisions a spot node + EBS volume, which can take minutes.
+        kubectl rollout status statefulset/clickhouse --timeout=420s
+
+    - name: Run ClickHouse migrations
+      # Migration SQL is idempotent (CREATE TABLE IF NOT EXISTS).
+      run: |
+        kubectl delete job clickhouse-migrate --ignore-not-found
+        kubectl apply -f k8s/clickhouse-migration-job.yaml
+        if ! kubectl wait --for=condition=complete --timeout=120s job/clickhouse-migrate; then
+          echo "=== ClickHouse migration job logs ==="
+          kubectl logs job/clickhouse-migrate
+          kubectl delete job clickhouse-migrate --ignore-not-found
+          exit 1
+        fi
+        kubectl delete job clickhouse-migrate --ignore-not-found
+
     - name: Deploy to EKS
       env:
         ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
@@ -196,11 +227,13 @@ jobs:
         JWT_SECRET_KEY: ${{ secrets.JWT_SECRET_KEY }}
         AWS_IOT_WEBHOOK_SECRET: ${{ secrets.AWS_IOT_WEBHOOK_SECRET }}
         MQTT_BROKER_URI: ${{ secrets.MQTT_BROKER_URI }}
+        CLICKHOUSE_PASSWORD: ${{ secrets.CLICKHOUSE_PASSWORD }}
         ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
         XAI_API_KEY: ${{ secrets.XAI_API_KEY }}
       run: |
         # Inject secrets into secrets.yaml
         python - <<'PY'
+        import hashlib
         import os
         from pathlib import Path
 
@@ -228,6 +261,16 @@ jobs:
             "MQTT_BROKER_URI",
         ):
             text = text.replace(f"__{key}__", os.environ.get(key, ""))
+
+        # ClickHouse password lives as a single plaintext Actions secret;
+        # the sha256 hex for users.xml is derived here so the digest is
+        # never stored as a separate secret.
+        ch_pass = os.environ.get("CLICKHOUSE_PASSWORD", "")
+        text = text.replace("__CLICKHOUSE_PASSWORD__", ch_pass)
+        text = text.replace(
+            "__CLICKHOUSE_PASSWORD_SHA256_HEX__",
+            hashlib.sha256(ch_pass.encode()).hexdigest(),
+        )
 
         path.write_text(text)
         PY

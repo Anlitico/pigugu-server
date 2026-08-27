@@ -92,7 +92,7 @@ CREATE TABLE IF NOT EXISTS voice.turns
 ENGINE = MergeTree
 PARTITION BY toYYYYMM(fromUnixTimestamp64Milli(utc_start_ms))
 ORDER BY (device_id, fromUnixTimestamp64Milli(utc_start_ms), turn_id)
-TTL fromUnixTimestamp64Milli(utc_start_ms) + INTERVAL 365 DAY;
+TTL toDateTime(fromUnixTimestamp64Milli(utc_start_ms)) + INTERVAL 365 DAY;
 
 -- Verification queries for ops:
 --   SELECT turn_id, stt_text, tts_status, voice_segments

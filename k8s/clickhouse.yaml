@@ -4,9 +4,11 @@
 # on a spot reclaim; the audio in S3 stays safe. v2 adds clickhouse-keeper
 # + 2 replicas across 2 AZs (see docs/clickhouse-audio-storage.md).
 #
-# Resources: c7g.large has 2 vCPU / 4 GiB RAM. We request 1.5 CPU / 3 Gi
-# and cap at 2 CPU / 3.5 Gi. The max_server_memory_usage in config.xml
-# is 3 GB to leave headroom for the OS and other containers.
+# Resources: c7g.large has 2 vCPU / 4 GiB RAM, but ~3.06 GiB allocatable
+# after kube/system-reserved (aws-node, ebs-csi-node, kube-proxy also run
+# here). We request 1.5 CPU / 2 Gi and cap at 2 CPU / 2.5 Gi. The
+# max_server_memory_usage in config.xml is 2 GB to stay inside the pod
+# limit with headroom for ClickHouse's own overhead.
 #
 # Taints / nodeSelector: dedicated to the ng-clickhouse node group
 # (c7g.large spot, arm64, taint `workload=clickhouse:NoSchedule`,
@@ -59,9 +61,14 @@ spec:
         operator: Equal
         value: clickhouse
         effect: NoSchedule
-      # An emptyDir is used as the config.d/ mount point so the
+      # An emptyDir is used as the staging mount point so the
       # initContainer can rewrite users.xml with the real password
-      # before the main container starts.
+      # before the main container starts. The rendered file REPLACES
+      # the image's base /etc/clickhouse-server/users.xml entirely —
+      # ClickHouse loads users from <users_config> (users.xml + users.d/),
+      # NOT from config.d/, so dropping our users.xml into config.d/
+      # would be silently ignored (the base file's empty <password>
+      # would win the merge).
       initContainers:
       - name: patch-users-xml
         image: busybox:1.36
@@ -70,8 +77,7 @@ spec:
         - -c
         - |
           set -eu
-          SECRET_HASH="$(cat /secret/clickhouse-password-hash)"
-          if [ -z "$SECRET_HASH" ]; then
+          if [ -z "${SECRET_HASH}" ]; then
             echo "ERROR: empty password hash from secret"
             exit 1
           fi
@@ -104,10 +110,10 @@ spec:
         resources:
           requests:
             cpu: "1500m"
-            memory: "3Gi"
+            memory: "2Gi"
           limits:
             cpu: "2000m"
-            memory: "3.5Gi"
+            memory: "2.5Gi"
         livenessProbe:
           tcpSocket:
             port: http
@@ -124,18 +130,27 @@ spec:
           value: voice
         - name: CLICKHOUSE_USER
           value: default
-        # NOTE: CLICKHOUSE_PASSWORD is intentionally NOT set on the
-        # clickhouse server container. The server authenticates via
-        # the sha256-hash already patched into users.xml by the
-        # initContainer (see top of this manifest). The plaintext
-        # password is only needed by the agent and the migration
-        # Job, both of which read it directly from the
-        # clickhouse-password Secret.
+        # CLICKHOUSE_PASSWORD is REQUIRED on the server container: the
+        # clickhouse/clickhouse-server image's entrypoint, when neither
+        # CLICKHOUSE_USER nor CLICKHOUSE_PASSWORD is set, writes a
+        # users.d file that restricts the default user to localhost only
+        # (blocking the agent's cross-node connections). With the
+        # password set, the entrypoint writes users.d/default.xml with
+        # the sha256 hex and an allow-all networks entry. The
+        # initContainer additionally patches our own replaced users.xml
+        # so the effective config is consistent regardless of entrypoint
+        # behavior. The agent and migration Job read the same plaintext
+        # from the clickhouse-password Secret.
+        - name: CLICKHOUSE_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: clickhouse-password
+              key: password
         volumeMounts:
         - name: data
           mountPath: /var/lib/clickhouse
         - name: rendered-config
-          mountPath: /etc/clickhouse-server/config.d/users.xml
+          mountPath: /etc/clickhouse-server/users.xml
           subPath: users.xml
         - name: configmap-source
           mountPath: /etc/clickhouse-server/config.d/config.xml
