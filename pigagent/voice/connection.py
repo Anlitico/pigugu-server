@@ -31,6 +31,8 @@ from loguru import logger
 from bootstrap.factory import create_pig_agent, get_pg_pool, get_redis
 from metrics.turn import TelemetryCollector
 from providers.base import InterfaceType, STTProvider, TTSProvider, VADProvider
+from voice.interims import InterimBuffer
+from voice.storage import TurnStorage, is_turn_storage_enabled
 
 TAG = __name__
 TTS_FRAME_INTERVAL = 0.06  # 60 ms per Opus frame at 16 kHz
@@ -60,6 +62,18 @@ def _decode_opus_packet(data: bytes, decoder: Any) -> bytes | None:
         return decoder.decode(data, 960)  # 60ms at 16kHz
     except Exception:
         return None
+
+
+def _ms_diff(a: float | None, b: float | None) -> int | None:
+    """Difference between two perf_counter floats, in milliseconds,
+    rounded to int. Returns None if either side is missing or 0 if
+    b < a (negative span — caller should fall back to a wider window
+    or just record 0)."""
+    if a is None or b is None:
+        return None
+    if b < a:
+        return 0
+    return round((b - a) * 1000.0)
 
 
 # ── Connection handler ────────────────────────────────────────────────
@@ -101,6 +115,37 @@ class ConnectionHandler:
         self._vad_start_marked: bool = False
         self._stt_commit_marked: bool = False
         self._first_turn_done: bool = False
+        # ── Per-turn audio storage (S3 + ClickHouse) ──────────────
+        # New path: when ENABLE_TURN_STORAGE=true (default), we build a
+        # 5-file per-turn record (input.wav/json, tts.wav/json,
+        # turn.json) and INSERT one row into voice.turns. The legacy
+        # /tmp/pigugu_*.wav path is kept as a fallback for when the
+        # new subsystem is disabled.
+        self._turn_storage_enabled: bool = is_turn_storage_enabled()
+        # Per-session turn counter (separate from _sentence_id which
+        # is the per-TTS-sentence counter used for tts_played
+        # correlation). 1-based; the {turn_idx:04d} in turn_id.
+        self._turn_idx: int = 0
+        # Live TurnStorage instance for the in-flight turn, or None
+        # between turns. Created in _on_stt_result, committed in the
+        # parent task after TTS completes.
+        self._turn_storage: TurnStorage | None = None
+        # Set to _turn_idx when a commit() is fired for that turn. The
+        # _save_input_wav cleanup path uses this to skip creating a
+        # PHANTOM second commit for the same user audio buffer
+        # (otherwise: asr_audio still has the turn's PCM, the cleanup
+        # path builds a new TurnStorage with the same data but
+        # turn_idx+1, and we get two S3 directories + two CH rows for
+        # the same turn). Cleared in the commit's done callback.
+        self._turn_storage_committing_turn_idx: int = -1
+        # Index into conn._voice_chunk_flags (populated by Silero) at
+        # the moment the current turn started. Captured at
+        # _on_stt_result so commit() can slice the per-turn range.
+        self._voice_chunk_start: int = 0
+        # Cross-thread interim STT buffer. Shared across all turns in
+        # this connection; the TurnStorage drains it on each
+        # mark_stt_final / mark_stt_abandoned call.
+        self._interim_buffer = InterimBuffer()
         # Reconstructed end-of-utterance on the server clock (perf_counter),
         # derived from the firmware's user_stop_age_ms duration. None until
         # the first vad_silence arrives.
@@ -586,6 +631,157 @@ class ConnectionHandler:
             self._eou_bounce_task.cancel()
         self._eou_bounce_task = asyncio.ensure_future(self._eou_bounce())
 
+    async def _on_stt_interim(self, text: str) -> None:
+        """Deepgram interim message — append to the per-turn interim buffer.
+
+        Dispatched from the Deepgram background thread via
+        ``asyncio.run_coroutine_threadsafe``; the InterimBuffer itself
+        is thread-safe so the dispatch is purely for ordering with
+        other asyncio mutations.
+
+        The interim is only meaningful while a turn is in flight; we
+        accept it whenever the buffer is alive (the active TurnStorage
+        drains it on mark_stt_final / mark_stt_abandoned).
+        """
+        if not self._turn_storage_enabled:
+            return
+        self._interim_buffer.record(text)
+
+    def _voice_chunk_flags_slice(self, start_idx: int) -> list[bool]:
+        """Closure passed to TurnStorage: returns the per-turn slice
+        of the Silero chunk-flag list. ``start_idx`` is captured at
+        TurnStorage construction time so the next turn's
+        ``_voice_chunk_start`` mutation cannot leak into this turn's
+        slice.
+
+        ``start_idx`` is in the ORIGINAL coordinate space (before any
+        trim by Silero's 10-minute bound). The trim counter
+        ``_voice_chunk_flags_trimmed`` tracks how many chunks have
+        been removed from the front of the list; we subtract it
+        to translate to the post-trim coordinate space. Without
+        this translation, a long session (>= 10 min cumulative
+        audio) loses the first ~60s of every subsequent turn's
+        voice_segments[].
+        """
+        flags = getattr(self, "_voice_chunk_flags", None)
+        if not flags:
+            return []
+        trimmed = getattr(self, "_voice_chunk_flags_trimmed", 0)
+        # Translate to post-trim coordinates. If the translation
+        # yields a negative index (turn started before any trim —
+        # common in the first 10 minutes of a session), clamp to 0.
+        post_trim_idx = max(0, start_idx - trimmed)
+        return list(flags[post_trim_idx:])
+
+    def _make_turn_storage(
+        self,
+        *,
+        turn_id: str,
+        utc_start_ms: int,
+    ) -> TurnStorage | None:
+        """Build a TurnStorage for the in-flight turn. Returns None
+        when the env-var configuration is missing or incomplete (in
+        which case the agent logs a one-shot ERROR and falls back to
+        the legacy /tmp path for this connection)."""
+        bucket = os.getenv("AUDIO_S3_BUCKET", "").strip()
+        prefix = os.getenv("AUDIO_S3_PREFIX", "voice-turns").strip()
+        ch_url = os.getenv("CLICKHOUSE_URL", "").strip()
+        ch_db = os.getenv("CLICKHOUSE_DATABASE", "voice").strip()
+        ch_table = os.getenv("CLICKHOUSE_TABLE", f"{ch_db}.turns").strip()
+        ch_password = os.getenv("CLICKHOUSE_PASSWORD", "")
+        if not (bucket and ch_url and ch_password):
+            logger.warning(
+                f"[Voice] turn storage misconfigured "
+                f"bucket={bucket!r} ch_url={ch_url!r} ch_password_set={bool(ch_password)}"
+            )
+            return None
+        # asynch accepts the URL form `http://host:port?password=...`.
+        ch_dsn = f"{ch_url}?password={ch_password}"
+        # Capture the start index in a local so the lambda is bound to
+        # THIS turn's value, not the live self._voice_chunk_start
+        # (which the next turn will overwrite before this turn's
+        # commit() runs — the S3+CH I/O can take seconds).
+        captured_start = self._voice_chunk_start
+        return TurnStorage(
+            turn_id=turn_id,
+            session_id=self.session_id,
+            turn_idx=self._turn_idx,
+            device_id=self.client_id,
+            user_id=self._user_id or self.client_id,
+            persona_id=self._persona_id,
+            utc_start_ms=utc_start_ms,
+            s3_bucket=bucket,
+            s3_prefix=prefix,
+            clickhouse_dsn=ch_dsn,
+            clickhouse_table=ch_table,
+            interims=self._interim_buffer,
+            voice_chunk_flags_slice=lambda: self._voice_chunk_flags_slice(captured_start),
+            turn_type=self._turn_type,
+        )
+
+    async def _commit_turn_storage(self, *, turn_type_override: str = "") -> None:
+        """Commit (or no-op) the in-flight TurnStorage. Fire-and-forget;
+        failures are logged by the storage module but never propagate
+        to the WebSocket loop.
+        """
+        if not self._turn_storage_enabled or self._turn_storage is None:
+            return
+        storage = self._turn_storage
+        self._turn_storage = None
+        if turn_type_override:
+            storage.set_turn_type(turn_type_override)
+        # Snapshot the current latency state from TelemetryCollector so
+        # the sidecar has it. TelemetryCollector is a contextvar on
+        # this task; reading here is safe.
+        from metrics.turn import _current_var as _turn_var
+        turn = _turn_var.get() or {}
+        marks = turn.get("marks", {}) or {}
+        e2e_ms = _ms_diff(marks.get("server_received_vad_at"), marks.get("agent_spk"))
+        if e2e_ms is None:
+            e2e_ms = _ms_diff(marks.get("vad_end"), marks.get("agent_spk")) or 0
+        stt_ms = _ms_diff(marks.get("server_received_vad_at"), marks.get("stt_final")) or 0
+        llm_ttft_ms = _ms_diff(marks.get("llm_req"), marks.get("llm_first_token")) or 0
+        tts_ttfb_ms = _ms_diff(marks.get("tts_first_ready"), marks.get("agent_spk")) or 0
+        device_playback_ms = int(
+            (turn.get("meta") or {}).get("device_playback_ms", 0) or 0
+        )
+        llm_model = (turn.get("meta") or {}).get("llm_model", "")
+        storage.set_telemetry({
+            "e2e_ms": e2e_ms,
+            "stt_ms": stt_ms,
+            "llm_ttft_ms": llm_ttft_ms,
+            "tts_ttfb_ms": tts_ttfb_ms,
+            "device_playback_ms": device_playback_ms,
+            "llm_model": llm_model,
+        })
+        # Best-effort: never await the S3+CH I/O synchronously.
+        # Mark this turn_idx as "commit in flight" so the
+        # _save_input_wav cleanup path doesn't build a phantom second
+        # commit with the same asr_audio buffer. The flag is cleared
+        # by the commit's done callback (success or failure).
+        self._turn_storage_committing_turn_idx = storage.turn_idx
+        commit_task = asyncio.ensure_future(storage.commit())
+
+        def _on_commit_done(t: asyncio.Task) -> None:
+            # Only clear the flag if it still refers to OUR turn. If
+            # the next turn's commit already overwrote it, leave it.
+            if self._turn_storage_committing_turn_idx == storage.turn_idx:
+                self._turn_storage_committing_turn_idx = -1
+            # Surface unhandled exceptions (commit() catches its own,
+            # but defensively log anything that escaped).
+            if not t.cancelled() and t.exception() is not None:
+                logger.exception(
+                    f"[Voice] commit() escaped exception turn_id={storage.turn_id} "
+                    f"err={t.exception()!r}"
+                )
+        commit_task.add_done_callback(_on_commit_done)
+
+    async def _commit_turn_storage_async(self, *, turn_type_override: str = "") -> None:
+        """Sync-callable wrapper around ``_commit_turn_storage`` for
+        legacy call sites that fire-and-forget (the cleanup path
+        inside ``_save_input_wav``)."""
+        await self._commit_turn_storage(turn_type_override=turn_type_override)
+
     async def _on_interim_barge_in(self) -> None:
         """Pipecat-style: Deepgram interim speech during TTS → abort immediately."""
         now = time.time()
@@ -726,6 +922,36 @@ class ConnectionHandler:
         # M1: 记录当前正在播放 TTS 的 sentence_id,tts_played 到达时校验
         self._current_tts_sentence_id = sentence_id
 
+        # ── Per-turn audio storage: build the TurnStorage ─────────
+        # Capture the current Silero chunk index BEFORE the new turn
+        # starts, so commit() can slice the per-turn range of flags
+        # for voice_segments[].
+        if self._turn_storage_enabled:
+            self._turn_idx += 1
+            self._voice_chunk_start = len(
+                getattr(self, "_voice_chunk_flags", [])
+            )
+            utc_start_ms = int(time.time() * 1000)
+            turn_id = (
+                f"{utc_start_ms}_{self.session_id}_{self._turn_idx:04d}"
+            )
+            self._turn_storage = self._make_turn_storage(
+                turn_id=turn_id,
+                utc_start_ms=utc_start_ms,
+            )
+            if self._turn_storage is not None:
+                # Freeze the user PCM at STT final time so a future
+                # ``asr_audio.clear()`` doesn't lose it.
+                self._turn_storage.set_user_pcm(b"".join(self.asr_audio))
+                self._turn_storage.mark_stt_final(text)
+                # Telemetry snapshot (e2e_ms etc. are computed at flush,
+                # but other fields are already populated).
+                llm_model = TelemetryCollector.mark_time("llm_model")  # type: ignore[arg-type]
+                snapshot: dict[str, Any] = {
+                    "llm_model": self._pig.model if self._pig else "",
+                }
+                self._turn_storage.set_telemetry(snapshot)
+
         # LLM → TTS
         self._tts_task = asyncio.ensure_future(
             self._tts_producer_consumer(text, sentence_id)
@@ -740,9 +966,79 @@ class ConnectionHandler:
             pass
         finally:
             TelemetryCollector._flush_turn()
+            # Commit the per-turn audio record (S3 + ClickHouse).
+            # Best-effort, never blocks this coroutine.
+            await self._commit_turn_storage()
 
     def _save_input_wav(self, stt_text: str) -> str:
-        """Save user speech PCM as WAV. Returns the file path."""
+        """Legacy /tmp WAV save for the user PCM. Kept as a fallback
+        when ``ENABLE_TURN_STORAGE=false`` (or when the new
+        TurnStorage is None because env vars are missing). When the
+        new path is active, the TurnStorage has already captured the
+        PCM at STT final time in ``_on_stt_result`` — this is a
+        no-op for that case, except for the cleanup path which
+        builds a placeholder TurnStorage and commits it.
+
+        Returns the local file path (empty string if the new path
+        was used or if the save failed)."""
+        # New path: if a TurnStorage exists for this turn, no work
+        # to do here — the parent task will commit at the end of
+        # _on_stt_result.
+        if self._turn_storage_enabled and self._turn_storage is not None:
+            return ""
+        # New path: a commit is already in flight for this turn (the
+        # parent task fired commit() but _save_input_wav is called
+        # before the commit completes from _reset_audio_states). The
+        # same PCM will be in S3 + CH; do NOT also write a duplicate
+        # to /tmp.
+        if (
+            self._turn_storage_enabled
+            and self._turn_storage_committing_turn_idx == self._turn_idx
+        ):
+            return ""
+        # Cleanup path: no STT was produced (the turn ended without
+        # a final). Try to spin up a best-effort TurnStorage — BUT
+        # skip if a commit is already in flight for the CURRENT turn
+        # index. The parent task calls _commit_turn_storage which
+        # sets _turn_storage = None but fires commit() asynchronously
+        # (S3 + CH I/O takes seconds). The asr_audio buffer is NOT
+        # cleared until _reset_audio_states runs, so without this
+        # guard we'd build a SECOND TurnStorage with the same PCM,
+        # producing two S3 directories + two CH rows for one turn.
+        if (
+            self._turn_storage_enabled
+            and self.asr_audio
+            and self._turn_storage_committing_turn_idx != self._turn_idx
+        ):
+            try:
+                self._turn_idx += 1
+                utc_start_ms = int(time.time() * 1000)
+                turn_id = (
+                    f"{utc_start_ms}_{self.session_id}_{self._turn_idx:04d}"
+                )
+                # We don't know vad_start here; the chunk slice
+                # closure is best-effort and may include the previous
+                # turn's last segment. Acceptable for the no-STT
+                # diagnostic case.
+                self._voice_chunk_start = 0
+                storage = self._make_turn_storage(
+                    turn_id=turn_id,
+                    utc_start_ms=utc_start_ms,
+                )
+                if storage is not None:
+                    storage.set_turn_type("interrupted")
+                    storage.set_user_pcm(b"".join(self.asr_audio))
+                    storage.mark_stt_final("")  # sets stt_status=no_stt
+                    self._turn_storage = storage
+                    # Schedule the commit; mirror the TTS-end path.
+                    asyncio.ensure_future(
+                        self._commit_turn_storage_async(turn_type_override="interrupted")
+                    )
+                    return ""
+            except Exception:
+                logger.exception("[Voice] best-effort TurnStorage failed")
+        # Legacy /tmp path (used when ENABLE_TURN_STORAGE=false or
+        # when the new path failed to construct).
         try:
             pcm = b"".join(self.asr_audio)
             sid = getattr(self, "_sentence_id", 0)
@@ -763,7 +1059,20 @@ class ConnectionHandler:
             return ""
 
     def _save_tts_wav(self, tts_pcm: bytes) -> str:
-        """Save TTS output PCM as WAV. Returns the file path."""
+        """Legacy /tmp WAV save for the TTS PCM. When the new
+        TurnStorage path is active, appends to the per-turn TTS
+        buffer instead; the actual S3 upload happens in commit().
+
+        The signature preserves the existing call sites
+        (``_tts_producer_consumer`` and ``_inject_tts``), which still
+        pass the captured PCM through this method. Returns the local
+        file path for the legacy path; empty string for the new
+        path."""
+        # New path: append to the TurnStorage's tts_pcm_buf.
+        if self._turn_storage_enabled and self._turn_storage is not None:
+            self._turn_storage.tts_pcm_buf.extend(tts_pcm)
+            return ""
+        # Legacy /tmp path.
         try:
             wav_path = f"/tmp/pigugu_out_{self.session_id}.wav"
             with wave.open(wav_path, "wb") as wf:
@@ -778,6 +1087,29 @@ class ConnectionHandler:
             return wav_path
         except Exception:
             logger.exception("[Voice] TTS WAV save failed")
+            return ""
+
+    def _save_inject_tts_wav(self, tts_pcm: bytes, sentence_id: int) -> str:
+        """Diagnostic save for an inject's TTS PCM. Always writes to
+        a /tmp file with a per-inject suffix — never appends to the
+        active TurnStorage's tts_pcm_buf, which would leak the
+        inject's audio into the next real turn's S3 commit.
+        """
+        try:
+            ts = int(time.time() * 1000)
+            wav_path = f"/tmp/pigugu_inject_out_{self.session_id}_{sentence_id}_{ts}.wav"
+            with wave.open(wav_path, "wb") as wf:
+                wf.setnchannels(1)
+                wf.setsampwidth(2)
+                wf.setframerate(16000)
+                wf.writeframes(tts_pcm)
+            logger.warning(
+                f"[Voice] Inject TTS WAV saved: {wav_path} "
+                f"({len(tts_pcm)} bytes, {len(tts_pcm)/32000:.1f}s)"
+            )
+            return wav_path
+        except Exception:
+            logger.exception("[Voice] Inject TTS WAV save failed")
             return ""
 
     # ── TTS producer-consumer ─────────────────────────────────────────
@@ -917,6 +1249,21 @@ class ConnectionHandler:
         tts_started = False
         send_phase_start = time.time()
 
+        # State flags set inside the streaming try/except and read
+        # afterwards. Declared BEFORE the outer try so the inner
+        # except RuntimeError block can set stream_failed_mid_turn
+        # without an UnboundLocalError and so the post-stream tail
+        # can read the value that survived a normal exit of the
+        # streaming try.
+        stream_failed_mid_turn = False
+        cancelled_during_stream = False
+        cancel_exc: asyncio.CancelledError | None = None
+        # Set to True once the if tts_started block has called
+        # mark_tts_complete. The tail's except Exception handler
+        # must not overwrite a clean tts_status with a misleading
+        # "stream_failed" once bookkeeping has already run.
+        bookkeeping_done = False
+
         try:
             try:
                 pending: list[bytes] = []
@@ -954,53 +1301,238 @@ class ConnectionHandler:
                 # replay the whole reply over already-played audio.
                 if tts_started:
                     logger.warning("[Voice] WS stream died mid-turn — ending turn")
+                    # The device already received some audio but the
+                    # rest of the stream blew up. Don't fall through
+                    # to the normal drain + stop path — that would
+                    # claim the turn is "complete" when it isn't.
+                    stream_failed_mid_turn = True
                 elif not self._interrupt_event.is_set():
                     logger.warning("[Voice] WS stream failed — falling back to REST")
                     full = await producer_task
                     if full.strip() and self.tts:
-                        frames = await self.tts.synthesize(full.strip(), collect_pcm=tts_pcm)
-                        await _send_batch(frames, first=True)
-        except asyncio.CancelledError:
+                        try:
+                            frames = await self.tts.synthesize(full.strip(), collect_pcm=tts_pcm)
+                        except Exception:
+                            # The REST fallback itself blew up (e.g.
+                            # ConnectionError). The device still
+                            # received nothing, so this is functionally
+                            # the same as the LLM returning empty —
+                            # let the post-stream tail record an empty
+                            # turn (no_tts_started), not stream_failed
+                            # (which would imply the device heard a
+                            # partial stream).
+                            logger.exception(
+                                "[Voice] REST fallback synthesize failed"
+                            )
+                        else:
+                            if frames:
+                                await _send_batch(frames, first=True)
+            except Exception:
+                # Anything that isn't a RuntimeError (e.g.
+                # websockets.exceptions.ConnectionClosed,
+                # WebSocketException, KeyError, ValueError) from
+                # stream_audio, _send_tts_frames, or _send_batch.
+                # If we've already sent any frames to the device,
+                # treat this as a partial stream — the device
+                # received a prefix of the audio but no clean end.
+                # If nothing reached the device yet, swallow (don't
+                # re-raise) so the post-stream tail still runs and
+                # writes the no_tts_started outcome to TurnStorage.
+                if tts_started:
+                    logger.warning(
+                        "[Voice] WS stream raised non-RuntimeError mid-turn — ending turn"
+                    )
+                    stream_failed_mid_turn = True
+                else:
+                    # Nothing reached the device. The parent's
+                    # `except (CancelledError, Exception): pass`
+                    # would have hidden this anyway; let the
+                    # post-stream tail run and record an empty turn.
+                    logger.warning(
+                        "[Voice] WS stream raised non-RuntimeError before any audio — recording empty turn"
+                    )
+        except asyncio.CancelledError as e:
+            # Save the original exception so we can re-raise it after
+            # the post-stream bookkeeping runs. Bare `raise` at the
+            # end of the function would raise
+            # RuntimeError("No active exception to re-raise") because
+            # sys.exc_info() is cleared when the except block exits.
+            cancelled_during_stream = True
+            cancel_exc = e
             if not producer_task.done():
                 producer_task.cancel()
                 try:
                     await producer_task
                 except (asyncio.CancelledError, Exception):
                     pass
-            raise
+            # DO NOT re-raise yet — we need the post-stream bookkeeping
+            # (mark_tts_complete, _persist_turn) to run. Re-raise at
+            # the end of the function so the parent task still sees
+            # the cancel.
         finally:
+            # MUST run on every exit path (success, cancel, post-stream
+            # exception, bare raise). Without this, the next STT final
+            # after a successful TTS turn hits
+            # `if self.client_is_speaking: return` in _on_stt_result
+            # and is silently dropped ("Skipping STT (TTS still
+            # playing)") — the agent becomes unresponsive until an
+            # abort or inject flows through. Re-introduced after the
+            # try/except restructuring removed it.
             self.client_is_speaking = False
+        # ── Post-stream tail ──────────────────────────────────────────
+        # Everything from producer-drain through persist + cancel
+        # re-raise is wrapped in a single try/except so an exception
+        # anywhere in the tail (closed WS, OOM in wave.write, OSErr on
+        # the debug save, etc.) still produces a coherent TurnStorage
+        # record and still surfaces to the parent task.
+        post_stream_exc: Exception | None = None
+        full_text = ""
+        try:
+            if not producer_task.done():
+                full_text = await producer_task
+            else:
+                try:
+                    full_text = producer_task.result()
+                except (asyncio.CancelledError, Exception):
+                    full_text = ""
 
-        if not producer_task.done():
-            full_text = await producer_task
-        else:
-            try:
-                full_text = producer_task.result()
-            except (asyncio.CancelledError, Exception):
-                full_text = ""
+            # Save TTS output WAV for debugging
+            if len(tts_pcm) > 0:
+                self._save_tts_wav(bytes(tts_pcm))
 
-        # Save TTS output WAV for debugging
-        if len(tts_pcm) > 0:
-            self._save_tts_wav(bytes(tts_pcm))
+            # Post-stream bookkeeping. If we were cancelled mid-stream,
+            # use ``truncated_reason="cancelled"`` (or "barge_in" if the
+            # interrupt event was set) instead of the normal "complete" /
+            # "drain_timeout" outcomes. We still re-raise the cancel at
+            # the end of this block so the parent task sees it.
+            if tts_started:
+                tts_ok = False
+                tts_truncated_reason = ""
+                if cancelled_during_stream:
+                    # Cancel arrived during streaming — TTS was interrupted.
+                    tts_truncated_reason = (
+                        "barge_in" if self._interrupt_event.is_set()
+                        else "cancelled"
+                    )
+                elif stream_failed_mid_turn:
+                    # The WS stream raised an exception after some
+                    # TTS had already been sent to the device. The
+                    # device received a prefix of the audio but no
+                    # clean end — don't claim "complete".
+                    # (post_stream_exc is read separately below, in
+                    # the except Exception handler, where it gates a
+                    # second mark_tts_complete with stream_failed.)
+                    tts_truncated_reason = "stream_failed"
+                elif await self._wait_playback_drain() and not self._interrupt_event.is_set():
+                    await self._ws.send(json.dumps({
+                        "session_id": self.session_id,
+                        "type": "tts",
+                        "state": "stop",
+                    }))
+                    tts_ok = True
+                    TelemetryCollector.mark("tts_end")
+                else:
+                    tts_truncated_reason = "drain_timeout"
+                # H5: 不在这里 finish_turn。子 task 调 finish_turn 只能 mark
+                # _finished,真正 flush (_log + 清 ctx) 由父 task 在 await
+                # tts_task 之后做。这里只 mark _finished。
+                TelemetryCollector.finish_turn()
+                # M1: TTS 结束,清掉当前 sentence_id 跟踪 (无论
+                # tts_started 还是 no-tts-started 都清,避免上一个
+                # turn 的 sentence_id 残留在下一个 turn 开头).
+                self._current_tts_sentence_id = None
+                # New path: record the TTS outcome on the TurnStorage so
+                # commit() can fill tts_status / tts_truncated_reason in
+                # the sidecar. This MUST run even on cancel so the sidecar
+                # reflects what actually happened.
+                if self._turn_storage is not None:
+                    self._turn_storage.mark_tts_complete(
+                        full_text,
+                        ok=tts_ok,
+                        truncated_reason=tts_truncated_reason,
+                    )
+                    # The except Exception handler below must NOT
+                    # overwrite a clean tts_status with a misleading
+                    # "stream_failed" — once bookkeeping has run, the
+                    # first call wins.
+                    bookkeeping_done = True
 
-        if tts_started:
-            if await self._wait_playback_drain() and not self._interrupt_event.is_set():
-                await self._ws.send(json.dumps({
-                    "session_id": self.session_id,
-                    "type": "tts",
-                    "state": "stop",
-                }))
-                TelemetryCollector.mark("tts_end")
-            # H5: 不在这里 finish_turn。子 task 调 finish_turn 只能 mark
-            # _finished,真正 flush (_log + 清 ctx) 由父 task 在 await
-            # tts_task 之后做。这里只 mark _finished。
-            TelemetryCollector.finish_turn()
-            # M1: TTS 结束,清掉当前 sentence_id 跟踪
-            self._current_tts_sentence_id = None
+            # Persist assistant message. ensure_future is fire-and-forget;
+            # wrap so a missing event loop / cancellation is logged rather
+            # than silently dropping the assistant turn text.
+            if full_text.strip() and self._pig and self._pig.ctx:
+                self._schedule_persist_turn("assistant", full_text.strip())
 
-        # Persist assistant message
-        if full_text.strip() and self._pig and self._pig.ctx:
-            asyncio.ensure_future(self._persist_turn("assistant", full_text.strip()))
+            # If TTS never started (e.g. LLM returned empty, or the
+            # request was interrupted before any audio was produced),
+            # still record the turn so the input.wav + empty tts.wav
+            # pair is preserved in S3.
+            if not tts_started and self._turn_storage is not None:
+                truncated_reason = "no_tts_started"
+                if self._interrupt_event.is_set():
+                    truncated_reason = "barge_in"
+                elif cancelled_during_stream:
+                    truncated_reason = "cancelled"
+                self._turn_storage.mark_tts_complete(
+                    full_text,
+                    ok=False,
+                    truncated_reason=truncated_reason,
+                )
+                # The except Exception handler below must NOT
+                # overwrite this with a misleading "stream_failed".
+                bookkeeping_done = True
+                # M1 (Round 4 fix): also clear _current_tts_sentence_id
+                # in the no-tts-started path. Without this, an LLM-
+                # empty reply leaves the previous turn's sentence_id
+                # lingering into the next turn, mis-attributing any
+                # late tts_played playback timing to the new turn.
+                self._current_tts_sentence_id = None
+        except asyncio.CancelledError:
+            # Cancel during the post-stream tail. Propagate so the
+            # parent task sees it. (The outer `try`'s except
+            # CancelledError did NOT re-raise — it saved the
+            # instance in `cancel_exc` for re-raise after the tail.)
+            raise
+        except Exception as e:
+            # Any other exception in the tail (closed WS, OOM, OSError
+            # on the debug WAV, etc.). Record it, mark the TurnStorage
+            # with a stream_failed reason, and swallow. The parent
+            # task's `except (CancelledError, Exception): pass` already
+            # hides this from the WS loop; the goal is just to keep
+            # bookkeeping coherent.
+            post_stream_exc = e
+            logger.exception(
+                f"[Voice] Post-stream tail raised {type(e).__name__}: {e}"
+            )
+            if (
+                self._turn_storage is not None
+                and tts_started
+                and not bookkeeping_done
+            ):
+                # The `if tts_started:` block above didn't run (or
+                # exited before mark_tts_complete was called). Force
+                # a stream_failed outcome. If bookkeeping_done is
+                # already True, the first call set tts_status to
+                # whatever the real outcome was (complete /
+                # drain_timeout / barge_in / cancelled) — don't
+                # overwrite that with a misleading "stream_failed".
+                self._turn_storage.mark_tts_complete(
+                    full_text,
+                    ok=False,
+                    truncated_reason="stream_failed",
+                )
+
+        # Re-raise the cancel (if any) so the parent task sees it.
+        # This is OUTSIDE the tail's try/except: if the tail raised
+        # a CancelledError, the except block re-raised and the
+        # function exits with that exception — we don't get here
+        # and we don't double-raise. If the tail raised an Exception
+        # we caught and swallowed, we get here and propagate the
+        # streaming cancel cleanly. If the tail completed normally,
+        # we get here and propagate any streaming cancel that
+        # happened before the tail ran.
+        if cancel_exc is not None:
+            raise cancel_exc
     # ── Abort ─────────────────────────────────────────────────────────
 
     async def _handle_abort(self, data: dict) -> None:
@@ -1022,6 +1554,22 @@ class ConnectionHandler:
         self._interrupt_event.clear()
 
     # ── Persistence ───────────────────────────────────────────────────
+
+    def _schedule_persist_turn(self, role: str, content: str) -> None:
+        """Fire-and-forget wrapper around _persist_turn.
+
+        asyncio.ensure_future raises RuntimeError synchronously if
+        called when no event loop is running (e.g. during shutdown
+        / after the connection has been closed). We don't want a
+        stale WS teardown to swallow the assistant turn text into a
+        NoEventLoop error, so catch and log.
+        """
+        try:
+            asyncio.ensure_future(self._persist_turn(role, content))
+        except RuntimeError:
+            logger.warning(
+                f"[Voice] Skipping persist role={role} — no running event loop"
+            )
 
     async def _persist_turn(self, role: str, content: str) -> None:
         try:
@@ -1091,8 +1639,20 @@ class ConnectionHandler:
                 await self._send_tts_frames(
                     frames, extra_break=lambda: sentence_id != self._sentence_id
                 )
+                # If a real turn is in flight, its TurnStorage owns
+                # tts_pcm_buf and we must not append inject audio
+                # to it — that would leak the inject's voice into
+                # the next turn's S3 commit. Save the inject's TTS
+                # WAV to a separate diagnostic file instead.
+                # (The inject itself is a "side effect" of the
+                # underlying turn, but the audio is the inject's
+                # responsibility; the real turn already wrote its
+                # own TTS.)
                 if len(tts_pcm) > 0:
-                    self._save_tts_wav(bytes(tts_pcm))
+                    if self._turn_storage is not None:
+                        self._save_inject_tts_wav(bytes(tts_pcm), sentence_id)
+                    else:
+                        self._save_tts_wav(bytes(tts_pcm))
             if await self._wait_playback_drain() and not self._interrupt_event.is_set():
                 await self._ws.send(json.dumps({
                     "session_id": self.session_id,

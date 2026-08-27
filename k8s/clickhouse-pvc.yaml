@@ -1,0 +1,20 @@
+# PersistentVolumeClaim for ClickHouse data.
+# Bound dynamically by the StatefulSet (WaitForFirstConsumer) to a gp3
+# EBS volume on the same AZ as the ng-clickhouse spot node that
+# schedules the pod.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: clickhouse-data
+  labels:
+    app: clickhouse
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: pigugu-gp3
+  resources:
+    requests:
+      # 50GB is comfortable for the first ~6 months of voice.turns at
+      # current scale. The StorageClass has allowVolumeExpansion: true
+      # so this can be increased in place without recreating the pod.
+      storage: 50Gi

@@ -89,6 +89,19 @@ class DeepgramSTT(STTProvider):
                         )
                 else:
                     logger.info(f"[Deepgram] interim: '{text[:80]}'")
+                    # Feed the per-turn voice.turns sidecar with every
+                    # interim transcript so a downstream tool can see
+                    # what the LLM was being driven by. The interim
+                    # path is fire-and-forget; failures here must not
+                    # break the barge-in path below.
+                    if hasattr(conn, "_on_stt_interim"):
+                        try:
+                            if hasattr(conn, "_loop") and conn._loop and conn._loop.is_running():
+                                asyncio.run_coroutine_threadsafe(
+                                    conn._on_stt_interim(text), conn._loop
+                                )
+                        except Exception:
+                            logger.exception("[Deepgram] interim dispatch error")
                     if _should_barge_in(conn, text):
                         logger.info(f"[Deepgram] Barge-in triggered: '{text[:80]}'")
                         if hasattr(conn, "_loop") and conn._loop and conn._loop.is_running():

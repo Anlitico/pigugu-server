@@ -1,0 +1,14 @@
+# StorageClass for ClickHouse PVCs on the ng-clickhouse node group.
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: pigugu-gp3
+provisioner: ebs.csi.aws.com
+volumeBindingMode: WaitForFirstConsumer
+allowVolumeExpansion: true
+reclaimPolicy: Retain
+parameters:
+  type: gp3
+  fsType: ext4
+  iops: "3000"
+  throughput: "125"

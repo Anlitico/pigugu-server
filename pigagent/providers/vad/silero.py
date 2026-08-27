@@ -65,7 +65,8 @@ class SileroVAD(VADProvider):
     # ── Per-connection state init / teardown ──────────────────────────
 
     def release_conn_resources(self, conn: Any) -> None:
-        for attr in ("_vad_pcm_buffer", "_voice_window", "last_is_voice"):
+        for attr in ("_vad_pcm_buffer", "_voice_window", "last_is_voice",
+                     "_voice_chunk_flags"):
             if hasattr(conn, attr):
                 try:
                     delattr(conn, attr)
@@ -80,6 +81,10 @@ class SileroVAD(VADProvider):
         Stores per-connection VAD state on ``conn``:
         - ``conn._vad_pcm_buffer`` : accumulated PCM until >= 512 samples
         - ``conn._voice_window`` : deque of recent voice booleans
+        - ``conn._voice_chunk_flags`` : every per-chunk is_voice bool
+          (for the per-turn voice_segments[] in the audio sidecar).
+          Bounded to 10 minutes of chunks to keep memory flat across
+          long-lived sessions.
         - ``conn.last_is_voice`` : previous per-chunk voice flag
         - ``conn.client_have_voice`` : True once sliding window confirms speech
         - ``conn.client_voice_stop`` : True when sustained silence triggers end
@@ -99,6 +104,23 @@ class SileroVAD(VADProvider):
                 conn._voice_window = deque(maxlen=self.frame_window_size)
             if not hasattr(conn, "last_is_voice"):
                 conn.last_is_voice = False
+            # 10 minutes at 32ms/chunk = ~18750 chunks. Bound the list
+            # so a long-lived session (theoretically hours) doesn't
+            # grow unbounded. The ConnectionHandler slices from a
+            # captured index at start_turn, so old chunks are safe to
+            # trim.
+            if not hasattr(conn, "_voice_chunk_flags"):
+                conn._voice_chunk_flags: list[bool] = []
+                # Counter tracking how many chunks have been trimmed
+                # from the FRONT of _voice_chunk_flags. Captured
+                # start_idx (in ConnectionHandler._voice_chunk_start)
+                # is in the original coordinate space; the slice
+                # closure subtracts this counter to get the post-trim
+                # index. Without it, a long session (>= 10 min of
+                # audio) loses the first ~60s of every subsequent
+                # turn's voice_segments[].
+                conn._voice_chunk_flags_trimmed: int = 0
+            _VOICE_CHUNK_FLAGS_MAX = 18750
 
             # -- Accumulate PCM; process in ~32ms chunks (512 samples) --
             conn._vad_pcm_buffer.extend(pcm_frame)
@@ -129,6 +151,20 @@ class SileroVAD(VADProvider):
                 client_have_voice = (
                     conn._voice_window.count(True) >= self.frame_window_threshold
                 )
+
+                # -- Per-chunk flag log (for voice_segments[] sidecar) --
+                # Bounded ring so a 4h session doesn't accumulate 450k
+                # booleans. The ConnectionHandler captures the chunk
+                # index at start_turn and slices the live list at
+                # commit time.
+                if len(conn._voice_chunk_flags) >= _VOICE_CHUNK_FLAGS_MAX:
+                    # Drop oldest 10% to amortize the trim cost.
+                    drop_n = _VOICE_CHUNK_FLAGS_MAX // 10
+                    del conn._voice_chunk_flags[:drop_n]
+                    # Track total trimmed so the slice closure can
+                    # adjust captured start_idx (see conn init above).
+                    conn._voice_chunk_flags_trimmed += drop_n
+                conn._voice_chunk_flags.append(is_voice)
 
                 # -- Voice start / stop transitions --
                 prev_have_voice = getattr(conn, "client_have_voice", False)
