@@ -526,7 +526,11 @@ class TurnStorage:
         columns = ", ".join(name for name, _ in _CH_ROW_EXTRACTORS)
         placeholders = ", ".join(["%s"] * len(_CH_ROW_EXTRACTORS))
 
-        async with await ch_connect(self.clickhouse_dsn) as conn:
+        # asynch's connect() is synchronous — it returns a Connection,
+        # not a coroutine. Awaiting it raises TypeError; `async with`
+        # opens/closes the connection.
+        conn = ch_connect(self.clickhouse_dsn)
+        async with conn:
             async with conn.cursor() as cur:
                 await cur.execute(
                     f"INSERT INTO {self.clickhouse_table} ({columns}) "

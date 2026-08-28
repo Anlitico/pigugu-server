@@ -23,6 +23,7 @@ from collections import deque
 from collections.abc import AsyncIterator
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any
+from urllib.parse import quote
 
 import numpy as np
 import websockets
@@ -685,18 +686,26 @@ class ConnectionHandler:
         the legacy /tmp path for this connection)."""
         bucket = os.getenv("AUDIO_S3_BUCKET", "").strip()
         prefix = os.getenv("AUDIO_S3_PREFIX", "voice-turns").strip()
-        ch_url = os.getenv("CLICKHOUSE_URL", "").strip()
+        ch_host = os.getenv("CLICKHOUSE_HOST", "clickhouse").strip()
+        ch_port = os.getenv("CLICKHOUSE_PORT", "9000").strip()
+        ch_user = os.getenv("CLICKHOUSE_USER", "default").strip()
         ch_db = os.getenv("CLICKHOUSE_DATABASE", "voice").strip()
         ch_table = os.getenv("CLICKHOUSE_TABLE", f"{ch_db}.turns").strip()
         ch_password = os.getenv("CLICKHOUSE_PASSWORD", "")
-        if not (bucket and ch_url and ch_password):
+        if not (bucket and ch_host and ch_password):
             logger.warning(
                 f"[Voice] turn storage misconfigured "
-                f"bucket={bucket!r} ch_url={ch_url!r} ch_password_set={bool(ch_password)}"
+                f"bucket={bucket!r} ch_host={ch_host!r} ch_password_set={bool(ch_password)}"
             )
             return None
-        # asynch accepts the URL form `http://host:port?password=...`.
-        ch_dsn = f"{ch_url}?password={ch_password}"
+        # asynch speaks the native protocol (port 9000) and only accepts
+        # the clickhouse:// scheme. The password goes in the userinfo —
+        # query-string params are passed through as ClickHouse server
+        # settings, not auth.
+        ch_dsn = (
+            f"clickhouse://{quote(ch_user)}:{quote(ch_password)}"
+            f"@{ch_host}:{ch_port}/{ch_db}"
+        )
         # Capture the start index in a local so the lambda is bound to
         # THIS turn's value, not the live self._voice_chunk_start
         # (which the next turn will overwrite before this turn's

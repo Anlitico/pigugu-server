@@ -15,8 +15,11 @@ data:
   AWS_REGION: "us-west-1"
   LOG_LEVEL: "INFO"
   LOG_TO_FILE: "false"
-  # ClickHouse voice.turns (see k8s/clickhouse.yaml).
-  CLICKHOUSE_URL: "http://clickhouse:8123"
+  # ClickHouse voice.turns (see k8s/clickhouse.yaml). asynch uses the
+  # native protocol on port 9000, not the HTTP interface on 8123.
+  CLICKHOUSE_HOST: "clickhouse"
+  CLICKHOUSE_PORT: "9000"
+  CLICKHOUSE_USER: "default"
   CLICKHOUSE_DATABASE: "voice"
   CLICKHOUSE_TABLE: "voice.turns"
   # S3 audio storage (see k8s/sa-pigugu-s3.yaml for the IRSA role).
