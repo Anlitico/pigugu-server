@@ -454,6 +454,18 @@ def test_voice_segment_compute_failure_is_logged_not_raised():
 
 # ── ClickHouse wire format (asynch native INSERT) ─────────────────
 
+# voice.turns column order (clickhouse/migrations/0001_voice_turns.sql),
+# excluding `inserted_at` which the INSERT omits (DEFAULT now()).
+_SCHEMA_COLUMNS = (
+    "turn_id", "session_id", "turn_idx", "device_id", "user_id", "persona_id",
+    "utc_start_ms", "utc_end_ms", "duration_ms", "turn_type", "turn_phase",
+    "stt_text", "stt_model", "stt_interims", "abandoned_stts", "stt_status",
+    "tts_text", "tts_model", "tts_status", "tts_truncated_reason",
+    "s3_input_wav", "s3_input_json", "s3_tts_wav", "s3_tts_json", "s3_turn_json",
+    "voice_segments", "input_pcm_bytes", "input_pcm_ms", "tts_pcm_bytes", "tts_pcm_ms",
+    "e2e_ms", "stt_ms", "llm_ttft_ms", "tts_ttfb_ms", "device_playback_ms", "llm_model",
+)
+
 
 def test_clickhouse_insert_uses_native_insert_shape():
     """Regression test for the asynch INSERT shape.
@@ -497,7 +509,13 @@ def test_clickhouse_insert_uses_native_insert_shape():
         for name in ("input.wav", "input.json", "tts.wav", "tts.json", "turn.json")
     }
 
-    with patch("asynch.connect", return_value=FakeConn(None)):
+    captured_dsn: list[str] = []
+
+    def _fake_connect(dsn=None):
+        captured_dsn.append(dsn)
+        return FakeConn(dsn)
+
+    with patch("asynch.connect", side_effect=_fake_connect):
         asyncio.run(s._clickhouse_insert())
 
     assert len(calls) == 1
@@ -505,6 +523,13 @@ def test_clickhouse_insert_uses_native_insert_shape():
     assert query.startswith("INSERT INTO voice.turns (")
     assert query.endswith("VALUES")
     assert "%s" not in query
+    # DSN must stay in native-protocol form (bug #1 regression guard).
+    assert len(captured_dsn) == 1
+    assert captured_dsn[0].startswith("clickhouse://"), captured_dsn[0]
+    assert "?password=" not in captured_dsn[0], captured_dsn[0]
+    # Column order must match the schema (inserted_at omitted).
+    cols = query[query.index("(") + 1:query.index(")")].split(", ")
+    assert tuple(cols) == _SCHEMA_COLUMNS
     # args must be a list of rows — one row here, a 36-tuple.
     assert isinstance(args, list) and len(args) == 1
     row = args[0]

@@ -168,7 +168,7 @@ Deepgram 每次发 `is_final=false` 的 interim 消息时，agent 把它记到 `
 
 ### 故障演练
 
-- 杀 CH pod：agent 记 WARNING，turn 继续工作（CH INSERT 重试到 backoff 上限后放弃），S3 文件仍写入
+- 杀 CH pod：commit() 的 CH INSERT 失败，记 ERROR（`error_phase=clickhouse`），**不重试**（单次失败即弃，置 `_committed`），S3 文件保留为孤儿（v2 janitor 对账）；turn 的录音/回复不受影响，继续工作
 - 改 S3 桶名（不可达）：agent 记 ERROR per turn，CH INSERT 跳过
 
 ## 后续 / v2 待办
@@ -185,7 +185,7 @@ Deepgram 每次发 `is_final=false` 的 interim 消息时，agent 把它记到 `
 
 ```toml
 "aioboto3>=13.0",  # async S3 client for TurnStorage uploads
-"asynch>=0.3",     # async ClickHouse driver for voice.turns inserts
+"asynch>=0.4,<1",  # async ClickHouse driver; connect() is sync since 0.4
 ```
 
 ## 相关文档
