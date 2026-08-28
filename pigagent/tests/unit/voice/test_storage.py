@@ -56,7 +56,7 @@ def _build_storage(
         utc_start_ms=utc_start_ms,
         s3_bucket="test-bucket",
         s3_prefix="voice-turns",
-        clickhouse_dsn="http://localhost:8123?password=ignored",
+        clickhouse_dsn="clickhouse://default:secret@clickhouse:9000/voice",
         clickhouse_table="voice.turns",
         interims=buf,
         voice_chunk_flags_slice=lambda: list(voice_chunk_flags),
@@ -450,3 +450,88 @@ def test_voice_segment_compute_failure_is_logged_not_raised():
     # S3 + CH still ran
     assert len(s.s3_calls) == 1
     assert s.ch_calls == 1
+
+
+# ── ClickHouse wire format (asynch native INSERT) ─────────────────
+
+# voice.turns column order (clickhouse/migrations/0001_voice_turns.sql),
+# excluding `inserted_at` which the INSERT omits (DEFAULT now()).
+_SCHEMA_COLUMNS = (
+    "turn_id", "session_id", "turn_idx", "device_id", "user_id", "persona_id",
+    "utc_start_ms", "utc_end_ms", "duration_ms", "turn_type", "turn_phase",
+    "stt_text", "stt_model", "stt_interims", "abandoned_stts", "stt_status",
+    "tts_text", "tts_model", "tts_status", "tts_truncated_reason",
+    "s3_input_wav", "s3_input_json", "s3_tts_wav", "s3_tts_json", "s3_turn_json",
+    "voice_segments", "input_pcm_bytes", "input_pcm_ms", "tts_pcm_bytes", "tts_pcm_ms",
+    "e2e_ms", "stt_ms", "llm_ttft_ms", "tts_ttfb_ms", "device_playback_ms", "llm_model",
+)
+
+
+def test_clickhouse_insert_uses_native_insert_shape():
+    """Regression test for the asynch INSERT shape.
+
+    asynch's INSERT path sends the query verbatim (no ``%s``
+    substitution — only ``process_ordinary_query`` substitutes params)
+    and streams data as native-protocol blocks: the query must end with
+    a bare ``VALUES`` and ``args`` must be a list of rows. A flat list
+    of scalars is misread as rows — ``data[0]`` is the turn_id string,
+    so asynch raises ``ValueError: Expected 36 columns, got <len>.``
+    """
+    pytest.importorskip("asynch")
+    calls: list[tuple[str, object]] = []
+
+    class FakeCursor:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *exc):
+            return False
+
+        async def execute(self, query, args):
+            calls.append((query, args))
+
+    class FakeConn:
+        def __init__(self, dsn):
+            self.dsn = dsn
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *exc):
+            return False
+
+        def cursor(self):
+            return FakeCursor()
+
+    s = _build_storage()
+    s.s3_uris = {
+        name: f"s3://test-bucket/{s.s3_prefix}/{name}"
+        for name in ("input.wav", "input.json", "tts.wav", "tts.json", "turn.json")
+    }
+
+    captured_dsn: list[str] = []
+
+    def _fake_connect(dsn=None):
+        captured_dsn.append(dsn)
+        return FakeConn(dsn)
+
+    with patch("asynch.connect", side_effect=_fake_connect):
+        asyncio.run(s._clickhouse_insert())
+
+    assert len(calls) == 1
+    query, args = calls[0]
+    assert query.startswith("INSERT INTO voice.turns (")
+    assert query.endswith("VALUES")
+    assert "%s" not in query
+    # DSN must stay in native-protocol form (bug #1 regression guard).
+    assert len(captured_dsn) == 1
+    assert captured_dsn[0].startswith("clickhouse://"), captured_dsn[0]
+    assert "?password=" not in captured_dsn[0], captured_dsn[0]
+    # Column order must match the schema (inserted_at omitted).
+    cols = query[query.index("(") + 1:query.index(")")].split(", ")
+    assert tuple(cols) == _SCHEMA_COLUMNS
+    # args must be a list of rows — one row here, a 36-tuple.
+    assert isinstance(args, list) and len(args) == 1
+    row = args[0]
+    assert isinstance(row, tuple) and len(row) == 36
+    assert row[0] == s.turn_id

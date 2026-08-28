@@ -522,14 +522,24 @@ class TurnStorage:
         """
         from asynch import connect as ch_connect  # type: ignore[import-not-found]
 
-        values: list[Any] = [extractor(self) for _, extractor in _CH_ROW_EXTRACTORS]
+        # asynch's INSERT path does NOT substitute %s placeholders — the
+        # query goes to the server verbatim and the data is streamed as
+        # native-protocol blocks. So the query ends with a bare VALUES and
+        # the data must be a list of rows (one row here), never a flat list
+        # of scalars (a flat list is misread as "rows" and len(row) is then
+        # the length of the first scalar, e.g. the turn_id string).
+        values: list[tuple[Any, ...]] = [
+            tuple(extractor(self) for _, extractor in _CH_ROW_EXTRACTORS)
+        ]
         columns = ", ".join(name for name, _ in _CH_ROW_EXTRACTORS)
-        placeholders = ", ".join(["%s"] * len(_CH_ROW_EXTRACTORS))
 
-        async with await ch_connect(self.clickhouse_dsn) as conn:
+        # asynch's connect() is synchronous — it returns a Connection,
+        # not a coroutine. Awaiting it raises TypeError; `async with`
+        # opens/closes the connection.
+        conn = ch_connect(self.clickhouse_dsn)
+        async with conn:
             async with conn.cursor() as cur:
                 await cur.execute(
-                    f"INSERT INTO {self.clickhouse_table} ({columns}) "
-                    f"VALUES ({placeholders})",
+                    f"INSERT INTO {self.clickhouse_table} ({columns}) VALUES",
                     values,
                 )
