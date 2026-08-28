@@ -56,7 +56,7 @@ def _build_storage(
         utc_start_ms=utc_start_ms,
         s3_bucket="test-bucket",
         s3_prefix="voice-turns",
-        clickhouse_dsn="http://localhost:8123?password=ignored",
+        clickhouse_dsn="clickhouse://default:secret@clickhouse:9000/voice",
         clickhouse_table="voice.turns",
         interims=buf,
         voice_chunk_flags_slice=lambda: list(voice_chunk_flags),
@@ -450,3 +450,63 @@ def test_voice_segment_compute_failure_is_logged_not_raised():
     # S3 + CH still ran
     assert len(s.s3_calls) == 1
     assert s.ch_calls == 1
+
+
+# ── ClickHouse wire format (asynch native INSERT) ─────────────────
+
+
+def test_clickhouse_insert_uses_native_insert_shape():
+    """Regression test for the asynch INSERT shape.
+
+    asynch's INSERT path sends the query verbatim (no ``%s``
+    substitution — only ``process_ordinary_query`` substitutes params)
+    and streams data as native-protocol blocks: the query must end with
+    a bare ``VALUES`` and ``args`` must be a list of rows. A flat list
+    of scalars is misread as rows — ``data[0]`` is the turn_id string,
+    so asynch raises ``ValueError: Expected 36 columns, got <len>.``
+    """
+    pytest.importorskip("asynch")
+    calls: list[tuple[str, object]] = []
+
+    class FakeCursor:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *exc):
+            return False
+
+        async def execute(self, query, args):
+            calls.append((query, args))
+
+    class FakeConn:
+        def __init__(self, dsn):
+            self.dsn = dsn
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *exc):
+            return False
+
+        def cursor(self):
+            return FakeCursor()
+
+    s = _build_storage()
+    s.s3_uris = {
+        name: f"s3://test-bucket/{s.s3_prefix}/{name}"
+        for name in ("input.wav", "input.json", "tts.wav", "tts.json", "turn.json")
+    }
+
+    with patch("asynch.connect", return_value=FakeConn(None)):
+        asyncio.run(s._clickhouse_insert())
+
+    assert len(calls) == 1
+    query, args = calls[0]
+    assert query.startswith("INSERT INTO voice.turns (")
+    assert query.endswith("VALUES")
+    assert "%s" not in query
+    # args must be a list of rows — one row here, a 36-tuple.
+    assert isinstance(args, list) and len(args) == 1
+    row = args[0]
+    assert isinstance(row, tuple) and len(row) == 36
+    assert row[0] == s.turn_id

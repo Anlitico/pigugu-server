@@ -33,7 +33,7 @@ dependencies = [
     # AWS IoT (MQTT publish for device communication)
     "boto3>=1.34.0",
     "aioboto3>=13.0",  # async S3 for TurnStorage uploads
-    "asynch>=0.4",  # async ClickHouse driver; connect() is sync since 0.4
+    "asynch>=0.4,<1",  # async ClickHouse driver; connect() is sync since 0.4
     # Utilities
     "loguru~=0.7",
     "aiohttp~=3.13",
