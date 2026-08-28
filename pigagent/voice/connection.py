@@ -703,7 +703,7 @@ class ConnectionHandler:
         # query-string params are passed through as ClickHouse server
         # settings, not auth.
         ch_dsn = (
-            f"clickhouse://{quote(ch_user)}:{quote(ch_password)}"
+            f"clickhouse://{quote(ch_user, safe='')}:{quote(ch_password, safe='')}"
             f"@{ch_host}:{ch_port}/{ch_db}"
         )
         # Capture the start index in a local so the lambda is bound to

@@ -131,7 +131,7 @@ Deepgram 每次发 `is_final=false` 的 interim 消息时，agent 把它记到 `
 
 ### Agent 侧
 
-- 镜像 `pigagent` 启动时读 `CLICKHOUSE_URL` / `CLICKHOUSE_DATABASE` / `CLICKHOUSE_PASSWORD` / `AUDIO_S3_BUCKET` / `AUDIO_S3_PREFIX` / `ENABLE_TURN_STORAGE` 等环境变量
+- 镜像 `pigagent` 启动时读 `CLICKHOUSE_HOST` / `CLICKHOUSE_PORT` / `CLICKHOUSE_USER` / `CLICKHOUSE_DATABASE` / `CLICKHOUSE_PASSWORD` / `AUDIO_S3_BUCKET` / `AUDIO_S3_PREFIX` / `ENABLE_TURN_STORAGE` 等环境变量。asynch 走 native 协议（9000），DSN 在代码里拼为 `clickhouse://user:pass@host:port/db`
 - 挂 `pigugu-s3-sa` ServiceAccount（IRSA）以获取 S3 写权限
 - Pod 重启时 TurnStorage 丢失，**未 commit 的 turn 数据全部丢失**（已 commit 的在 S3 + CH 里安全）
 
