@@ -316,7 +316,10 @@ class ConnectionHandler:
 
         self._turn_type = "wake_word"
         self._interrupt_event.clear()
-        self._reset_audio_states()
+        # Keep the just-arrived wake-word audio in asr_audio — it is the
+        # start of the user's first utterance and should join that turn,
+        # not be dumped as a phantom interrupted turn.
+        self._reset_audio_states(keep_asr=True)
 
         # Suppress VAD for 2s to prevent wake word audio from triggering
         # a false voice detection (reference: just_woken_up)
@@ -492,7 +495,10 @@ class ConnectionHandler:
     async def _on_start(self) -> None:
         """Client listening session start: reset audio states."""
         logger.info("[Voice] Firmware start")
-        self._reset_audio_states()
+        # Within the wake-word listening session, asr_audio holds the wake-word
+        # audio preserved by _on_detect — keep it so it lands in turn 0001
+        # instead of being dumped as a phantom interrupted turn.
+        self._reset_audio_states(keep_asr=self._turn_type == "wake_word")
 
     # ── Audio handling (official: handleAudioMessage) ─────────────────
 
@@ -824,10 +830,17 @@ class ConnectionHandler:
         self._reset_audio_states()
         self._turn_type = "follow_up"  # next VAD detection starts a follow-up turn
 
-    def _reset_audio_states(self) -> None:
-        """Official reset_audio_states."""
+    def _reset_audio_states(self, *, keep_asr: bool = False) -> None:
+        """Official reset_audio_states.
+
+        ``keep_asr`` preserves the accumulated PCM in ``asr_audio`` instead
+        of dumping it as a best-effort turn. Used on the wake-word path:
+        the wake-word audio is the start of the user's utterance, not a
+        no-STT turn, so it must survive into the first real turn rather
+        than being split out as a phantom "interrupted" turn.
+        """
         # Save accumulated audio before clearing — captures barge-in speech
-        if self.asr_audio:
+        if not keep_asr and self.asr_audio:
             try:
                 self._save_input_wav(f"(turn_{self._sentence_id})")
             except Exception:
@@ -840,7 +853,8 @@ class ConnectionHandler:
         self.vad_last_voice_time = 0.0
         self._vad_pcm_buffer.clear()
         self._voice_window.clear()
-        self.asr_audio.clear()
+        if not keep_asr:
+            self.asr_audio.clear()
         self.just_woken_up = False
         self._vad_start_marked = False
         self._stt_commit_marked = False
