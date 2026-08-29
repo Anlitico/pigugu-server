@@ -99,7 +99,7 @@ def get_utc_date_for_ms(utc_ms: int) -> str:
 # Tuple of (column_name, value_extractor) used to build the INSERT
 # row from a TurnStorage instance. The order MUST match the column
 # order in the INSERT statement below. Keep both in sync with
-# migrations/0001_voice_turns.sql.
+# migrations/0001_voice_turns.sql + 0002_audio_start_ms.sql.
 _CH_ROW_EXTRACTORS: tuple[tuple[str, Callable[["TurnStorage"], Any]], ...] = (
     ("turn_id",             lambda s: s.turn_id),
     ("session_id",          lambda s: s.session_id),
@@ -108,6 +108,7 @@ _CH_ROW_EXTRACTORS: tuple[tuple[str, Callable[["TurnStorage"], Any]], ...] = (
     ("user_id",             lambda s: s.user_id),
     ("persona_id",          lambda s: s.persona_id),
     ("utc_start_ms",        lambda s: s.utc_start_ms),
+    ("audio_start_ms",      lambda s: s.audio_start_ms),
     ("utc_end_ms",          lambda s: s.utc_end_ms),
     ("duration_ms",         lambda s: max(0, s.utc_end_ms - s.utc_start_ms)),
     ("turn_type",           lambda s: s.turn_type),
@@ -158,7 +159,7 @@ class TurnStorage:
 
     __slots__ = (
         "turn_id", "session_id", "turn_idx", "device_id", "user_id", "persona_id",
-        "utc_start_ms", "utc_end_ms", "turn_type", "turn_phase",
+        "utc_start_ms", "audio_start_ms", "utc_end_ms", "turn_type", "turn_phase",
         "stt_text", "stt_model", "stt_interims", "abandoned_stts", "stt_status",
         "tts_text", "tts_model", "tts_status", "tts_truncated_reason",
         "user_pcm_bytes", "tts_pcm_buf", "voice_segments", "telemetry",
@@ -178,6 +179,7 @@ class TurnStorage:
         user_id: str,
         persona_id: int,
         utc_start_ms: int,
+        audio_start_ms: int = 0,
         s3_bucket: str,
         s3_prefix: str,
         clickhouse_dsn: str,
@@ -196,6 +198,7 @@ class TurnStorage:
         self.user_id = user_id
         self.persona_id = persona_id
         self.utc_start_ms = utc_start_ms
+        self.audio_start_ms = audio_start_ms
         self.utc_end_ms = utc_start_ms  # updated on commit
         self.turn_type = turn_type
         self.turn_phase = turn_phase
@@ -327,6 +330,7 @@ class TurnStorage:
             "session_id": self.session_id,
             "turn_idx": self.turn_idx,
             "utc_start_ms": self.utc_start_ms,
+            "audio_start_ms": self.audio_start_ms,
             "sample_rate": _SAMPLE_RATE,
             "channels": _CHANNELS,
             "sample_width": _SAMPLE_WIDTH,

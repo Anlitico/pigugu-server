@@ -140,9 +140,18 @@ class ConnectionHandler:
         # the same turn). Cleared in the commit's done callback.
         self._turn_storage_committing_turn_idx: int = -1
         # Index into conn._voice_chunk_flags (populated by Silero) at
-        # the moment the current turn started. Captured at
-        # _on_stt_result so commit() can slice the per-turn range.
+        # the moment the current turn's audio window began. Moved by
+        # _mark_audio_window() at every TTS start so voice_segments[]
+        # aligns with the recorded input.wav (which is sliced from the
+        # same window).
         self._voice_chunk_start: int = 0
+        # Wall-clock (UTC ms) when the current turn's input.wav window
+        # began. Lazily set at the first audio frame (turn 1's window
+        # starts when the mic actually feeds), then moved by
+        # _mark_audio_window() at every TTS start. Recorded in the turn
+        # sidecar so the stored audio's start is explicit (utc_start_ms
+        # is the END of the window, not its start).
+        self._audio_window_start_ms: int | None = None
         # Cross-thread interim STT buffer. Shared across all turns in
         # this connection; the TurnStorage drains it on each
         # mark_stt_final / mark_stt_abandoned call.
@@ -316,10 +325,11 @@ class ConnectionHandler:
 
         self._turn_type = "wake_word"
         self._interrupt_event.clear()
-        # Keep the just-arrived wake-word audio in asr_audio — it is the
-        # start of the user's first utterance and should join that turn,
-        # not be dumped as a phantom interrupted turn.
-        self._reset_audio_states(keep_asr=True)
+        # asr_audio is never cleared here — the just-arrived wake-word
+        # audio is the start of the user's first utterance and joins turn
+        # 0001 (reset only clears VAD state; the audio window is cut at
+        # TTS start, see _mark_audio_window).
+        self._reset_audio_states()
 
         # Suppress VAD for 2s to prevent wake word audio from triggering
         # a false voice detection (reference: just_woken_up)
@@ -495,10 +505,9 @@ class ConnectionHandler:
     async def _on_start(self) -> None:
         """Client listening session start: reset audio states."""
         logger.info("[Voice] Firmware start")
-        # Within the wake-word listening session, asr_audio holds the wake-word
-        # audio preserved by _on_detect — keep it so it lands in turn 0001
-        # instead of being dumped as a phantom interrupted turn.
-        self._reset_audio_states(keep_asr=self._turn_type == "wake_word")
+        # asr_audio is not touched here — the wake-word audio preserved by
+        # _on_detect stays in the buffer and lands in turn 0001's window.
+        self._reset_audio_states()
 
     # ── Audio handling (official: handleAudioMessage) ─────────────────
 
@@ -557,6 +566,11 @@ class ConnectionHandler:
             self.last_voice_activity = now_ms
 
         # 2. Accumulate + gain + feed Deepgram (always)
+        if self._audio_window_start_ms is None:
+            # First audio frame: the current window's start is "now", not
+            # the connect time (which may precede the mic feed by the
+            # handshake/idle gap).
+            self._audio_window_start_ms = int(time.time() * 1000)
         self.asr_audio.append(pcm_frame)
         if len(pcm_frame) >= 2:
             arr = np.frombuffer(pcm_frame, dtype=np.int16).astype(np.float32)
@@ -685,6 +699,7 @@ class ConnectionHandler:
         *,
         turn_id: str,
         utc_start_ms: int,
+        audio_start_ms: int,
     ) -> TurnStorage | None:
         """Build a TurnStorage for the in-flight turn. Returns None
         when the env-var configuration is missing or incomplete (in
@@ -725,6 +740,7 @@ class ConnectionHandler:
             user_id=self._user_id or self.client_id,
             persona_id=self._persona_id,
             utc_start_ms=utc_start_ms,
+            audio_start_ms=audio_start_ms,
             s3_bucket=bucket,
             s3_prefix=prefix,
             clickhouse_dsn=ch_dsn,
@@ -830,21 +846,15 @@ class ConnectionHandler:
         self._reset_audio_states()
         self._turn_type = "follow_up"  # next VAD detection starts a follow-up turn
 
-    def _reset_audio_states(self, *, keep_asr: bool = False) -> None:
+    def _reset_audio_states(self) -> None:
         """Official reset_audio_states.
 
-        ``keep_asr`` preserves the accumulated PCM in ``asr_audio`` instead
-        of dumping it as a best-effort turn. Used on the wake-word path:
-        the wake-word audio is the start of the user's utterance, not a
-        no-STT turn, so it must survive into the first real turn rather
-        than being split out as a phantom "interrupted" turn.
+        NOTE: asr_audio is intentionally NOT touched here. The user-audio
+        window is cut by _mark_audio_window() at every TTS start, so the
+        mic stream stays contiguous across turns — no inter-turn gap, and
+        the TTS echo stays visible in the next turn's recorded audio.
+        This clears the VAD/voice-tracking state only.
         """
-        # Save accumulated audio before clearing — captures barge-in speech
-        if not keep_asr and self.asr_audio:
-            try:
-                self._save_input_wav(f"(turn_{self._sentence_id})")
-            except Exception:
-                pass
         self.client_audio_buffer.clear()
         self.client_have_voice = False
         self.client_voice_stop = False
@@ -853,8 +863,6 @@ class ConnectionHandler:
         self.vad_last_voice_time = 0.0
         self._vad_pcm_buffer.clear()
         self._voice_window.clear()
-        if not keep_asr:
-            self.asr_audio.clear()
         self.just_woken_up = False
         self._vad_start_marked = False
         self._stt_commit_marked = False
@@ -862,6 +870,19 @@ class ConnectionHandler:
         self._pending_speech_final = ""
         if self._eou_bounce_task and not self._eou_bounce_task.done():
             self._eou_bounce_task.cancel()
+
+    def _mark_audio_window(self) -> None:
+        """Cut the user-audio window at the start of assistant TTS output.
+
+        The just-finished turn's input.wav was frozen at its STT final;
+        clearing asr_audio here makes the NEXT turn record
+        [this TTS start -> its STT final], capturing the TTS echo and
+        silence that precede the user's next utterance. voice_segments[]
+        is aligned to the same window via _voice_chunk_start.
+        """
+        self.asr_audio.clear()
+        self._voice_chunk_start = len(getattr(self, "_voice_chunk_flags", []))
+        self._audio_window_start_ms = int(time.time() * 1000)
 
     # ── Silence watchdog ──────────────────────────────────────────────
 
@@ -946,14 +967,11 @@ class ConnectionHandler:
         self._current_tts_sentence_id = sentence_id
 
         # ── Per-turn audio storage: build the TurnStorage ─────────
-        # Capture the current Silero chunk index BEFORE the new turn
-        # starts, so commit() can slice the per-turn range of flags
-        # for voice_segments[].
+        # The window start (index + wall-clock) was set by
+        # _mark_audio_window() at the previous TTS start; asr_audio now
+        # holds exactly [window start -> STT final].
         if self._turn_storage_enabled:
             self._turn_idx += 1
-            self._voice_chunk_start = len(
-                getattr(self, "_voice_chunk_flags", [])
-            )
             utc_start_ms = int(time.time() * 1000)
             turn_id = (
                 f"{utc_start_ms}_{self.session_id}_{self._turn_idx:04d}"
@@ -961,10 +979,11 @@ class ConnectionHandler:
             self._turn_storage = self._make_turn_storage(
                 turn_id=turn_id,
                 utc_start_ms=utc_start_ms,
+                audio_start_ms=self._audio_window_start_ms or 0,
             )
             if self._turn_storage is not None:
-                # Freeze the user PCM at STT final time so a future
-                # ``asr_audio.clear()`` doesn't lose it.
+                # Freeze the user PCM — asr_audio holds this turn's whole
+                # window (the next TTS start clears it).
                 self._turn_storage.set_user_pcm(b"".join(self.asr_audio))
                 self._turn_storage.mark_stt_final(text)
                 # Telemetry snapshot (e2e_ms etc. are computed at flush,
@@ -1039,14 +1058,13 @@ class ConnectionHandler:
                 turn_id = (
                     f"{utc_start_ms}_{self.session_id}_{self._turn_idx:04d}"
                 )
-                # We don't know vad_start here; the chunk slice
-                # closure is best-effort and may include the previous
-                # turn's last segment. Acceptable for the no-STT
-                # diagnostic case.
-                self._voice_chunk_start = 0
+                # _voice_chunk_start already points at the last TTS start
+                # (set by _mark_audio_window), so voice_segments[] aligns
+                # with the asr_audio tail being dumped here.
                 storage = self._make_turn_storage(
                     turn_id=turn_id,
                     utc_start_ms=utc_start_ms,
+                    audio_start_ms=self._audio_window_start_ms or 0,
                 )
                 if storage is not None:
                     storage.set_turn_type("interrupted")
@@ -1249,6 +1267,10 @@ class ConnectionHandler:
                 payload["sentence_id"] = sid
             await self._ws.send(json.dumps(payload))
             self.client_is_speaking = True
+            # Cut the user-audio window: the assistant started speaking,
+            # so the next turn's recorded input.wav begins here (captures
+            # the TTS echo + silence leading into the next utterance).
+            self._mark_audio_window()
             TelemetryCollector.mark("tts_start")
 
         async def _mark_first_tts() -> None:

@@ -31,6 +31,20 @@ s3://pigugu-clickhouse-audio/
 - 例：`1787734749647_fef37f1f_0001`
 - 单调递增、可排序
 
+### 音频窗口：按 TTS-start 切分（连续、仅排除 LLM 间隙）
+
+`input.wav` 记录的是 **[ 上一轮 TTS 开始 → 本轮 STT final ]** 这段连续麦克风流。`asr_audio` 只在 TTS 开始输出时清空（`_mark_audio_window()`），commit 时不再清空。因此：
+
+- 窗口**连续**——[上一轮 TTS 开始 → 本轮 STT final] 覆盖上一轮 TTS 播放全程 + 回声 + 静音 + 本轮人声；只排除 [STT final → TTS start] 的 LLM 生成间隙（通常 1-3s 静音）；
+- `input.json` / CH 行新增 `audio_start_ms` = 窗口真实起点（上一轮 TTS 开始时刻）。**`utc_start_ms` 是窗口结束点（STT final 时刻），不是起点**；`utc_start_ms - audio_start_ms ≈ pcm_ms`；
+- `voice_segments[]` 与同一窗口对齐（`_voice_chunk_start` 也在 TTS start 时移动），用来过滤出真实人声段（窗口里混有回声和静音）；
+- 中途无 STT 的 interrupted dump 已取消：无 STT 音频直接并入下一轮窗口；仅会话结束（`_cleanup`）保留一次尾音 dump。
+
+**已知边界（已接受）**：
+- **LLM 间隙**：用户在 [STT final → TTS start] 间隙（1-3s）内再次开口、且其 STT final 在 TTS 起播后才到达时，这段间隙音频不入任何窗口（被 TTS-start 清空，同时 `client_is_speaking` 跳过了该 final）。间隙短且场景罕见，刻意接受。
+- **`audio_start_ms = 0`** 表示未知：迁移 0002 之前写入的历史行（列默认值 0）。新行一定有真实值；对历史行不要用 `utc_start_ms - audio_start_ms` 计算窗口长。
+- **无回复 turn**：若某轮 TTS 从未起播（LLM 空/失败），窗口不移动，下一轮窗口会包含该段（无丢失，窗口变长）。
+
 ### Commit 顺序：S3 先、CH 后（best-effort）
 
 1. 计算 `voice_segments`（从本 turn 的 Silero chunk flags 切片）
@@ -50,7 +64,7 @@ s3://pigugu-clickhouse-audio/
 
 ### ClickHouse 表
 
-`voice.turns`（MergeTree，参见 `k8s/clickhouse-migration-job.yaml` 引用的 `migrations/0001_voice_turns.sql`）：
+`voice.turns`（MergeTree，参见 `k8s/clickhouse-migration-job.yaml` 引用的 `migrations/0001_voice_turns.sql` + `0002_audio_start_ms.sql`）：
 
 ```sql
 ENGINE = MergeTree
@@ -69,7 +83,7 @@ TTL fromUnixTimestamp64Milli(utc_start_ms) + INTERVAL 365 DAY
 
 1. `silero.py` 每次产出 chunk 后，append `is_voice` 到 `conn._voice_chunk_flags: list[bool]`
 2. 列表上限 ~18750 项（≈10 分钟），amortized 10% trim，防止长 session 无界增长
-3. `TurnStorage` 在每个 turn 开始时记录 `len(_voice_chunk_flags)` 作为本 turn 的起点
+3. `_mark_audio_window()` 在每次 TTS start 时记录 `len(_voice_chunk_flags)` 作为本 turn 音频窗口的起点
 4. `commit()` 时取切片 `flags[start_idx:]`，调 `voice.segments.compute_voice_segments()` 算出 `{start_ms, end_ms, duration_ms}[]`
 5. 切到 `input.json` 的 `voice_segments[]` 和 CH 行的 `voice_segments` 列（`Array(Tuple(Int32, Int32, Int32))`）
 
