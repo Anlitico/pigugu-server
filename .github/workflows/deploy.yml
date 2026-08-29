@@ -279,6 +279,7 @@ jobs:
         kubectl apply -f k8s/secrets.yaml
         kubectl apply -f k8s/api.yaml
         kubectl apply -f k8s/agent.yaml
+        kubectl apply -f k8s/fluent-bit.yaml
         kubectl apply -f crawler/deploy/cronjob.yaml
         # Remove old trump-crawler if it still exists
         kubectl delete cronjob trump-crawler --ignore-not-found

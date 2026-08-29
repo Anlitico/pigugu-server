@@ -1,0 +1,138 @@
+# Fluent Bit DaemonSet — ship all pod stdout to CloudWatch Logs.
+#
+# Log group: /aws/eks/pigugu-cluster/workloads  (streams named kube.var.log.containers.<pod>...)
+# Query example:
+#   aws logs filter-log-events \
+#     --log-group-name /aws/eks/pigugu-cluster/workloads \
+#     --filter-pattern '"is_final"' --region us-west-1
+#
+# IAM (IRSA): the fluent-bit ServiceAccount assumes role
+#   arn:aws:iam::537557168531:role/pigugu-cloudwatch-logs
+# (trust: cluster OIDC provider, sub system:serviceaccount:amazon-cloudwatch:fluent-bit;
+#  policy: CloudWatchLogsFullAccess). Created once via:
+#   aws iam create-role --role-name pigugu-cloudwatch-logs \
+#     --assume-role-policy-document file://trust.json
+#   aws iam attach-role-policy --role-name pigugu-cloudwatch-logs \
+#     --policy-arn arn:aws:iam::aws:policy/CloudWatchLogsFullAccess
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: amazon-cloudwatch
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: fluent-bit
+  namespace: amazon-cloudwatch
+  annotations:
+    eks.amazonaws.com/role-arn: "arn:aws:iam::537557168531:role/pigugu-cloudwatch-logs"
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: fluent-bit
+rules:
+  - apiGroups: [""]
+    resources: [pods, namespaces]
+    verbs: [get, list, watch]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: fluent-bit
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: fluent-bit
+subjects:
+  - kind: ServiceAccount
+    name: fluent-bit
+    namespace: amazon-cloudwatch
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: fluent-bit-config
+  namespace: amazon-cloudwatch
+data:
+  fluent-bit.conf: |
+    [SERVICE]
+        Flush         1
+        Log_Level     info
+        Parsers_File  parsers.conf
+
+    [INPUT]
+        Name              tail
+        Tag               kube.*
+        Path              /var/log/containers/*.log
+        Parser            docker
+        DB                /var/log/fluent-bit-state.db
+        Mem_Buf_Limit     20MB
+        Skip_Long_Lines   On
+        Refresh_Interval  10
+
+    [FILTER]
+        Name                kubernetes
+        Match               kube.*
+        Kube_Tag_Prefix     kube.var.log.containers.
+        Merge_Log           On
+        Merge_Log_Key       log_processed
+        K8S-Logging.Parser  On
+        K8S-Logging.Exclude On
+
+    [OUTPUT]
+        Name                cloudwatch_logs
+        Match               kube.*
+        region              us-west-1
+        log_group_name      /aws/eks/pigugu-cluster/workloads
+        log_stream_prefix   kube.
+        auto_create_group   true
+        log_key             log
+  parsers.conf: |
+    [PARSER]
+        Name        docker
+        Format      json
+        Time_Key    time
+        Time_Format %Y-%m-%dT%H:%M:%S.%L
+        Time_Keep   On
+        Decode_Field_As   escaped   log
+---
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: fluent-bit
+  namespace: amazon-cloudwatch
+  labels:
+    app: fluent-bit
+spec:
+  selector:
+    matchLabels:
+      app: fluent-bit
+  template:
+    metadata:
+      labels:
+        app: fluent-bit
+    spec:
+      serviceAccountName: fluent-bit
+      containers:
+        - name: fluent-bit
+          image: public.ecr.aws/aws-observability/aws-for-fluent-bit:latest
+          resources:
+            requests:
+              cpu: 50m
+              memory: 100Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+          volumeMounts:
+            - name: varlog
+              mountPath: /var/log
+            - name: fluent-bit-config
+              mountPath: /fluent-bit/etc/
+      volumes:
+        - name: varlog
+          hostPath:
+            path: /var/log
+        - name: fluent-bit-config
+          configMap:
+            name: fluent-bit-config
