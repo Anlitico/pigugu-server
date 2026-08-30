@@ -45,9 +45,14 @@ class PiguguVadBridge(FrameProcessor):
         self.vad = vad
         self._state = state or PiguguTurnState()
         # Silero per-connection state lives on this instance (is_vad stores on conn).
+        # ``client_audio_buffer`` is the Silero chunk accumulator — the migration
+        # from connection.py must keep the conn contract (onnx.py:74 extends it,
+        # 77-79 drain 512-sample chunks). Missing it crashed every audio frame and
+        # killed server-side VAD turn detection (no TTS).
         self.client_have_voice = False
         self.client_voice_stop = False
         self.client_listen_mode = "auto"
+        self.client_audio_buffer = bytearray()
         self.session_id = "?"
         # monotonic deadline during which server-VAD turn starts are suppressed.
         self._suppress_until = 0.0
