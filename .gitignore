@@ -221,6 +221,7 @@ __marimo__/
 .env
 .env.local
 firebase-credentials.json
+.DS_Store
 
 # IDE and Testing
 .vscode/
