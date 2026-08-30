@@ -1,22 +1,27 @@
-"""WebSocket server — official xiaozhi pattern (websockets library + concurrent connections).
+"""WebSocket server — runs the Pipecat voice pipeline per device connection.
 
-Replaces the old FastAPI endpoint.
+One ``PiguguSession`` per device WebSocket (the firmware protocol v1: raw
+Opus + JSON control messages). The session builds the pipeline (VAD/STT
+bridges → turn processor → storage observer → agent gateway → TTS bridge)
+and runs it until the connection ends. The PigAgent is created lazily by the
+TTS bridge on the first turn (needs the user id + hw_id from the hello).
+
+The connection registry is shared with the REST API for roast inject.
 """
 
 from __future__ import annotations
 
 import asyncio
 import os
-from concurrent.futures import ThreadPoolExecutor
 
 import websockets
 from loguru import logger
 
-from voice.connection import ConnectionHandler
+from voice.pipecat.session import PiguguSession
 
 # ── Connection registry (shared with REST API for roast inject) ──────
 
-_connections: dict[str, ConnectionHandler] = {}
+_connections: dict[str, PiguguSession] = {}
 
 
 async def has_active_connection(user_id: str) -> bool:
@@ -24,11 +29,11 @@ async def has_active_connection(user_id: str) -> bool:
 
 
 async def send_inject(user_id: str, msg: dict) -> None:
-    handler = _connections.get(user_id)
-    if handler is None:
+    session = _connections.get(user_id)
+    if session is None:
         logger.warning(f"[Voice] No active connection for user={user_id}")
         return
-    await handler.inject_roast(msg)
+    await session.inject(msg)
 
 
 # ── Shared provider singletons ───────────────────────────────────────
@@ -38,7 +43,6 @@ from providers.base import VADProvider, STTProvider, TTSProvider  # noqa: E402
 _shared_vad: VADProvider | None = None
 _shared_stt: STTProvider | None = None
 _shared_tts: TTSProvider | None = None
-_executor: ThreadPoolExecutor | None = None
 
 
 def _get_shared_vad():
@@ -67,13 +71,6 @@ def _get_shared_tts():
         from providers.tts.cartesia import CartesiaTTS
         _shared_tts = CartesiaTTS()
     return _shared_tts
-
-
-def _get_executor():
-    global _executor
-    if _executor is None:
-        _executor = ThreadPoolExecutor(max_workers=5, thread_name_prefix="agent")
-    return _executor
 
 
 # ── WebSocket handler ────────────────────────────────────────────────
@@ -106,15 +103,19 @@ async def _on_connect(ws: websockets.ServerConnection) -> None:
         f"device_id={device_id} protocol={protocol_ver}"
     )
 
-    handler = ConnectionHandler(client_id=client_id)
-    handler.vad = _get_shared_vad()
-    handler.stt = _get_shared_stt()
-    handler.tts = _get_shared_tts()
-    handler.executor = _get_executor()
-
-    _connections[client_id] = handler
+    # The PigAgent is lazy (created by the TTS bridge on the first turn, once
+    # the device hello provides user/hw identity). Providers are shared.
+    session = PiguguSession(
+        ws,
+        client_id=client_id,
+        user_id=client_id,
+        vad=_get_shared_vad(),
+        stt=_get_shared_stt(),
+        tts=_get_shared_tts(),
+    )
+    _connections[client_id] = session
     try:
-        await handler.handle_connection(ws)
+        await session.run()
     finally:
         _connections.pop(client_id, None)
 
@@ -129,7 +130,6 @@ async def run_server(host: str = "0.0.0.0", port: int = 8080) -> None:
     _get_shared_vad()
     _get_shared_stt()
     _get_shared_tts()
-    _get_executor()
     logger.info("[Voice] All providers initialized")
     async with websockets.serve(_on_connect, host, port):
         await asyncio.Future()  # run forever

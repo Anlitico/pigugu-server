@@ -458,7 +458,7 @@ def test_voice_segment_compute_failure_is_logged_not_raised():
 # excluding `inserted_at` which the INSERT omits (DEFAULT now()).
 _SCHEMA_COLUMNS = (
     "turn_id", "session_id", "turn_idx", "device_id", "user_id", "persona_id",
-    "utc_start_ms", "utc_end_ms", "duration_ms", "turn_type", "turn_phase",
+    "utc_start_ms", "audio_start_ms", "utc_end_ms", "duration_ms", "turn_type", "turn_phase",
     "stt_text", "stt_model", "stt_interims", "abandoned_stts", "stt_status",
     "tts_text", "tts_model", "tts_status", "tts_truncated_reason",
     "s3_input_wav", "s3_input_json", "s3_tts_wav", "s3_tts_json", "s3_turn_json",
@@ -475,7 +475,7 @@ def test_clickhouse_insert_uses_native_insert_shape():
     and streams data as native-protocol blocks: the query must end with
     a bare ``VALUES`` and ``args`` must be a list of rows. A flat list
     of scalars is misread as rows — ``data[0]`` is the turn_id string,
-    so asynch raises ``ValueError: Expected 36 columns, got <len>.``
+    so asynch raises ``ValueError: Expected 37 columns, got <len>.``
     """
     pytest.importorskip("asynch")
     calls: list[tuple[str, object]] = []
@@ -530,8 +530,8 @@ def test_clickhouse_insert_uses_native_insert_shape():
     # Column order must match the schema (inserted_at omitted).
     cols = query[query.index("(") + 1:query.index(")")].split(", ")
     assert tuple(cols) == _SCHEMA_COLUMNS
-    # args must be a list of rows — one row here, a 36-tuple.
+    # args must be a list of rows — one row here, a 37-tuple.
     assert isinstance(args, list) and len(args) == 1
     row = args[0]
-    assert isinstance(row, tuple) and len(row) == 36
+    assert isinstance(row, tuple) and len(row) == 37
     assert row[0] == s.turn_id
