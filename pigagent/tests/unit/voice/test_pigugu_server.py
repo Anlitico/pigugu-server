@@ -51,6 +51,65 @@ def test_vad_bridge_provides_silero_conn_contract():
     assert bridge.client_listen_mode == "auto"
 
 
+class _FakeSileroVad:
+    """Emulates Silero's conn contract: voice frames confirm client_have_voice,
+    the first silent frame after confirmed voice sets client_voice_stop (and
+    clears client_have_voice). The bridge must treat this as shared state, not
+    mutate it during wake-word suppression."""
+
+    def is_vad(self, conn, pcm):
+        if b"\xff" in pcm:
+            conn.client_have_voice = True
+        elif conn.client_have_voice:
+            conn.client_voice_stop = True
+            conn.client_have_voice = False
+        return conn.client_have_voice
+
+
+@pytest.mark.asyncio
+async def test_wake_suppression_suppresses_start_but_not_stop():
+    """Wake-word suppression must gate only the server-VAD START frame. Silero's
+    stop detection reads client_have_voice on the NEXT frame to arm the silence
+    timer; the old code zeroed it during suppression, so the wake-word utterance
+    never ended and later speech got swallowed into the same turn (prod: turn 1
+    input_pcm_ms=19920 across two utterances)."""
+    from pipecat.frames.frames import VADUserStartedSpeakingFrame, VADUserStoppedSpeakingFrame
+
+    from voice.pipecat.pigugu_serializer import PiguguMessageFrame
+    from voice.pipecat.state import PiguguTurnState
+    from voice.pipecat.vad_bridge import PiguguVadBridge
+
+    bridge = PiguguVadBridge(_FakeSileroVad(), state=PiguguTurnState())
+    frames: list = []
+
+    async def capture(frame, direction=None):
+        frames.append(frame)
+
+    bridge.push_frame = capture
+
+    # Wake word fires → server-VAD start suppression armed for 2s.
+    await bridge._on_control(PiguguMessageFrame({"type": "listen", "state": "detect"}))
+    # User keeps talking: VAD confirms voice DURING the suppression window.
+    await bridge._on_audio(b"\xff" * 640)
+    # ...then stops: the voice→silence transition must still yield a stop.
+    await bridge._on_audio(b"\x00" * 640)
+
+    started = [f for f in frames if isinstance(f, VADUserStartedSpeakingFrame)]
+    stopped = [f for f in frames if isinstance(f, VADUserStoppedSpeakingFrame)]
+    assert started == [], "server-VAD start must stay suppressed inside the wake window"
+    assert len(stopped) == 1, "voice stop must fire even inside the wake window"
+    assert stopped[0].stop_secs == 0.7
+
+    # After the window lapses, a fresh voice→silence pair emits both frames.
+    bridge._suppress_until = 0.0
+    await bridge._on_audio(b"\xff" * 640)
+    await bridge._on_audio(b"\x00" * 640)
+    started = [f for f in frames if isinstance(f, VADUserStartedSpeakingFrame)]
+    stopped = [f for f in frames if isinstance(f, VADUserStoppedSpeakingFrame)]
+    assert len(started) == 1
+    assert len(stopped) == 2
+
+
 class FakeVAD:
     def is_vad(self, conn, pcm):  # noqa: ARG002
         return True

@@ -71,13 +71,13 @@ class PiguguVadBridge(FrameProcessor):
             return
         prev_have_voice = self.client_have_voice
         self.vad.is_vad(self, pcm)  # populates _voice_chunk_flags + voice state
-        if time.monotonic() < self._suppress_until:
-            # Wake word just fired — the wake-word audio is the start of the
-            # user's first utterance and must not trigger a server-VAD turn
-            # start (old connection.py just_woken_up). Suppress only the
-            # start; the voice-state bookkeeping above still runs.
-            self.client_have_voice = False
-        if self.client_have_voice and not prev_have_voice:
+        # Wake-word suppression gates only the server-VAD START frame. The
+        # voice-state bookkeeping must keep running: Silero's stop detection
+        # reads client_have_voice on the NEXT frame to arm the silence timer,
+        # so zeroing it here (the old override) made the wake-word utterance
+        # never end and swallowed later speech into the same turn.
+        in_wake_suppress = time.monotonic() < self._suppress_until
+        if self.client_have_voice and not prev_have_voice and not in_wake_suppress:
             await self.push_frame(VADUserStartedSpeakingFrame())
         if self.client_voice_stop:
             await self.push_frame(VADUserStoppedSpeakingFrame(stop_secs=_SILERO_STOP_SECS))
