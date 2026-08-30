@@ -26,7 +26,9 @@ dependencies = [
     "fastapi~=0.136",
     "uvicorn[standard]~=0.48",
     # WebSocket server (official xiaozhi pattern)
-    "websockets>=13.0",
+    # Pinned to 17.x: probe-log level for unhandshaken TCP connects changed in
+    # 15/16 (ERROR) vs 17 (INFO) — keep dev and prod image builds in sync.
+    "websockets>=17.1,<18",
     # Voice pipeline framework — turn/state machine + frame pipeline (M1 migration)
     "pipecat-ai==1.8.1",
     # Storage
