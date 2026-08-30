@@ -12,12 +12,19 @@ The connection registry is shared with the REST API for roast inject.
 from __future__ import annotations
 
 import asyncio
+import logging
 import os
 
 import websockets
 from loguru import logger
 
 from voice.pipecat.session import PiguguSession
+
+# The NLB TCP health check connects to :8080 and immediately closes; websockets
+# (asyncio server, 17.x) logs INFO "connection closed" for every such probe
+# (~3.7/s), flooding the log. Keep WARNING+ (real failures like handler errors)
+# visible; connection lifecycle is logged explicitly below.
+logging.getLogger("websockets.server").setLevel(logging.WARNING)
 
 # ── Connection registry (shared with REST API for roast inject) ──────
 
@@ -118,6 +125,7 @@ async def _on_connect(ws: websockets.ServerConnection) -> None:
         await session.run()
     finally:
         _connections.pop(client_id, None)
+        logger.info(f"[Voice] Session ended client_id={client_id}")
 
 
 # ── Main entry ────────────────────────────────────────────────────────

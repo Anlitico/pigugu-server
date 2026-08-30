@@ -11,6 +11,7 @@ creation stubbed to a fake. Verifies:
 
 import asyncio
 import json
+import logging
 
 import numpy as np
 import opuslib
@@ -23,6 +24,15 @@ from voice.pipecat.pigugu_serializer import CHANNELS, FRAME_SAMPLES, SAMPLE_RATE
 from voice.pipecat.tts_bridge import PiguguTtsBridge
 
 SPLIT_FINALS = ["alexa good", "evening", "how are you"]
+
+
+def test_websockets_logger_silenced_for_health_check_probes():
+    """The NLB TCP health check connects to :8080 and closes immediately;
+    websockets logs INFO "connection closed" for each probe (~3.7/s), flooding
+    the log. voice.server must raise the websockets.server logger to WARNING so
+    probes stay quiet while real failures (handler errors) remain visible."""
+    ws_logger = logging.getLogger("websockets.server")
+    assert ws_logger.level == logging.WARNING
 
 
 class FakeVAD:
@@ -138,16 +148,24 @@ async def test_server_wiring_full_turn(monkeypatch):
 
     monkeypatch.setattr(PiguguTtsBridge, "_ensure_pig", _fake_ensure_pig)
 
-    async def on_connect(ws):
-        await server._on_connect(ws)
+    records: list[str] = []
+    sink_id = server.logger.add(records.append, level="INFO")
+    try:
+        async def on_connect(ws):
+            await server._on_connect(ws)
 
-    async with serve(on_connect, "127.0.0.1", 0) as wss:
-        port = wss.sockets[0].getsockname()[1]
-        hello, seen = await asyncio.wait_for(_run(port), timeout=10)
+        async with serve(on_connect, "127.0.0.1", 0) as wss:
+            port = wss.sockets[0].getsockname()[1]
+            hello, seen = await asyncio.wait_for(_run(port), timeout=10)
+    finally:
+        server.logger.remove(sink_id)
 
     assert hello["type"] == "hello" and hello["audio_params"]["format"] == "opus"
     # Registry was cleaned up after the connection closed.
     assert "smoke-dev" not in server._connections
+    # Real disconnects stay visible now that websockets' own INFO
+    # "connection closed" is silenced (health-check probe noise).
+    assert any("Session ended client_id=smoke-dev" in r for r in records)
     states = [p["state"] for kind, p in seen if kind == "msg" and p["type"] == "tts"]
     # Turn start/stop, then inject start/stop routed through the registry.
     assert states == ["start", "stop", "start", "stop"]
