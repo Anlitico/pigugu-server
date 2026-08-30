@@ -2,8 +2,9 @@
 
 Simulates the 6be1be41 scenario: Deepgram splits one continuous utterance into
 several ``is_final`` chunks. The fake STT emits three finals inside a single
-user turn (bounded by device ``listen/start`` + ``listen/vad_silence``); the
-aggregator must merge them into ONE turn.
+user turn (bounded by device ``listen/start`` + Deepgram utterance-end, the
+server-side turn-end signal in the xiaozhi-aligned model); the aggregator
+must merge them into ONE turn.
 """
 
 import asyncio
@@ -46,6 +47,9 @@ class FakeSTT:
             self._emitted = True
             for text in SPLIT_FINALS:
                 await conn._on_stt_final(text)
+            # Server-side turn-end (Deepgram utterance-end path), the only
+            # stop signal in the xiaozhi-aligned model — no more vad_silence.
+            await conn._on_utterance_end()
 
 
 def _make_opus_tone() -> bytes:
@@ -75,13 +79,13 @@ async def _run(port: int, turn_q: asyncio.Queue) -> str:
         )
         await asyncio.wait_for(ws.recv(), 5)  # hello reply
         await ws.send(json.dumps({"type": "listen", "state": "start"}))
-        # A few audio frames so the fake STT fires its finals.
+        # Let the START reach the turn processor before the audio frames do —
+        # audio has system priority in pipecat's queue and would otherwise
+        # outrun listen/start, firing the fake STT's utterance-end first.
+        await asyncio.sleep(0.2)
+        # A few audio frames so the fake STT fires its finals + utterance-end.
         for _ in range(3):
             await ws.send(_make_opus_tone())
-        await asyncio.sleep(0.2)
-        await ws.send(
-            json.dumps({"type": "listen", "state": "vad_silence", "user_stop_age_ms": 0})
-        )
         # The turn merges server-side after the 0.6s speech timeout — wait for
         # it before closing, or the disconnect stops the worker prematurely.
         merged = await asyncio.wait_for(turn_q.get(), timeout=5)
