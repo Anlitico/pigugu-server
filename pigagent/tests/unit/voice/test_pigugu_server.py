@@ -35,6 +35,22 @@ def test_websockets_logger_silenced_for_health_check_probes():
     assert ws_logger.level == logging.WARNING
 
 
+def test_vad_bridge_provides_silero_conn_contract():
+    """PiguguVadBridge is the ``conn`` object SileroVAD.is_vad writes to (the
+    migration from connection.py must keep the contract). Missing
+    client_audio_buffer crashed every audio frame (onnx.py:74) and killed
+    server-side VAD turn detection — a continuous-stream device then never
+    triggers a turn, so no TTS. Regression guard."""
+    from voice.pipecat.state import PiguguTurnState
+    from voice.pipecat.vad_bridge import PiguguVadBridge
+
+    bridge = PiguguVadBridge(None, state=PiguguTurnState())
+    assert isinstance(bridge.client_audio_buffer, bytearray)
+    assert bridge.client_have_voice is False
+    assert bridge.client_voice_stop is False
+    assert bridge.client_listen_mode == "auto"
+
+
 class FakeVAD:
     def is_vad(self, conn, pcm):  # noqa: ARG002
         return True
