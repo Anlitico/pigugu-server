@@ -357,7 +357,7 @@ def test_commit_calls_s3_before_clickhouse():
     assert s.call_log == ["s3", "ch"]
     assert len(s.s3_calls) == 1
     assert s.ch_calls == 1
-    assert len(s.s3_uris) == 5
+    assert len(s.s3_uris) == 6
 
 
 def test_commit_skips_ch_when_s3_fails():
@@ -401,7 +401,7 @@ def test_commit_marks_committed_even_when_ch_fails():
 # ── End-to-end commit (with stubbed I/O) ──────────────────────────
 
 
-def test_full_commit_produces_all_5_files():
+def test_full_commit_produces_all_6_files():
     s = _build_stub(stt_interims=["test"])
     s.set_user_pcm(b"\x00\x00" * 1600)
     s.tts_pcm_buf.extend(b"\x00\x00" * 1600)
@@ -413,9 +413,9 @@ def test_full_commit_produces_all_5_files():
     assert len(s.s3_calls) == 1
     captured = s.s3_calls[0]
     assert set(captured.keys()) == {
-        "input.wav", "input.json", "tts.wav", "tts.json", "turn.json",
+        "input.wav", "input.json", "tts.wav", "tts.json", "listen.wav", "turn.json",
     }
-    assert len(s.s3_uris) == 5
+    assert len(s.s3_uris) == 6
     for name, uri in s.s3_uris.items():
         assert uri.startswith("s3://test-bucket/")
         assert uri.endswith(f"/{name}")
@@ -461,7 +461,7 @@ _SCHEMA_COLUMNS = (
     "utc_start_ms", "audio_start_ms", "utc_end_ms", "duration_ms", "turn_type", "turn_phase",
     "stt_text", "stt_model", "stt_interims", "abandoned_stts", "stt_status",
     "tts_text", "tts_model", "tts_status", "tts_truncated_reason",
-    "s3_input_wav", "s3_input_json", "s3_tts_wav", "s3_tts_json", "s3_turn_json",
+    "s3_input_wav", "s3_input_json", "s3_tts_wav", "s3_tts_json", "s3_listen_wav", "s3_turn_json",
     "voice_segments", "input_pcm_bytes", "input_pcm_ms", "tts_pcm_bytes", "tts_pcm_ms",
     "e2e_ms", "stt_ms", "llm_ttft_ms", "tts_ttfb_ms", "device_playback_ms", "llm_model",
 )
@@ -506,7 +506,7 @@ def test_clickhouse_insert_uses_native_insert_shape():
     s = _build_storage()
     s.s3_uris = {
         name: f"s3://test-bucket/{s.s3_prefix}/{name}"
-        for name in ("input.wav", "input.json", "tts.wav", "tts.json", "turn.json")
+        for name in ("input.wav", "input.json", "tts.wav", "tts.json", "listen.wav", "turn.json")
     }
 
     captured_dsn: list[str] = []
@@ -530,8 +530,8 @@ def test_clickhouse_insert_uses_native_insert_shape():
     # Column order must match the schema (inserted_at omitted).
     cols = query[query.index("(") + 1:query.index(")")].split(", ")
     assert tuple(cols) == _SCHEMA_COLUMNS
-    # args must be a list of rows — one row here, a 37-tuple.
+    # args must be a list of rows — one row here, a 38-tuple.
     assert isinstance(args, list) and len(args) == 1
     row = args[0]
-    assert isinstance(row, tuple) and len(row) == 37
+    assert isinstance(row, tuple) and len(row) == 38
     assert row[0] == s.turn_id

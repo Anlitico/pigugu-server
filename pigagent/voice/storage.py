@@ -11,7 +11,7 @@ recording.
 
 Layout
 ------
-Every committed turn produces 5 files in S3, grouped under one
+Every committed turn produces 6 files in S3, grouped under one
 ``turn_id`` directory::
 
     s3://pigugu-clickhouse-audio/
@@ -20,6 +20,9 @@ Every committed turn produces 5 files in S3, grouped under one
         input.json        # voice_segments[], stt_interims[], abandoned_stts[], stt_status
         tts.wav           # TTS PCM, possibly 0 bytes if LLM empty
         tts.json          # tts_status, tts_truncated_reason
+        listen.wav        # upstream mic PCM AFTER this turn's input window, during/
+                          # after this turn's reply — the AEC probe (starts where
+                          # input.wav ends, ends at the next turn's input start)
         turn.json         # turn-level metadata
 
 Plus one row in ClickHouse ``voice.turns`` for indexing.
@@ -99,7 +102,7 @@ def get_utc_date_for_ms(utc_ms: int) -> str:
 # Tuple of (column_name, value_extractor) used to build the INSERT
 # row from a TurnStorage instance. The order MUST match the column
 # order in the INSERT statement below. Keep both in sync with
-# migrations/0001_voice_turns.sql + 0002_audio_start_ms.sql.
+# the k8s/clickhouse-migration-job.yaml ConfigMap (.sql files).
 _CH_ROW_EXTRACTORS: tuple[tuple[str, Callable[["TurnStorage"], Any]], ...] = (
     ("turn_id",             lambda s: s.turn_id),
     ("session_id",          lambda s: s.session_id),
@@ -126,6 +129,7 @@ _CH_ROW_EXTRACTORS: tuple[tuple[str, Callable[["TurnStorage"], Any]], ...] = (
     ("s3_input_json",       lambda s: s.s3_uris["input.json"]),
     ("s3_tts_wav",          lambda s: s.s3_uris["tts.wav"]),
     ("s3_tts_json",         lambda s: s.s3_uris["tts.json"]),
+    ("s3_listen_wav",       lambda s: s.s3_uris["listen.wav"]),
     ("s3_turn_json",        lambda s: s.s3_uris["turn.json"]),
     ("voice_segments",      lambda s: [(seg["start_ms"], seg["end_ms"], seg["duration_ms"])
                                       for seg in s.voice_segments]),
@@ -162,7 +166,8 @@ class TurnStorage:
         "utc_start_ms", "audio_start_ms", "utc_end_ms", "turn_type", "turn_phase",
         "stt_text", "stt_model", "stt_interims", "abandoned_stts", "stt_status",
         "tts_text", "tts_model", "tts_status", "tts_truncated_reason",
-        "user_pcm_bytes", "tts_pcm_buf", "voice_segments", "telemetry",
+        "user_pcm_bytes", "tts_pcm_buf", "listen_pcm_bytes", "voice_segments", "telemetry",
+        "finalized", "finalized_event",
         "s3_bucket", "s3_prefix", "s3_uris",
         "clickhouse_dsn", "clickhouse_table",
         "interims", "voice_chunk_flags_slice",
@@ -216,6 +221,18 @@ class TurnStorage:
         # ``asr_audio`` mid-flight.
         self.user_pcm_bytes: bytes = b""
         self.tts_pcm_buf = bytearray()
+        # Upstream mic PCM captured AFTER this turn's input window (the
+        # reply-playback / listening period, ending at the next turn's input
+        # start or session end). Filled by the observer at the next turn
+        # boundary; empty until then.
+        self.listen_pcm_bytes: bytes = b""
+        # Commit is deferred to the next turn boundary so the committed row
+        # carries listen.wav. ``finalized_event`` is set when the TTS bridge
+        # (or the observer, for a no-STT turn) has finished marking this
+        # storage — the observer awaits it before committing so a barge-in
+        # that races the TTS mark does not lose the reply.
+        self.finalized = False
+        self.finalized_event = asyncio.Event()
         # Computed at commit from Silero chunk flags.
         self.voice_segments: list[VoiceSegment] = []
         # Telemetry snapshot (e2e_ms, llm_model, stt_model, etc.)
@@ -247,6 +264,16 @@ class TurnStorage:
         """Freeze the user PCM at STT-final time. Subsequent resets of
         ``ConnectionHandler.asr_audio`` don't affect this."""
         self.user_pcm_bytes = bytes(pcm)
+
+    def set_listen_pcm(self, pcm: bytes) -> None:
+        """Freeze the post-turn upstream mic PCM (the AEC probe window)."""
+        self.listen_pcm_bytes = bytes(pcm)
+
+    def mark_finalized(self) -> None:
+        """Signal that all non-listen fields (stt/tts marks, telemetry) have
+        been written; the observer may now close this turn's storage."""
+        self.finalized = True
+        self.finalized_event.set()
 
     def mark_stt_final(self, text: str) -> None:
         """Set the STT final text. Drains the interim buffer into
@@ -322,6 +349,16 @@ class TurnStorage:
             wf.setsampwidth(_SAMPLE_WIDTH)
             wf.setframerate(_SAMPLE_RATE)
             wf.writeframes(bytes(self.tts_pcm_buf))
+        return buf.getvalue()
+
+    def _build_listen_wav_bytes(self) -> bytes:
+        """Serialize the post-turn listen PCM to a 16k mono int16 WAV."""
+        buf = io.BytesIO()
+        with wave.open(buf, "wb") as wf:
+            wf.setnchannels(_CHANNELS)
+            wf.setsampwidth(_SAMPLE_WIDTH)
+            wf.setframerate(_SAMPLE_RATE)
+            wf.writeframes(self.listen_pcm_bytes)
         return buf.getvalue()
 
     def _build_input_json(self) -> bytes:
@@ -421,6 +458,7 @@ class TurnStorage:
                 "input.json": self._build_input_json(),
                 "tts.wav": self._build_tts_wav_bytes(),
                 "tts.json": self._build_tts_json(),
+                "listen.wav": self._build_listen_wav_bytes(),
                 "turn.json": self._build_turn_json(),
             }
         except Exception:

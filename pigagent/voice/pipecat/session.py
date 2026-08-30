@@ -179,17 +179,12 @@ class PiguguSession:
 
     # ── storage cleanup on disconnect ─────────────────────────────────
 
-    def _finalize_pending_storage(self):
-        """If a turn ended but the TTS bridge never finalized its storage
-        (e.g. worker torn down mid-reply), commit it so the user's audio is
-        not lost."""
-        storage = self.state.turn_storage
-        if storage is None:
-            return
-        self.state.turn_storage = None
-        storage.mark_stt_final("")
-        storage.mark_tts_complete("", ok=False, truncated_reason="disconnect")
-        asyncio.ensure_future(storage.commit())
+    async def _finalize_pending_storage(self):
+        """If a turn ended but its storage was never closed at a turn boundary
+        (e.g. worker torn down before the next turn), close it now with the
+        trailing listen audio so the user's audio + reply are not lost."""
+        if self._observer is not None:
+            await self._observer.finalize_session()
 
     async def run(self):
         params = TransportParams(
@@ -225,7 +220,7 @@ class PiguguSession:
         try:
             await self._worker.run(WorkerParams(task_manager=TaskManager()))
         finally:
-            self._finalize_pending_storage()
+            await self._finalize_pending_storage()
             if self._inject_task:
                 self._inject_task.cancel()
                 try:

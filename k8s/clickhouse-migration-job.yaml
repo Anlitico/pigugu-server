@@ -66,6 +66,10 @@ data:
     -- Real start of the recorded input.wav window (set at the previous
     -- turn's TTS start). utc_start_ms is the END of the window (STT final).
     ALTER TABLE voice.turns ADD COLUMN IF NOT EXISTS audio_start_ms Int64 DEFAULT 0;
+  0003_listen_wav.sql: |
+    -- S3 URI of the post-turn upstream mic wav (AEC probe): the audio between
+    -- this turn's input.wav end and the next turn's input start (or session end).
+    ALTER TABLE voice.turns ADD COLUMN IF NOT EXISTS s3_listen_wav String DEFAULT '';
 ---
 apiVersion: batch/v1
 kind: Job
