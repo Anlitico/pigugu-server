@@ -51,7 +51,12 @@ def telemetry_snapshot(
     """
     t = turn if turn is not None else _turn_var.get() or {}
     marks = t.get("marks", {}) or {}
-    e2e_ms = _ms_diff(marks.get("server_received_vad_at"), marks.get("agent_spk"))
+    # E2E anchor is server-side (stt_final → agent_spk) since the firmware is
+    # xiaozhi-aligned and no longer sends vad_silence; the vad marks stay as
+    # fallbacks for old-firmware rows.
+    e2e_ms = _ms_diff(marks.get("stt_final"), marks.get("agent_spk"))
+    if e2e_ms is None:
+        e2e_ms = _ms_diff(marks.get("server_received_vad_at"), marks.get("agent_spk"))
     if e2e_ms is None:
         e2e_ms = _ms_diff(marks.get("vad_end"), marks.get("agent_spk")) or 0
     stt_ms = _ms_diff(marks.get("server_received_vad_at"), marks.get("stt_final")) or 0

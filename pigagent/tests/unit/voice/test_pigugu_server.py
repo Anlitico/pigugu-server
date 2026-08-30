@@ -110,9 +110,119 @@ async def test_wake_suppression_suppresses_start_but_not_stop():
     assert len(stopped) == 2
 
 
+@pytest.mark.asyncio
+async def test_stt_bridge_utterance_end_pushes_turn_stop():
+    """Deepgram's utterance-end must drive a turn stop that does not depend on
+    server VAD — it stays reliable through the wake-word audio burst, a noisy
+    room, and absent device vad_silence (the cases where Silero fails)."""
+    from pipecat.frames.frames import VADUserStoppedSpeakingFrame
+
+    from voice.pipecat.state import PiguguTurnState
+    from voice.pipecat.stt_bridge import PiguguSttBridge
+
+    bridge = PiguguSttBridge(None, state=PiguguTurnState())
+    bridge._loop = asyncio.get_running_loop()
+    frames: list = []
+
+    async def capture(frame, direction=None):
+        frames.append(frame)
+
+    bridge.push_frame = capture
+
+    await bridge._on_utterance_end()
+    stops = [f for f in frames if isinstance(f, VADUserStoppedSpeakingFrame)]
+    assert len(stops) == 1
+    assert stops[0].stop_secs == 0.0
+
+
+@pytest.mark.asyncio
+async def test_gateway_strips_wake_word_from_first_turn():
+    """The wake-word turn's transcript must not reach the LLM with the wake
+    word prefixed (e.g. 'Alexa? nice to meet you') — the LLM (Pigugu, not
+    Alexa) reads that as the user addressing another assistant, which is what
+    produced 'Say that again — I drifted off for a second.' in prod."""
+    from pipecat.frames.frames import TranscriptionFrame, UserStoppedSpeakingFrame
+
+    from voice.pipecat.agent_gateway import PiguguAgentGateway
+    from voice.pipecat.state import PiguguTurnState
+
+    state = PiguguTurnState()
+    state.turn_type = "wake_word"
+    state.wake_word = "alexa"
+    gateway = PiguguAgentGateway(state=state)
+    turns: list[str] = []
+
+    async def on_turn(text):
+        turns.append(text)
+
+    gateway._on_turn = on_turn
+
+    async def noop(frame, direction=None):
+        pass
+
+    gateway.push_frame = noop
+
+    # A single is_final chunk with the wake word prefixed.
+    await gateway.process_frame(
+        TranscriptionFrame(
+            text="Alexa, nice to meet you. How are you today?", user_id="", timestamp=""
+        ),
+        None,
+    )
+    await gateway.process_frame(UserStoppedSpeakingFrame(), None)
+    assert turns == ["nice to meet you. How are you today?"]
+
+    # Follow-up turn: no stripping.
+    state.turn_type = "follow_up"
+    await gateway.process_frame(
+        TranscriptionFrame(text="Can you hear me now?", user_id="", timestamp=""), None
+    )
+    await gateway.process_frame(UserStoppedSpeakingFrame(), None)
+    assert turns == [
+        "nice to meet you. How are you today?",
+        "Can you hear me now?",
+    ]
+
+
 class FakeVAD:
     def is_vad(self, conn, pcm):  # noqa: ARG002
         return True
+
+
+class _FakeSileroStopVad:
+    """Silero-like: first frame confirms voice, next frame declares silence.
+
+    This drives the PRODUCTION turn-end path (server-VAD silence →
+    ``client_voice_stop`` → ``VADUserStoppedSpeakingFrame``), which the other
+    integration tests bypass by calling ``_on_utterance_end`` directly."""
+
+    def __init__(self):
+        self._n = 0
+
+    def is_vad(self, conn, pcm):  # noqa: ARG002
+        self._n += 1
+        if self._n == 1:
+            conn.client_have_voice = True
+        elif conn.client_have_voice:
+            conn.client_voice_stop = True
+            conn.client_have_voice = False
+        return conn.client_have_voice
+
+
+class _FakeSttFinalsOnly:
+    interface_type = "stream"
+
+    def __init__(self):
+        self._emitted = False
+
+    async def open_audio_channels(self, conn):
+        pass
+
+    async def receive_audio(self, conn, pcm, have_voice):
+        if not self._emitted and pcm:
+            self._emitted = True
+            for text in SPLIT_FINALS:
+                await conn._on_stt_final(text)
 
 
 class FakeSTT:
@@ -129,6 +239,7 @@ class FakeSTT:
             self._emitted = True
             for text in SPLIT_FINALS:
                 await conn._on_stt_final(text)
+            await conn._on_utterance_end()
 
 
 class FakeTTS:
@@ -197,13 +308,14 @@ async def _run(port: int) -> tuple[dict, list[tuple[str, object]]]:
         # Session is registered under the client-id from the headers.
         assert "smoke-dev" in server._connections
         await ws.send(json.dumps({"type": "listen", "state": "start"}))
+        # Let the control frame reach the pipeline first — audio frames have
+        # system priority in pipecat's processor queue and would otherwise be
+        # processed before listen/start, so the fake STT's utterance-end would
+        # fire before the turn's START.
+        await asyncio.sleep(0.2)
         for _ in range(3):
             await ws.send(_make_opus_tone())
-        await asyncio.sleep(0.2)
-        await ws.send(
-            json.dumps({"type": "listen", "state": "vad_silence", "user_stop_age_ms": 0})
-        )
-        # Full turn: start → audio → stop.
+        # Full turn: start → audio → STT utterance-end stop.
         await _read_until_stop(ws, seen)
         # Inject through the REST registry while still connected.
         await server.send_inject("smoke-dev", {"text": "go pigugu"})
@@ -243,5 +355,34 @@ async def test_server_wiring_full_turn(monkeypatch):
     assert any("Session ended client_id=smoke-dev" in r for r in records)
     states = [p["state"] for kind, p in seen if kind == "msg" and p["type"] == "tts"]
     # Turn start/stop, then inject start/stop routed through the registry.
+    assert states == ["start", "stop", "start", "stop"]
+    assert any(kind == "audio" for kind, _ in seen)
+
+
+@pytest.mark.asyncio
+async def test_server_silero_stop_full_turn(monkeypatch):
+    """The PRODUCTION turn-end path: the server's own VAD silence (Silero)
+    drives the stop, not the Deepgram utterance-end fallback. The fake VAD
+    confirms voice on the first frame and declares silence on the second,
+    which must end the turn end-to-end (STT finals → merged turn → reply)."""
+    monkeypatch.setattr(server, "_get_shared_vad", lambda: _FakeSileroStopVad())
+    monkeypatch.setattr(server, "_get_shared_stt", lambda: _FakeSttFinalsOnly())
+    monkeypatch.setattr(server, "_get_shared_tts", lambda: FakeTTS())
+
+    async def _fake_ensure_pig(self):  # noqa: ARG001
+        return FakeAgent()
+
+    monkeypatch.setattr(PiguguTtsBridge, "_ensure_pig", _fake_ensure_pig)
+
+    async def on_connect(ws):
+        await server._on_connect(ws)
+
+    async with serve(on_connect, "127.0.0.1", 0) as wss:
+        port = wss.sockets[0].getsockname()[1]
+        hello, seen = await asyncio.wait_for(_run(port), timeout=10)
+
+    assert hello["type"] == "hello"
+    states = [p["state"] for kind, p in seen if kind == "msg" and p["type"] == "tts"]
+    # The Silero stop ends the first turn; the inject cycle is VAD-independent.
     assert states == ["start", "stop", "start", "stop"]
     assert any(kind == "audio" for kind, _ in seen)

@@ -55,11 +55,16 @@ _shared_tts: TTSProvider | None = None
 def _get_shared_vad():
     global _shared_vad
     if _shared_vad is None:
+        import os
         from providers.vad.onnx import SileroVAD
         _shared_vad = SileroVAD(
             threshold=0.5,
             threshold_low=0.2,
             min_silence_duration_ms=700,
+            # Energy floor on 10x-gained float audio. Measured on-device:
+            # noise p95≈0.077, speech p25≈0.158 → 0.10 sits between. Noisy
+            # rooms raise the noise floor; raise this if false triggers appear.
+            min_volume=float(os.getenv("VAD_MIN_VOLUME", "0.10")),
         )
     return _shared_vad
 

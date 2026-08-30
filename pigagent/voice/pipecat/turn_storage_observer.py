@@ -231,6 +231,13 @@ class PiguguTurnStorageObserver(FrameProcessor):
         TelemetryCollector.mark("vad_start")
 
     async def _on_user_stopped(self):
+        # Server-side turn-end anchor: when THIS processor confirmed the turn
+        # stopped (Silero silence or Deepgram utterance-end). The E2E metric is
+        # stt_final → agent_spk; this mark lets a diagnostic show the turn-end
+        # detection tail (stt_final → server_stop), which the re-anchored E2E
+        # no longer includes.
+        ensure_turn_context(self._state)
+        TelemetryCollector.mark("server_stop")
         # Apply the device vad_silence marks to THIS turn (the one ending):
         # the vad bridge stored the raw perf_counter values, and applying them
         # here (in the observer's task, which owns this turn's context) gives

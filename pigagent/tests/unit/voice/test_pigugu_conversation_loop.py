@@ -76,6 +76,7 @@ class FakeSTT:
             self._emitted = True
             for text in SPLIT_FINALS:
                 await conn._on_stt_final(text)
+            await conn._on_utterance_end()
         if self._interim_after_start and self.fire_interim:
             self.fire_interim = False
             await conn._on_stt_interim("stop it")
@@ -109,12 +110,11 @@ async def _run(port: int) -> dict:
         )
         hello = json.loads(await asyncio.wait_for(ws.recv(), 5))
         await ws.send(json.dumps({"type": "listen", "state": "start"}))
+        # Audio has system priority in pipecat's queue — let the START reach
+        # the turn processor before the fake STT's utterance-end fires.
+        await asyncio.sleep(0.2)
         for _ in range(3):
             await ws.send(_make_opus_tone())
-        await asyncio.sleep(0.2)
-        await ws.send(
-            json.dumps({"type": "listen", "state": "vad_silence", "user_stop_age_ms": 0})
-        )
         # Read until the turn's tts/stop — pacing holds it open ~0.7s.
         while True:
             msg = await asyncio.wait_for(ws.recv(), timeout=5)
@@ -197,12 +197,11 @@ async def _run_barge_in(port: int, stt: FakeSTT) -> list[tuple[str, object]]:
         )
         await asyncio.wait_for(ws.recv(), 5)  # hello reply
         await ws.send(json.dumps({"type": "listen", "state": "start"}))
+        # Audio has system priority in pipecat's queue — let the START reach
+        # the turn processor before the fake STT's utterance-end fires.
+        await asyncio.sleep(0.2)
         for _ in range(3):
             await ws.send(_make_opus_tone())
-        await asyncio.sleep(0.2)
-        await ws.send(
-            json.dumps({"type": "listen", "state": "vad_silence", "user_stop_age_ms": 0})
-        )
         # Wait for tts/start so we know the assistant is speaking.
         while True:
             msg = await asyncio.wait_for(ws.recv(), timeout=5)
@@ -280,12 +279,11 @@ async def _run_device_abort(port: int) -> list[tuple[str, object]]:
         )
         await asyncio.wait_for(ws.recv(), 5)
         await ws.send(json.dumps({"type": "listen", "state": "start"}))
+        # Audio has system priority in pipecat's queue — let the START reach
+        # the turn processor before the fake STT's utterance-end fires.
+        await asyncio.sleep(0.2)
         for _ in range(3):
             await ws.send(_make_opus_tone())
-        await asyncio.sleep(0.2)
-        await ws.send(
-            json.dumps({"type": "listen", "state": "vad_silence", "user_stop_age_ms": 0})
-        )
         # Wait for playback to begin, then abort.
         while True:
             msg = await asyncio.wait_for(ws.recv(), timeout=5)

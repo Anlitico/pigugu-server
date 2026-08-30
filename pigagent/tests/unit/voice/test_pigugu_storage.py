@@ -78,6 +78,7 @@ class FakeSTT:
             self._emitted = True
             for text in SPLIT_FINALS:
                 await conn._on_stt_final(text)
+            await conn._on_utterance_end()
 
 
 def _make_opus_tone() -> bytes:
@@ -109,12 +110,11 @@ async def _run(port: int, *, send_tts_played: bool) -> None:
         # Wake word first — the following turn must be classified wake_word.
         await ws.send(json.dumps({"type": "listen", "state": "detect", "text": "pigugu"}))
         await ws.send(json.dumps({"type": "listen", "state": "start"}))
+        # Audio has system priority in pipecat's queue — let the START reach
+        # the turn processor before the fake STT's utterance-end fires.
+        await asyncio.sleep(0.2)
         for _ in range(3):
             await ws.send(_make_opus_tone())
-        await asyncio.sleep(0.2)
-        await ws.send(
-            json.dumps({"type": "listen", "state": "vad_silence", "user_stop_age_ms": 0})
-        )
         # Wait for tts/start, ack playback, then read until tts/stop.
         while True:
             msg = await asyncio.wait_for(ws.recv(), timeout=5)

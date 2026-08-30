@@ -207,3 +207,67 @@ class TestErrorFallback:
         conn._vad_pcm_buffer = None  # type: ignore
         result = vad.is_vad(conn, _pcm_chunk_512())
         assert result is True
+
+
+class TestRealSileroAudioTime:
+    """Phase 1 — the real onnx.py VAD with a mocked session: confirmation and
+    stop use AUDIO time, plus an energy floor.
+
+    The firmware flushes the wake-word + first utterance as a pre-buffered
+    burst right after the ~6s connect, so a long voice stretch can process in
+    <500ms of wall time. Wall-time confirmation never fires → the first
+    utterance never ends and later speech is swallowed into the same turn
+    (prod: turn 1 input_pcm_ms=33900 across two utterances).
+    """
+
+    @pytest.fixture()
+    def vad(self):
+        from providers.vad.onnx import SileroVAD
+
+        vad = SileroVAD(
+            min_speech_duration_ms=500, min_silence_duration_ms=700, min_volume=0.10
+        )
+        state = np.zeros((2, 1, 128), dtype=np.float32)
+        holder = {"prob": 0.99}
+
+        def fake_run(_none, ort_inputs):
+            return (np.array([[holder["prob"]]], dtype=np.float32), state)
+
+        vad.session.run = fake_run
+        vad._prob_holder = holder
+        return vad
+
+    @staticmethod
+    def _loud() -> bytes:
+        # 0x3000 samples → ~0.37 float → ×10 gain clips at 1.0; RMS ≫ 0.10.
+        return b"\x00\x30" * 512
+
+    @staticmethod
+    def _quiet() -> bytes:
+        return b"\x00" * 1024
+
+    def test_burst_voice_confirms_by_audio_time(self, vad):
+        conn = FakeConn()
+        # 16 × 32ms = 512ms of voice, all processed instantly (the burst).
+        for _ in range(16):
+            vad.is_vad(conn, self._loud())
+        assert conn.client_have_voice is True
+
+    def test_low_energy_gated_despite_high_prob(self, vad):
+        conn = FakeConn()
+        # High model confidence but no energy (silence) → must not confirm.
+        for _ in range(40):
+            vad.is_vad(conn, self._quiet())
+        assert conn.client_have_voice is False
+
+    def test_burst_voice_then_silence_fires_stop(self, vad):
+        conn = FakeConn()
+        for _ in range(16):
+            vad.is_vad(conn, self._loud())
+        assert conn.client_have_voice is True
+        vad._prob_holder["prob"] = 0.01
+        # 25 × 32ms = 800ms of silence ≥ the 700ms stop window, processed
+        # instantly too — the stop must be audio-time as well.
+        for _ in range(25):
+            vad.is_vad(conn, self._quiet())
+        assert conn.client_voice_stop is True

@@ -20,6 +20,9 @@ from providers.base import VADProvider
 
 _MODEL_PATH = Path(__file__).resolve().parent / "model" / "silero_vad_16k_op15.onnx"
 
+# One 512-sample chunk of audio at 16kHz (the Silero window size).
+_CHUNK_SECS = 512 / 16000
+
 
 class SileroVAD(VADProvider):
     """Double-threshold Silero VAD via ONNX Runtime.
@@ -33,6 +36,7 @@ class SileroVAD(VADProvider):
         threshold_low: float = 0.2,
         min_silence_duration_ms: int = 700,
         min_speech_duration_ms: int = 500,  # LiveKit: 500ms min voice to confirm
+        min_volume: float = 0.10,  # energy floor on 10x-gained float audio
     ):
         import onnxruntime
 
@@ -47,7 +51,11 @@ class SileroVAD(VADProvider):
         self.vad_threshold_low = threshold_low
         self.silence_threshold_ms = min_silence_duration_ms
         self.min_speech_duration_ms = min_speech_duration_ms
-        logger.info(f"[VAD] ONNX model loaded threshold={threshold} min_speech={min_speech_duration_ms}ms")
+        self.min_volume = min_volume
+        logger.info(
+            f"[VAD] ONNX model loaded threshold={threshold} min_speech={min_speech_duration_ms}ms "
+            f"min_volume={min_volume}"
+        )
 
     def _init_connection_state(self, conn: Any) -> None:
         if not hasattr(conn, "_vad_state"):
@@ -56,9 +64,22 @@ class SileroVAD(VADProvider):
             conn._vad_context = np.zeros((1, 64), dtype=np.float32)
         if not hasattr(conn, "_voice_start_ms"):
             conn._voice_start_ms = 0
+        if not hasattr(conn, "_voice_audio_ms"):
+            conn._voice_audio_ms = 0.0
+        if not hasattr(conn, "_vad_energy"):
+            conn._vad_energy = 0.0
+        if not hasattr(conn, "_silence_audio_ms"):
+            conn._silence_audio_ms = 0.0
 
     def release_conn_resources(self, conn: Any) -> None:
-        for attr in ("_vad_state", "_vad_context", "_voice_start_ms"):
+        for attr in (
+            "_vad_state",
+            "_vad_context",
+            "_voice_start_ms",
+            "_voice_audio_ms",
+            "_vad_energy",
+            "_silence_audio_ms",
+        ):
             if hasattr(conn, attr):
                 try:
                     delattr(conn, attr)
@@ -122,21 +143,40 @@ class SileroVAD(VADProvider):
                 else:
                     is_voice = getattr(conn, "last_is_voice", False)
 
+                # Energy gate: Silero confidence alone is not enough in a
+                # noisy room — background noise can hold prob high, so a frame
+                # must also carry real energy. Smoothed RMS (post 10x gain) so
+                # a brief quiet sample inside a real utterance doesn't toggle
+                # the gate (measured: noise p95≈0.077, speech p25≈0.158 on the
+                # 10x-gained float scale; min_volume=0.10 sits between).
+                conn._vad_energy = 0.75 * conn._vad_energy + 0.25 * float(
+                    np.sqrt(np.mean(audio_float32**2))
+                )
+                if conn._vad_energy < self.min_volume:
+                    is_voice = False
+
                 conn.last_is_voice = is_voice
 
-                # Time-based voice confirmation (LiveKit min_duration pattern):
-                # voice must persist ≥ min_speech_duration_ms before confirming.
-                # Single-frame spikes (door, cough) are filtered out.
+                # Voice confirmation is AUDIO-time based (chunk count), not
+                # wall time: the firmware flushes the wake-word + first words
+                # as a pre-buffered burst right after the ~6s connect, so a
+                # long voice stretch can process in <500ms of wall time and
+                # never confirm — the first utterance then never ends and
+                # later speech is swallowed into the same turn (prod: turn 1
+                # input_pcm_ms=33900). Single-frame spikes are still filtered
+                # because confirmation needs ≥ min_speech_duration of voice.
                 now_ms = time.time() * 1000
                 if is_voice:
                     if not hasattr(conn, "_voice_start_ms") or conn._voice_start_ms == 0:
                         conn._voice_start_ms = now_ms
+                        conn._voice_audio_ms = 0.0
+                    conn._voice_audio_ms += _CHUNK_SECS
                 else:
                     conn._voice_start_ms = 0
+                    conn._voice_audio_ms = 0.0
 
                 if conn._voice_start_ms > 0:
-                    voice_duration_ms = now_ms - conn._voice_start_ms
-                    if voice_duration_ms >= self.min_speech_duration_ms:
+                    if conn._voice_audio_ms * 1000 >= self.min_speech_duration_ms:
                         client_have_voice = True
                         conn.client_have_voice = True
                         conn.vad_last_voice_time = now_ms
@@ -145,16 +185,25 @@ class SileroVAD(VADProvider):
                 else:
                     client_have_voice = False
 
-                # Voice stop: sustained silence after confirmed speech
-                if getattr(conn, "client_have_voice", False) and not is_voice:
-                    last = getattr(conn, "vad_last_voice_time", 0.0)
-                    if now_ms - last >= self.silence_threshold_ms:
-                        conn.client_voice_stop = True
-                        conn.client_have_voice = False
-                        conn._voice_start_ms = 0
-                        logger.info(
-                            f"[VAD] Voice stop: silence={now_ms - last:.0f}ms"
-                        )
+                # Voice stop: sustained silence after confirmed speech. Also
+                # AUDIO-time based — the same burst that carries the first
+                # words can carry trailing silence, which would otherwise never
+                # reach the wall-time window. The device also rarely sends its
+                # own vad_silence, so this server stop is load-bearing.
+                if getattr(conn, "client_have_voice", False):
+                    if not is_voice:
+                        conn._silence_audio_ms += _CHUNK_SECS
+                        if conn._silence_audio_ms * 1000 >= self.silence_threshold_ms:
+                            conn.client_voice_stop = True
+                            conn.client_have_voice = False
+                            conn._voice_start_ms = 0
+                            conn._voice_audio_ms = 0.0
+                            conn._silence_audio_ms = 0.0
+                            logger.info(
+                                f"[VAD] Voice stop: silence={conn._silence_audio_ms * 1000:.0f}ms"
+                            )
+                    else:
+                        conn._silence_audio_ms = 0.0
 
             return client_have_voice
 

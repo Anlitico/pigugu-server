@@ -25,11 +25,12 @@ _PG_DSN: str = os.getenv("DATABASE_URL", "").replace("+asyncpg", "")
 
 # ── Segment breakdown ──────────────────────────────────────────────
 #
-# E2E (server-perspective) = server_received_vad_at → agent_spk
+# E2E (server-perspective) = stt_final → agent_spk
 #
-# 起点是服务器实际收到固件 vad_silence 消息的时刻(time.perf_counter),
-# 不再用 user_stop_age_ms 反推 —— 那样会少算设备到服务器的上行网络时延。
-# 旧反推出来的 vad_end 仍保留为 mark,作为"用户停嘴"的诊断参考。
+# 固件已对齐 xiaozhi:turn-end 纯服务端(设备 VAD 内部化,不再发 vad_silence)。
+# E2E 锚点改为服务器自己的首个 STT final 结果(stt_final)→ 发出首个 TTS
+# 音频帧(agent_spk)。旧固件仍发 vad_silence 时,server_received_vad_at /
+# vad_end 作为 fallback,且 vad 相关诊断段仍记录。
 #
 # ``agent_spk`` 是服务器向设备发出第一个 TTS 音频帧的时刻。设备从收到
 # 第一个包到真正播出来还有一段播放时延,单独记在 device_playback_ms。
@@ -68,8 +69,7 @@ _PG_DSN: str = os.getenv("DATABASE_URL", "").replace("+asyncpg", "")
 #           completion_tokens, cached_tokens, turn_phase, device_playback_ms
 
 SEGMENTS: list[tuple[str, str, str]] = [
-    # ── 主链路（E2E = server_received_vad_at → agent_spk）──
-    ("stt",         "server_received_vad_at", "stt_final"),
+    # ── 主链路（E2E = stt_final → agent_spk,首段即 agent_init）──
     ("agent_init",  "stt_final",   "agent_init"),
     ("orchestrator","agent_init",  "agent_req"),
     ("context",     "agent_req",   "ctx_done"),
@@ -77,11 +77,16 @@ SEGMENTS: list[tuple[str, str, str]] = [
     ("llm_ttft",    "llm_req",     "llm_first_token"),
     ("llm_to_tts",  "llm_first_token", "tts_first_ready"),
     ("tts_ttfb",    "tts_first_ready", "agent_spk"),
-    # ── 诊断段 ──
+    # ── 诊断段（不参与 E2E 加和;vad 相关段只在旧固件仍发 vad_silence 时存在）──
+    ("stt",         "server_received_vad_at", "stt_final"),
     ("vad",         "vad_start",   "vad_end"),
     ("server_vad",  "vad_end",     "stt_commit"),
     # 新增:上行网络时延(设备停嘴 → 服务器收到停嘴消息),用于评估网络质量
     ("vad_to_recv", "vad_end",     "server_received_vad_at"),
+    # turn-end 检测尾巴:首个 STT final → 服务器确认停嘴(server_stop,由
+    # observer 在 turn 停止时打点)。E2E 重锚到 stt_final 后这条不包含在
+    # E2E 里,单独看它才知道服务端 turn-end 检测有多快。
+    ("turn_end",    "stt_final",   "server_stop"),
     ("llm_rest",    "llm_first_token", "llm_end"),
     ("tts",         "tts_start",   "tts_end"),
     ("ctx_l1",      "agent_req",   "ctx_l1_done"),
@@ -233,10 +238,12 @@ class TurnMetrics:
 
 # ── Internal ─────────────────────────────────────────────────────────
 
-# M2: 主链路 8 段和诊断段分开存储,避免下游 sum(segments) 把诊断段加进去
+# M2: 主链路 7 段和诊断段分开存储,避免下游 sum(segments) 把诊断段加进去
 # 导致 sum != E2E。每段是 "main" 严格串行,"diagnostic" 可能重叠/为负/为 None。
+# E2E = stt_final → agent_spk,主链路从 agent_init(stt_final 起)伸缩到
+# tts_ttfb(agent_spk 终),所以 sum == E2E 成立。
 MAIN_SEGMENT_LABELS: set[str] = {
-    "stt", "agent_init", "orchestrator", "context",
+    "agent_init", "orchestrator", "context",
     "llm_prep", "llm_ttft", "llm_to_tts", "tts_ttfb",
 }
 
@@ -259,11 +266,14 @@ def _build_segments(m: dict[str, float]) -> dict[str, float | None]:
 
 def _log(turn: dict[str, Any]) -> None:
     m = turn["marks"]
-    # E2E 起点 = server_received_vad_at(服务器实际收到停嘴消息的时刻),
-    # 与 SEGMENTS 主链路第一段(stt 起点)对齐,这样 sum==E2E 真的成立
-    # (N1 修复;之前用 vad_end 起点会少算一个上行 RTT 且触发永久 WARN)。
-    # Fallback 到 vad_end 兼容:旧数据没有 server_received_vad_at 仍能算 E2E。
-    e2e = _diff(m, "server_received_vad_at", "agent_spk")
+    # E2E (server-perspective) = stt_final → agent_spk: the firmware is
+    # aligned to xiaozhi, turn-end is purely server-side, so the anchor is the
+    # server's own first STT final transcript → first TTS audio frame sent.
+    # server_received_vad_at / vad_end stay as fallbacks so old-firmware rows
+    # (device vad_silence marks) still produce an E2E.
+    e2e = _diff(m, "stt_final", "agent_spk")
+    if e2e is None:
+        e2e = _diff(m, "server_received_vad_at", "agent_spk")
     if e2e is None:
         e2e = _diff(m, "vad_end", "agent_spk")
     if e2e is None:
@@ -282,12 +292,12 @@ def _log(turn: dict[str, Any]) -> None:
 
     seg_parts: list[str] = []
     for label in (
-        "stt", "agent_init", "orchestrator", "context",
+        "agent_init", "orchestrator", "context",
         "llm_prep", "llm_ttft", "llm_to_tts", "tts_ttfb",
     ):
         d = main_segments.get(label)
         seg_parts.append(f"{label}={_fmt(d)}")
-    for label in ("vad", "server_vad", "llm_rest", "tts", "ctx_l1", "ctx_l2", "ctx_roast"):
+    for label in ("stt", "vad", "server_vad", "turn_end", "llm_rest", "tts", "ctx_l1", "ctx_l2", "ctx_roast"):
         d = diag_segments.get(label)
         if d is not None:
             seg_parts.append(f"{label}={_fmt(d)}")
@@ -309,8 +319,8 @@ def _log(turn: dict[str, Any]) -> None:
     started_iso = ""
     ended_iso = ""
     if e:
-        # 优先用 server_received_vad_at 作为本回合时间锚,没有就退到 vad_end
-        anchor_ms = e.get("server_received_vad_at") or e.get("vad_end")
+        # 优先用 server_received_vad_at 作为本回合时间锚,没有就退到 stt_final / vad_end
+        anchor_ms = e.get("server_received_vad_at") or e.get("stt_final") or e.get("vad_end")
         if anchor_ms is not None:
             started_iso = _iso_utc(anchor_ms)
         if e.get("agent_spk") is not None:
@@ -343,8 +353,8 @@ def _check_main_chain(
 ) -> None:
     """M3: 校验主链路非负 + sum ≈ E2E,失败打 WARN 但不阻断 log。
 
-    链路定义(MAIN_CHAIN 顺序):stt → agent_init → orchestrator → context
-    → llm_prep → llm_ttft → llm_to_tts → tts_ttfb
+    链路定义(MAIN_CHAIN 顺序):agent_init → orchestrator → context
+    → llm_prep → llm_ttft → llm_to_tts → tts_ttfb(E2E = stt_final → agent_spk)
     """
     # 1) 任何一段为负 -> WARN
     for label, v in main_segments.items():
@@ -355,8 +365,8 @@ def _check_main_chain(
             )
 
     # 2) telescope sum 应该 ≈ E2E(允许 round 累计 0.5ms 误差)
-    # E2E = agent_spk - server_received_vad_at,主链路第一段也是
-    # stt_final - server_received_vad_at,所以 sum==E2E 仍然成立。
+    # E2E = agent_spk - stt_final,主链路从 agent_init(stt_final 起)伸缩
+    # 到 tts_ttfb(agent_spk 终),所以 sum==E2E 仍然成立。
     if e2e is not None and main_segments:
         total = sum(main_segments.values())
         if abs(total - e2e) > 1.0:

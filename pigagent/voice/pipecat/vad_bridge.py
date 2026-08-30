@@ -93,14 +93,29 @@ class PiguguVadBridge(FrameProcessor):
         elif state == "detect":
             # Wake word: classify the following turn, suppress server-VAD
             # starts for a moment, and reset VAD state (old _on_detect).
+            # NB: the firmware streams the wake-word AUDIO before this control
+            # message, and audio frames outrank control frames in the pipecat
+            # processor queue (InputAudioRawFrame is a SystemFrame), so Silero
+            # can fire a START on the wake word before suppression arms here.
+            # That is benign: _trigger_user_turn_start dedupes a second start
+            # from the later listen/start, and the gateway strips the wake word
+            # from a wake-only phantom turn. Suppression therefore guards the
+            # POST-wake command burst, not the wake-word audio itself.
             self._state.turn_type = "wake_word"
+            # The firmware sends the wake-word text here; the gateway strips
+            # it from the first turn's transcript so the LLM does not see it.
+            self._state.wake_word = str(msg.get("text", "") or "")
             self._suppress_until = time.monotonic() + _WAKE_VAD_SUPPRESS_SECS
             self.client_have_voice = False
             self.client_voice_stop = False
             logger.info(f"[PiguguVadBridge] wake word client={self.session_id}")
         elif state == "vad_silence":
+            # Firmware is aligned to xiaozhi: VAD is device-internal only and
+            # no longer drives server turn logic. Keep recording the timing
+            # marks for diagnostics/backward compat (old firmware still sends
+            # this), but do NOT push a turn stop — turn-end is purely
+            # server-side (Silero VAD silence / Deepgram utterance-end).
             self._on_vad_silence(msg)
-            await self.push_frame(VADUserStoppedSpeakingFrame(stop_secs=_SILERO_STOP_SECS))
         elif state == "stop":
             # Client stopped listening — reset VAD/voice-tracking state
             # (old _handle_listen / _reset_audio_states).
