@@ -291,7 +291,11 @@ class PiguguTtsBridge(FrameProcessor):
             if not self._state.interrupt_event.is_set() and not cancelled:
                 self._schedule_ctx("assistant", holder["full"])
             self._state.client_is_speaking = False
-            self._state.current_sentence_id = 0
+            # Keep current_sentence_id live after send-complete: the device
+            # acks tts_played on the first DAC output, which lags the server
+            # finishing the send (device buffers + starts playback). The
+            # observer's turn boundary resets it, so late acks for a finished
+            # reply are accepted while stale acks for a previous turn are not.
 
     async def _abort(self):
         # UserTurnProcessor broadcasts an InterruptionFrame on EVERY turn start
