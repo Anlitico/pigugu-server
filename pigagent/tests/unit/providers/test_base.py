@@ -1,5 +1,7 @@
 """Tests for provider abstract base classes."""
 
+import asyncio
+
 import pytest
 
 from providers.base import VADProvider, STTProvider, TTSProvider, LLMProvider
@@ -61,10 +63,16 @@ class TestLLMProvider:
 
     def test_concrete_subclass(self):
         class MyLLM(LLMProvider):
-            def response(self, session_id, dialogue, **kwargs):
+            async def response_async(self, session_id, dialogue, **kwargs):
                 for word in ["hello", "world"]:
                     yield word
 
-        llm = MyLLM()
-        tokens = list(llm.response("s1", [{"role": "user", "content": "hi"}]))
-        assert tokens == ["hello", "world"]
+        async def _collect():
+            tokens = []
+            async for token in MyLLM().response_async(
+                "s1", [{"role": "user", "content": "hi"}]
+            ):
+                tokens.append(token)
+            return tokens
+
+        assert asyncio.run(_collect()) == ["hello", "world"]
