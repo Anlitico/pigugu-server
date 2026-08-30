@@ -284,6 +284,10 @@ class PiguguTurnStorageObserver(FrameProcessor):
         # next turn cannot inherit the previous turn's value when it gets no
         # validated ack of its own.
         self._state.device_playback_ms = 0
+        # The previous reply's sentence id is now stale: the device stops
+        # acks when the user starts a new turn (barge-in or natural end), so
+        # any tts_played ack still in flight must not match the next reply.
+        self._state.current_sentence_id = 0
         if not self._saw_text:
             # No TranscriptionFrame → the gateway emits no turn frame → the
             # TTS bridge never finalizes. Mark it here; commit is still
@@ -382,10 +386,11 @@ class PiguguTurnStorageObserver(FrameProcessor):
         except (TypeError, ValueError):
             played_sid = None
         cur_sid = self._state.current_sentence_id
-        # Attach only when a TTS turn is actually playing AND the sentence ids
-        # match. cur_sid==0 means the reply already ended — a late ack must
-        # not be attributed to the next turn (old _flush_late_tts_played kept
-        # a separate late marker; here the safest outcome is to drop it).
+        # Attach only when the sentence ids match. cur_sid==0 means the user
+        # has started a NEW turn (the observer resets it at the turn boundary)
+        # — a late ack from the previous reply must not be attached to the
+        # next one (old _flush_late_tts_played kept a separate late marker;
+        # here the safest outcome is to drop it).
         if played_sid is not None and (not cur_sid or played_sid != cur_sid):
             logger.info(
                 f"[PiguguTurnStorageObserver] late tts_played sid={played_sid} "

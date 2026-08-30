@@ -318,3 +318,41 @@ async def test_observer_listen_wav_attached_at_next_turn(monkeypatch):
     await asyncio.sleep(0.05)
     assert committed == [storage1, storage2]
     assert storage2.listen_pcm_bytes == tail
+
+
+@pytest.mark.asyncio
+async def test_observer_tts_played_ack_lifetime():
+    """tts_played acks are accepted while the reply's sentence id is live (even
+    after the server finished sending — the device acks on first DAC output,
+    which lags send-complete; this is the 'late tts_played' drop fix), and
+    dropped once the next user turn resets current_sentence_id, so a stale ack
+    for a finished reply cannot bleed into the next turn's telemetry."""
+    state = PiguguTurnState()
+    observer = PiguguTurnStorageObserver(
+        None, state, session_id="s1", client_id="d1", user_id="u1"
+    )
+
+    # Reply sentence 1 is live (still playing on the device): matching ack
+    # accepted — this is the ack that used to arrive after send-complete and
+    # was dropped because current_sentence_id had already been zeroed.
+    state.current_sentence_id = 1
+    await observer._on_device_message(
+        {"type": "listen", "state": "tts_played", "sentence_id": 1, "device_playback_ms": 120}
+    )
+    assert state.device_playback_ms == 120
+
+    # A stale ack for a DIFFERENT sentence is rejected.
+    await observer._on_device_message(
+        {"type": "listen", "state": "tts_played", "sentence_id": 9, "device_playback_ms": 500}
+    )
+    assert state.device_playback_ms == 120
+
+    # Turn boundary: the observer resets current_sentence_id + device_playback_ms.
+    # A late ack for the OLD sentence must not resurrect the value into the
+    # next turn's telemetry.
+    state.current_sentence_id = 0
+    state.device_playback_ms = 0
+    await observer._on_device_message(
+        {"type": "listen", "state": "tts_played", "sentence_id": 1, "device_playback_ms": 900}
+    )
+    assert state.device_playback_ms == 0
