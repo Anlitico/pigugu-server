@@ -66,9 +66,21 @@ class DeepgramSTT(STTProvider):
 
         def on_message(result):
             try:
+                # Deepgram's definitive end-of-utterance marker
+                # (utterance_end_ms=2000). Reliable turn-end independent of
+                # server VAD — fires on the model's own endpointing even when
+                # Silero misses the stop (wake-word burst, noisy room, absent
+                # device vad_silence). The is_final transcript already arrived.
+                if getattr(result, "type", None) == "UtteranceEnd":
+                    if hasattr(conn, "_on_utterance_end"):
+                        if hasattr(conn, "_loop") and conn._loop and conn._loop.is_running():
+                            asyncio.run_coroutine_threadsafe(
+                                conn._on_utterance_end(), conn._loop
+                            )
+                    return
                 if not hasattr(result, "channel"):
                     return
-                # UtteranceEnd: channel is List[int], not a Channel object
+                # UtteranceEnd (older shape): channel is List[int], not a Channel
                 if not hasattr(result.channel, "alternatives"):
                     return
                 alternatives = result.channel.alternatives

@@ -94,6 +94,9 @@ class PiguguVadBridge(FrameProcessor):
             # Wake word: classify the following turn, suppress server-VAD
             # starts for a moment, and reset VAD state (old _on_detect).
             self._state.turn_type = "wake_word"
+            # The firmware sends the wake-word text here; the gateway strips
+            # it from the first turn's transcript so the LLM does not see it.
+            self._state.wake_word = str(msg.get("text", "") or "")
             self._suppress_until = time.monotonic() + _WAKE_VAD_SUPPRESS_SECS
             self.client_have_voice = False
             self.client_voice_stop = False

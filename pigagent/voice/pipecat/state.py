@@ -48,6 +48,11 @@ class PiguguTurnState:
         # Turn classification for the current/next turn (the vad bridge sets
         # it to "wake_word" on listen/detect; reset after the turn).
         self.turn_type: str = "follow_up"
+        # The wake word the device detected (from listen/detect "text"), used
+        # to strip it from the first turn's transcript before it reaches the
+        # LLM (the firmware streams the wake-word audio to the STT, so the
+        # transcript starts with e.g. "Alexa? ...").
+        self.wake_word: str = ""
         # The live TelemetryCollector turn dict for the current turn. Pipecat
         # runs each FrameProcessor in its own asyncio task with an isolated
         # contextvars copy, so marks set in one processor are invisible to the

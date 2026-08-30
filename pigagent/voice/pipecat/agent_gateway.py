@@ -29,17 +29,29 @@ from voice.pipecat.pigugu_serializer import PiguguOutputMessageFrame, PiguguUser
 class PiguguAgentGateway(FrameProcessor):
     """Accumulate turn transcript; emit one ``PiguguUserTurnFrame`` on turn end."""
 
-    def __init__(self, on_turn=None, **kwargs):
+    def __init__(self, on_turn=None, *, state=None, **kwargs):
         super().__init__(**kwargs)
         self._text_parts: list[str] = []
         self._on_turn = on_turn
+        self._state = state
+        # Turn context captured from the FIRST transcript of the turn. The
+        # observer (upstream) resets state.turn_type to "follow_up" on
+        # UserStoppedSpeakingFrame, so by the time this processor merges, the
+        # wake_word classification is already gone — capture it while the
+        # transcripts are still flowing (mid-turn, turn_type is still set).
+        self._captured_turn_type: str = "follow_up"
+        self._captured_wake_word: str = ""
 
     async def process_frame(self, frame: Frame, direction: FrameDirection):
         await super().process_frame(frame, direction)
         if isinstance(frame, TranscriptionFrame):
+            if not self._text_parts and self._state is not None:
+                self._captured_turn_type = self._state.turn_type
+                self._captured_wake_word = self._state.wake_word or ""
             self._text_parts.append(frame.text)
         elif isinstance(frame, UserStoppedSpeakingFrame):
             merged = " ".join(p for p in self._text_parts if p).strip()
+            merged = self._strip_wake_word(merged)
             self._text_parts = []
             if merged:
                 logger.info(f"[PiguguAgentGateway] TURN: '{merged}'")
@@ -54,3 +66,25 @@ class PiguguAgentGateway(FrameProcessor):
         # Pass everything downstream (audio dies at the output transport, which
         # only sends Opus / control frames).
         await self.push_frame(frame, direction)
+
+    def _strip_wake_word(self, text: str) -> str:
+        """Remove the leading wake word from the wake-word turn's transcript.
+
+        The firmware streams the wake-word audio to Deepgram, so the first
+        turn's text starts with e.g. "Alexa? nice to meet you..." and the LLM
+        (Pigugu, not Alexa) reads that as the user addressing another
+        assistant. Stripped once from the merged start, so multiple is_final
+        chunks cannot duplicate the surviving words.
+        """
+        if self._captured_turn_type != "wake_word":
+            return text
+        ww = self._captured_wake_word.strip()
+        if not ww:
+            return text
+        t = text.strip()
+        if not t.lower().startswith(ww.lower()):
+            return text
+        rest = t[len(ww):].lstrip(" ,.?!，。？！:：;；'\"")
+        if not rest:
+            return ""
+        return rest

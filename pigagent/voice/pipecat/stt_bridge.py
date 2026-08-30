@@ -22,6 +22,7 @@ from pipecat.frames.frames import (
     InputAudioRawFrame,
     InterimTranscriptionFrame,
     TranscriptionFrame,
+    VADUserStoppedSpeakingFrame,
 )
 from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 
@@ -101,6 +102,19 @@ class PiguguSttBridge(FrameProcessor):
         if self.client_is_speaking and _should_barge_in(self, text):
             logger.info(f"[PiguguSttBridge] barge-in: '{text[:60]}'")
             await self.broadcast_interruption()
+
+    async def _on_utterance_end(self) -> None:
+        """Deepgram's definitive end-of-utterance marker (utterance_end_ms).
+
+        A turn-stop that does not depend on server VAD — it fires on the STT
+        model's own endpointing, so it stays reliable through the wake-word
+        audio burst, a noisy room, and absent device vad_silence (all cases
+        where Silero can fail). stop_secs=0: the transcript is already final,
+        so the stop strategy's stt wait short-circuits immediately.
+        """
+        if self._loop is None:
+            return
+        await self.push_frame(VADUserStoppedSpeakingFrame(stop_secs=0.0))
 
 
 def _now() -> str:

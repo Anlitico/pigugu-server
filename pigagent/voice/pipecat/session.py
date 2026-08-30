@@ -62,7 +62,7 @@ def _default_processors(
                     stop=[SpeechTimeoutUserTurnStopStrategy(user_speech_timeout=0.6)],
                 ),
             ),
-            PiguguAgentGateway(),
+            PiguguAgentGateway(state=state),
         ]
         return chain, state, None, None
     # M3/M4: full loop — turn transcript → LLM → Cartesia → paced Opus, with
@@ -98,7 +98,7 @@ def _default_processors(
             ),
         ),
         observer,
-        PiguguAgentGateway(),
+        PiguguAgentGateway(state=state),
         tts_bridge,
     ]
     return chain, state, tts_bridge, observer
