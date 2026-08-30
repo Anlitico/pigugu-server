@@ -83,17 +83,23 @@ class DeepgramSTT(STTProvider):
                     full_text = " ".join(conn._dg_final_buffer).strip()
                     conn.deepgram_transcript = full_text
                     logger.info(f"[Deepgram] is_final → EOU bounce: '{full_text[:120]}'")
-                    if full_text and hasattr(conn, "_loop") and conn._loop and conn._loop.is_running():
+                    # Push the DELTA segment, not the session-cumulative
+                    # full_text. The old connection.py cleared _dg_final_buffer
+                    # per committed utterance (EOU bounce); the pipecat turn
+                    # layer dropped that clear, so pushing full_text here made
+                    # turn N+1's STT repeat turn N's words. The gateway merges
+                    # per-turn deltas, so each is_final's own text is enough.
+                    if text and hasattr(conn, "_loop") and conn._loop and conn._loop.is_running():
                         asyncio.run_coroutine_threadsafe(
-                            conn._on_stt_final(full_text), conn._loop
+                            conn._on_stt_final(text), conn._loop
                         )
                 else:
                     logger.info(f"[Deepgram] interim: '{text[:80]}'")
                     # Feed the per-turn voice.turns sidecar with every
                     # interim transcript so a downstream tool can see
-                    # what the LLM was being driven by. The interim
-                    # path is fire-and-forget; failures here must not
-                    # break the barge-in path below.
+                    # what the LLM was being driven by. The PiguguSttBridge
+                    # handles barge-in itself (client_is_speaking + interim
+                    # → broadcast_interruption), so no barge-in dispatch here.
                     if hasattr(conn, "_on_stt_interim"):
                         try:
                             if hasattr(conn, "_loop") and conn._loop and conn._loop.is_running():
@@ -102,12 +108,6 @@ class DeepgramSTT(STTProvider):
                                 )
                         except Exception:
                             logger.exception("[Deepgram] interim dispatch error")
-                    if _should_barge_in(conn, text):
-                        logger.info(f"[Deepgram] Barge-in triggered: '{text[:80]}'")
-                        if hasattr(conn, "_loop") and conn._loop and conn._loop.is_running():
-                            asyncio.run_coroutine_threadsafe(
-                                conn._on_interim_barge_in(), conn._loop
-                            )
             except Exception:
                 logger.exception("[Deepgram] on_message error")
 
