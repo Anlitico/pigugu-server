@@ -1,12 +1,20 @@
 """TurnStorage observer — builds the per-turn record from pipeline frames.
 
 Sits after the UserTurnProcessor and before the AgentGateway. It:
-- accumulates the user's PCM over the VAD turn (window = turn start → stop),
-  capped so a never-ending turn cannot grow memory without bound,
+- routes upstream mic audio into TWO buffers by the assistant's speaking flag:
+  - ``_turn_buf``: audio while the assistant is NOT speaking → becomes this
+    turn's ``input.wav`` (user utterance + surrounding silence),
+  - ``_gap_buf``: audio while the assistant IS speaking → becomes the PREVIOUS
+    turn's ``listen.wav`` (the reply-playback / AEC-probe window),
+  routing on ``state.client_is_speaking`` (set by the TTS bridge in real time)
+  because pipecat reorders frames: audio reaches the observer before the
+  device listen/start and UserStartedSpeakingFrame, so a window pointer keyed
+  to those signals would pin the window to reply-echo audio and collapse the
+  listen window,
+- on ``UserStoppedSpeakingFrame`` closes the previous turn's storage (its
+  listen.wav) and opens this turn's storage (input.wav), deferred to the next
+  boundary so the reply-period listen audio is included,
 - marks the ``stt_final`` telemetry segment on the first transcript,
-- on ``UserStoppedSpeakingFrame`` builds a ``TurnStorage`` and hands it to the
-  TTS bridge via ``state.turn_storage`` for finalization (tts text / tts PCM /
-  telemetry) and commit,
 - validates the device ``tts_played`` ack against the current sentence id and
   records ``device_playback_ms``,
 - commits a no-STT turn immediately (no turn frame will ever be emitted).
@@ -40,11 +48,18 @@ from voice.pipecat.state import PiguguTurnState
 from voice.pipecat.telemetry import ensure_turn_context
 from voice.storage import TurnStorage, is_turn_storage_enabled
 
-# Upper bound on the session audio ring. A turn that never ends (no
+# Upper bound on each per-turn audio buffer. A turn that never ends (no
 # vad_silence, STT never finalizes) must not grow memory forever — beyond
 # this, the oldest audio is dropped (old connection.py cut asr_audio at TTS
 # start). 10 minutes of 16k mono int16 ≈ 19 MB.
 _AUDIO_BUF_CAP = 10 * 60 * SAMPLE_RATE * 2
+
+# How long the close task will wait for the TTS bridge to finish marking the
+# previous turn's storage (tts_complete + telemetry) before committing it with
+# whatever is there. Almost always returns immediately (the reply ended before
+# the next turn started); only a barge-in that races the TTS task actually
+# waits. Runs off the pipeline's critical path.
+_FINALIZE_TIMEOUT_SECS = 5.0
 
 
 class PiguguTurnStorageObserver(FrameProcessor):
@@ -72,16 +87,36 @@ class PiguguTurnStorageObserver(FrameProcessor):
         self._persona_id = persona_id
         self._enabled = is_turn_storage_enabled()
         self._turn_idx = 0
-        # Session-wide PCM ring: audio is appended unconditionally and the
-        # per-turn window is a SLICE [window_start:], taken at turn end. The
-        # boundary is captured ONCE per turn (see _capture_window_start) — the
-        # device's listen/start and the first audio frame are both ordering-
-        # safe, whereas UserStartedSpeakingFrame is broadcast asynchronously
-        # and may arrive before OR after the audio frames.
-        self._audio_buf = bytearray()
-        self._window_start: int | None = None
-        self._window_start_ms = 0
+        # The previous turn's storage, held open until the next turn boundary
+        # so its listen.wav (the reply-playback period) can be attached. The
+        # TTS bridge marks it (stt/tts); the observer closes + commits it.
+        self._open_storage: TurnStorage | None = None
+        # Audio routing: non-reply mic audio accumulates in ``_turn_buf`` and
+        # becomes the next turn's input.wav; reply-period mic audio (echo) in
+        # ``_gap_buf`` becomes the current turn's listen.wav. Routed by
+        # ``state.client_is_speaking``, which the TTS bridge updates in real
+        # time and is NOT reordered like the frame signals.
+        self._turn_buf = bytearray()
+        self._gap_buf = bytearray()
+        # Wall-clock + Silero-flag position where ``_turn_buf`` actually began
+        # (captured lazily on its first byte after a stop, so reply-echo and
+        # pre-reply latency are excluded). Feeds audio_start_ms + the bounded
+        # voice_chunk_flags slice.
+        self._turn_start_ms = int(time.time() * 1000)
         self._voice_chunk_start = 0
+        # Captured at each turn stop; applied to the next turn's window on the
+        # first turn audio (or listen/start) so the start is never moved past
+        # audio that already flowed. Overwritten at reply-END so the next turn's
+        # window re-opens from the reply boundary (its input.wav has no reply
+        # echo).
+        self._pending_turn_start_ms: int | None = int(time.time() * 1000)
+        self._pending_voice_chunk_start: int | None = 0
+        self._last_speaking = False
+        # True from a user turn start (listen/start / UserStartedSpeaking) until
+        # its stop. Guards the reply-START edge: pre-reply listening audio is
+        # only moved to the gap when no user turn is in flight (a roast inject
+        # may set client_is_speaking mid-utterance — that audio stays put).
+        self._user_turn_active = False
         self._saw_text = False
         self._stt_final_marked = False
         if state.interims is None:
@@ -92,9 +127,8 @@ class PiguguTurnStorageObserver(FrameProcessor):
     async def process_frame(self, frame: Frame, direction: FrameDirection):
         await super().process_frame(frame, direction)
         if isinstance(frame, InputAudioRawFrame):
-            self._capture_window_start()
             if self._enabled:
-                self._append_audio(frame.audio)
+                self._route_audio(frame.audio)
         elif isinstance(frame, TranscriptionFrame):
             if frame.text and frame.text.strip():
                 self._saw_text = True
@@ -113,36 +147,77 @@ class PiguguTurnStorageObserver(FrameProcessor):
         # Pass everything downstream (audio/transcripts continue to the agent).
         await self.push_frame(frame, direction)
 
-    def _append_audio(self, pcm: bytes):
-        """Append user PCM, dropping the oldest beyond the cap so a never-
-        ending turn cannot grow memory without bound."""
-        self._audio_buf.extend(pcm)
-        excess = len(self._audio_buf) - _AUDIO_BUF_CAP
+    def _route_audio(self, pcm: bytes):
+        """Route one upstream mic frame: reply-period audio (the assistant is
+        speaking) goes to the gap buffer (→ the current turn's listen.wav /
+        AEC probe); all other audio goes to the turn buffer (→ the next
+        input.wav).
+
+        On the reply-START edge the pre-reply listening audio already in the
+        turn buffer (TTFT latency silence, mic streaming before the reply) is
+        moved to the gap so it lands BEFORE the echo and is not folded into the
+        next input.wav; on the reply-END edge the next turn's window re-opens
+        from the reply boundary, so its voice_segments exclude the echo."""
+        speaking = self._state.client_is_speaking
+        if speaking and not self._last_speaking:
+            # Reply started: the turn buffer holds pre-reply listening audio
+            # (TTFT latency silence) — move it into the gap so it lands BEFORE
+            # the echo. Skip when a user turn is in flight (a roast inject may
+            # set client_is_speaking mid-utterance): that audio belongs to the
+            # in-progress user turn, not the previous turn's listen.
+            if self._turn_buf and not self._user_turn_active:
+                self._gap_buf.extend(self._turn_buf)
+                self._turn_buf = bytearray()
+        elif self._last_speaking and not speaking:
+            # Reply ended: the next turn's input window begins here (post-reply),
+            # so the Silero-flags slice starts past the echo.
+            self._pending_turn_start_ms = int(time.time() * 1000)
+            self._pending_voice_chunk_start = self._voice_flag_len()
+        self._last_speaking = speaking
+        if speaking:
+            self._append_gap(pcm)
+        else:
+            self._append_turn(pcm)
+
+    def _append_turn(self, pcm: bytes):
+        """Append non-reply audio (→ the next input.wav), dropping the oldest
+        beyond the cap so a never-ending turn cannot grow memory without
+        bound."""
+        if not self._turn_buf:
+            self._begin_turn_window()
+        self._turn_buf.extend(pcm)
+        excess = len(self._turn_buf) - _AUDIO_BUF_CAP
         if excess > 0:
-            del self._audio_buf[:excess]
-            if self._window_start is not None:
-                self._window_start = max(0, self._window_start - excess)
+            del self._turn_buf[:excess]
 
-    # ── turn lifecycle ────────────────────────────────────────────────
+    def _append_gap(self, pcm: bytes):
+        """Append reply-period audio (→ the current listen.wav), capped."""
+        self._gap_buf.extend(pcm)
+        excess = len(self._gap_buf) - _AUDIO_BUF_CAP
+        if excess > 0:
+            del self._gap_buf[:excess]
 
-    def _capture_window_start(self):
-        """Establish the current turn's audio-window boundary once.
+    def _begin_turn_window(self):
+        """Apply the pending window start captured at the last turn stop.
 
-        Called from listen/start, the first audio frame, and the (possibly
-        late) UserStartedSpeakingFrame. Whichever fires first wins; a late
-        start event must NOT move the boundary past audio that already beat
-        it.
+        Called on the first turn audio after a stop (and on device
+        ``listen/start``). Does nothing once ``_turn_buf`` holds audio — a late
+        listen/start must NOT move the boundary past audio that already beat it.
         """
-        if self._window_start is not None:
+        if self._turn_buf:
             return
-        self._window_start = len(self._audio_buf)
-        self._window_start_ms = int(time.time() * 1000)
-        self._voice_chunk_start = self._voice_flag_len()
+        if self._pending_turn_start_ms is not None:
+            self._turn_start_ms = self._pending_turn_start_ms
+            self._voice_chunk_start = self._pending_voice_chunk_start or 0
         self._saw_text = False
         self._stt_final_marked = False
 
+    # ── turn lifecycle ────────────────────────────────────────────────
+
     def _on_user_started(self):
-        # New VAD turn — telemetry + window boundary (captured once).
+        # New VAD turn — telemetry only (audio is routed by client_is_speaking,
+        # not by VAD start).
+        self._user_turn_active = True
         TelemetryCollector.start_turn(
             user_id=self._user_id,
             persona_id=self._persona_id,
@@ -154,7 +229,6 @@ class PiguguTurnStorageObserver(FrameProcessor):
         self._state.active_turn = _turn_var.get()
         TelemetryCollector.set_meta("turn_phase", self._state.turn_type)
         TelemetryCollector.mark("vad_start")
-        self._capture_window_start()
 
     async def _on_user_stopped(self):
         # Apply the device vad_silence marks to THIS turn (the one ending):
@@ -171,11 +245,29 @@ class PiguguTurnStorageObserver(FrameProcessor):
                 TelemetryCollector.set_mark("vad_end", self._state.vad_end_mark)
             self._state.server_received_vad_at = None
             self._state.vad_end_mark = None
-        # Freeze this turn's window and compact the ring regardless of storage
-        # enablement, so idle audio never accumulates across turns.
-        start = self._window_start if self._window_start is not None else 0
-        del self._audio_buf[:start]
-        self._window_start = None
+        # Close the PREVIOUS turn's storage in a background task: its listen.wav
+        # is the reply-period audio accumulated in _gap_buf since its reply
+        # played. The task awaits the TTS mark (so the committed row carries the
+        # reply) but never blocks this pipeline frame.
+        if self._open_storage is not None:
+            storage_to_close = self._open_storage
+            self._open_storage = None
+            storage_to_close.set_listen_pcm(bytes(self._gap_buf))
+            asyncio.ensure_future(self._close_storage(storage_to_close))
+        # Reset buffers for the next turn, capturing the pending window start
+        # at this boundary.
+        self._gap_buf = bytearray()
+        turn_pcm = bytes(self._turn_buf)
+        self._turn_buf = bytearray()
+        self._pending_turn_start_ms = int(time.time() * 1000)
+        self._pending_voice_chunk_start = self._voice_flag_len()
+        self._user_turn_active = False
+        if not turn_pcm:
+            # Empty turn (spurious vad_silence with no audio): there is no
+            # input window — point the slices at the stop so voice_segments and
+            # audio_start_ms don't leak the previous turn's audio into this row.
+            self._voice_chunk_start = self._pending_voice_chunk_start
+            self._turn_start_ms = self._pending_turn_start_ms
         if not self._enabled:
             self._state.turn_type = "follow_up"
             return
@@ -183,9 +275,9 @@ class PiguguTurnStorageObserver(FrameProcessor):
         if storage is None:
             self._state.turn_type = "follow_up"
             return
-        # After the compact, the remaining buffer IS this turn's window.
-        storage.set_user_pcm(bytes(self._audio_buf))
+        storage.set_user_pcm(turn_pcm)
         self._state.turn_storage = storage
+        self._open_storage = storage
         # The next turn defaults back to follow_up (a wake word re-arms it).
         self._state.turn_type = "follow_up"
         # A device_playback_ms ack belongs to exactly one turn — reset so the
@@ -194,11 +286,77 @@ class PiguguTurnStorageObserver(FrameProcessor):
         self._state.device_playback_ms = 0
         if not self._saw_text:
             # No TranscriptionFrame → the gateway emits no turn frame → the
-            # TTS bridge never finalizes. Commit now as a no-STT turn.
+            # TTS bridge never finalizes. Mark it here; commit is still
+            # deferred to the next boundary so the listen window is included.
             storage.mark_stt_final("")
             storage.mark_tts_complete("", ok=False, truncated_reason="no_stt")
-            self._state.turn_storage = None
+            storage.mark_finalized()
+        # Reset per-turn transcript flags for the next turn here too, so an
+        # empty turn that never runs _begin_turn_window does not inherit this
+        # turn's _saw_text (which would skip the no_stt mark above next round).
+        self._saw_text = False
+        self._stt_final_marked = False
+
+    async def _close_storage(self, storage: TurnStorage) -> None:
+        """Background close: wait (bounded) for the TTS bridge to finish
+        marking the turn, then commit. Runs off the pipeline's critical path
+        and survives cancellation (a torn-down close still commits — the
+        storage was already detached from ``_open_storage``, so nothing else
+        will)."""
+        try:
+            await asyncio.wait_for(
+                storage.finalized_event.wait(),
+                timeout=_FINALIZE_TIMEOUT_SECS,
+            )
+        except asyncio.TimeoutError:
+            logger.warning(
+                f"[PiguguTurnStorageObserver] finalize timeout "
+                f"turn_id={storage.turn_id}"
+            )
+        except asyncio.CancelledError:
+            pass  # loop teardown — fall through and commit anyway
+        try:
             asyncio.ensure_future(storage.commit())
+        except RuntimeError:
+            # Loop is closing — the commit cannot be scheduled; surface it so
+            # the turn is at least not silently dropped.
+            logger.warning(
+                f"[PiguguTurnStorageObserver] commit not scheduled (loop closing) "
+                f"turn_id={storage.turn_id}"
+            )
+
+    async def finalize_session(self) -> None:
+        """Session ended: close the open turn's storage with the trailing
+        audio — its reply echo (``_gap_buf``) plus any non-reply audio that
+        never became a turn (``_turn_buf``: partial utterance / post-reply
+        silence) — and commit. Waits (bounded) for the TTS bridge to finish
+        marking (like ``_close_storage``); only on timeout is the disconnect
+        fallback applied, so a reply actually generated before the disconnect
+        still lands in the row."""
+        storage = self._open_storage
+        if storage is None:
+            return
+        self._open_storage = None
+        if not storage.finalized:
+            try:
+                await asyncio.wait_for(
+                    storage.finalized_event.wait(),
+                    timeout=_FINALIZE_TIMEOUT_SECS,
+                )
+            except asyncio.TimeoutError:
+                logger.warning(
+                    f"[PiguguTurnStorageObserver] finalize timeout at session end "
+                    f"turn_id={storage.turn_id}"
+                )
+        if not storage.finalized:
+            # TTS bridge never finalized (disconnect before the reply) — mark
+            # the disconnect so the user's audio is still preserved.
+            storage.mark_stt_final("")
+            storage.mark_tts_complete("", ok=False, truncated_reason="disconnect")
+            storage.mark_finalized()
+        tail = bytes(self._gap_buf) + bytes(self._turn_buf)
+        storage.set_listen_pcm(tail)
+        asyncio.ensure_future(storage.commit())
 
     # ── device ack (tts_played) ───────────────────────────────────────
 
@@ -207,8 +365,9 @@ class PiguguTurnStorageObserver(FrameProcessor):
             return
         state = msg.get("state")
         if state == "start":
-            # Device started listening — the user-audio window begins here.
-            self._capture_window_start()
+            # Device started listening for a new utterance — apply the pending
+            # window start (no-op if turn audio already flowed).
+            self._begin_turn_window()
             return
         if state != "tts_played":
             return
@@ -243,14 +402,18 @@ class PiguguTurnStorageObserver(FrameProcessor):
         flags = getattr(self._vad, "_voice_chunk_flags", None)
         return len(flags) if flags else 0
 
-    def _voice_chunk_flags_slice(self, start_idx: int) -> list[bool]:
-        """Per-turn slice of the Silero chunk flags, translated past the
-        Silero 10-minute trim (same logic as connection.py)."""
+    def _voice_chunk_flags_slice(self, start_idx: int, end_idx: int) -> list[bool]:
+        """Bounded slice of the Silero chunk flags for ONE turn's input.wav,
+        translated past the Silero 10-minute trim. Bounded [start:end] so the
+        deferred commit (which runs at the NEXT turn boundary) never leaks a
+        later turn's voice into this turn's voice_segments."""
         flags = getattr(self._vad, "_voice_chunk_flags", None)
         if not flags:
             return []
         trimmed = getattr(self._vad, "_voice_chunk_flags_trimmed", 0)
-        return list(flags[max(0, start_idx - trimmed):])
+        lo = max(0, start_idx - trimmed)
+        hi = min(max(0, end_idx - trimmed), len(flags))
+        return list(flags[lo:hi])
 
     def _make_storage(self) -> TurnStorage | None:
         bucket = os.getenv("AUDIO_S3_BUCKET", "").strip()
@@ -274,7 +437,10 @@ class PiguguTurnStorageObserver(FrameProcessor):
         self._turn_idx += 1
         utc_start_ms = int(time.time() * 1000)
         turn_id = f"{utc_start_ms}_{self._session_id}_{self._turn_idx:04d}"
-        captured_start = self._voice_chunk_start
+        # The bounded flags window: from this turn's first input audio (which
+        # excludes reply-echo, routed to _gap_buf) to this turn's stop.
+        start_idx = self._voice_chunk_start
+        end_idx = self._voice_flag_len()
         return TurnStorage(
             turn_id=turn_id,
             session_id=self._session_id,
@@ -283,12 +449,12 @@ class PiguguTurnStorageObserver(FrameProcessor):
             user_id=self._user_id,
             persona_id=self._persona_id,
             utc_start_ms=utc_start_ms,
-            audio_start_ms=self._window_start_ms,
+            audio_start_ms=self._turn_start_ms,
             s3_bucket=bucket,
             s3_prefix=prefix,
             clickhouse_dsn=ch_dsn,
             clickhouse_table=ch_table,
             interims=self._state.interims,
-            voice_chunk_flags_slice=lambda: self._voice_chunk_flags_slice(captured_start),
+            voice_chunk_flags_slice=lambda: self._voice_chunk_flags_slice(start_idx, end_idx),
             turn_type=self._state.turn_type,
         )

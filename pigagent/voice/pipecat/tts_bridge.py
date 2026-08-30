@@ -280,7 +280,10 @@ class PiguguTtsBridge(FrameProcessor):
                         turn=turn,
                     )
                 )
-                asyncio.ensure_future(storage.commit())
+                # Commit is deferred to the next turn boundary (the observer
+                # attaches this turn's listen.wav there). Signal finalization
+                # so the observer never commits before the TTS mark lands.
+                storage.mark_finalized()
             # Persist the assistant reply only when it completed naturally — an
             # interrupted reply is a partial sentence that would corrupt
             # multi-turn memory (old code persisted assistant only on
@@ -343,13 +346,14 @@ class PiguguTtsBridge(FrameProcessor):
             return None
 
     def _finalize_failed_storage(self, storage, text: str, reason: str) -> None:
-        """Commit a turn that never reached the LLM/TTS, preserving the user
-        utterance and marking why playback never happened."""
+        """Mark a turn that never reached the LLM/TTS, preserving the user
+        utterance and recording why playback never happened. Commit is left
+        to the observer at the next turn boundary."""
         if storage is None:
             return
         storage.mark_stt_final(text)
         storage.mark_tts_complete("", ok=False, truncated_reason=reason)
-        asyncio.ensure_future(storage.commit())
+        storage.mark_finalized()
 
     def _schedule_ctx(self, role: str, content: str) -> None:
         """Fire-and-forget user/assistant turn persistence into ctx (the old

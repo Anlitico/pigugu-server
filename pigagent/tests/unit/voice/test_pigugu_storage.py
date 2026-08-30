@@ -6,11 +6,13 @@ set and TurnStorage's I/O stubbed so commit() completes in memory. Asserts:
 - user PCM captured over the turn window, tts PCM collected from the fake TTS,
 - tts_status == complete,
 - device_playback_ms from the tts_played ack lands in telemetry,
-- s3_uris populated (the 5-file layout).
+- s3_uris populated (the 6-file layout).
 """
 
 import asyncio
 import json
+import time
+import uuid
 
 import numpy as np
 import opuslib
@@ -18,8 +20,11 @@ import pytest
 import websockets
 from websockets.asyncio.server import serve
 
+from voice.interims import InterimBuffer
 from voice.pipecat.pigugu_serializer import CHANNELS, FRAME_SAMPLES, SAMPLE_RATE
 from voice.pipecat.session import PiguguSession
+from voice.pipecat.state import PiguguTurnState
+from voice.pipecat.turn_storage_observer import PiguguTurnStorageObserver
 from voice.storage import TurnStorage
 
 SPLIT_FINALS = ["alexa good", "evening", "how are you"]
@@ -196,9 +201,9 @@ async def test_turn_storage_commits_full_row(monkeypatch):
     # Audio windows.
     assert len(storage.user_pcm_bytes) > 0
     assert len(storage.tts_pcm_buf) > 0
-    # The 5-file S3 layout.
+    # The 6-file S3 layout (input / tts / listen + sidecars).
     assert set(storage.s3_uris) == {
-        "input.wav", "input.json", "tts.wav", "tts.json", "turn.json",
+        "input.wav", "input.json", "tts.wav", "tts.json", "listen.wav", "turn.json",
     }
     # device_playback_ms came through the tts_played ack.
     assert storage.telemetry.get("device_playback_ms") == 120
@@ -208,3 +213,108 @@ async def test_turn_storage_commits_full_row(monkeypatch):
     assert storage.telemetry.get("llm_ttft_ms") is not None
     # voice_segments[] computed from the (empty, in this harness) VAD slice.
     assert isinstance(storage.voice_segments, list)
+
+
+# ── M5d: listen.wav (post-turn listening / AEC probe) ────────────────
+
+
+def _make_observer_turn(*, session_id: str, turn_idx: int) -> TurnStorage:
+    return TurnStorage(
+        turn_id=f"{int(time.time() * 1000)}_{session_id}_{turn_idx:04d}",
+        session_id=session_id,
+        turn_idx=turn_idx,
+        device_id="d1",
+        user_id="u1",
+        persona_id=1,
+        utc_start_ms=int(time.time() * 1000),
+        s3_bucket="test-bucket",
+        s3_prefix="voice-turns",
+        clickhouse_dsn="clickhouse://default:secret@ch:9000/voice",
+        clickhouse_table="voice.turns",
+        interims=InterimBuffer(),
+        voice_chunk_flags_slice=lambda: [],
+    )
+
+
+@pytest.mark.asyncio
+async def test_observer_listen_wav_attached_at_next_turn(monkeypatch):
+    """Turn N's listen.wav is the reply-period upstream mic audio (routed by
+    ``client_is_speaking``), attached and committed only when N+1's boundary
+    closes it — the commit is deferred, never losing the reply-playback echo."""
+    monkeypatch.setenv("AUDIO_S3_BUCKET", "test-bucket")
+    monkeypatch.setenv("AUDIO_S3_PREFIX", "voice-turns")
+    monkeypatch.setenv("CLICKHOUSE_HOST", "ch")
+    monkeypatch.setenv("CLICKHOUSE_PASSWORD", "secret")
+
+    committed: list[TurnStorage] = []
+
+    async def fake_s3(self, payloads):
+        for name in payloads:
+            self.s3_uris[name] = f"s3://test-bucket/{self.s3_prefix}/{name}"
+
+    async def fake_ch_insert(self):
+        committed.append(self)
+
+    monkeypatch.setattr(TurnStorage, "_s3_upload_all", fake_s3)
+    monkeypatch.setattr(TurnStorage, "_clickhouse_insert", fake_ch_insert)
+
+    made: list[TurnStorage] = []
+
+    def fake_make_storage():
+        s = _make_observer_turn(session_id="s1", turn_idx=len(made) + 1)
+        made.append(s)
+        return s
+
+    state = PiguguTurnState()
+    observer = PiguguTurnStorageObserver(
+        None,
+        state,
+        session_id="s1",
+        client_id="d1",
+        user_id="u1",
+    )
+    monkeypatch.setattr(observer, "_make_storage", fake_make_storage)
+
+    # Turn 1: assistant idle, user speaks → turn buffer.
+    state.client_is_speaking = False
+    observer._route_audio(b"A" * 320)
+    observer._route_audio(b"B" * 320)
+    await observer._on_user_stopped()
+    storage1 = made[0]
+    # Nothing committed yet — commit is deferred to the next boundary.
+    assert committed == []
+    assert storage1.listen_pcm_bytes == b""
+
+    # TTFT: reply not started yet, device still streams mic (latency silence).
+    # This must NOT go into turn 2's input — it belongs to turn 1's listen,
+    # before the reply echo.
+    ttft = b"S" * 160
+    observer._route_audio(ttft)
+
+    # The reply plays (assistant speaking): the mic keeps streaming and the
+    # echo routes to the GAP buffer (after the TTFT), NOT to turn 2's input.
+    gap = b"G" * 640
+    state.client_is_speaking = True
+    observer._route_audio(gap)
+
+    # Turn 2: reply done, user speaks → turn buffer again. This boundary
+    # closes turn 1 and attaches the listening-period audio (TTFT + echo).
+    state.client_is_speaking = False
+    observer._route_audio(b"C" * 320)
+    await observer._on_user_stopped()
+    await asyncio.sleep(0.05)  # let the fire-and-forget close + commit land
+    storage2 = made[1]
+    assert committed == [storage1]
+    # Turn 1's listen.wav = TTFT silence + reply echo, in chronological order.
+    assert storage1.listen_pcm_bytes == ttft + gap
+    # Turn 2's input.wav must NOT carry the TTFT silence or the reply echo.
+    assert storage2.listen_pcm_bytes == b""
+    assert storage2.user_pcm_bytes == b"C" * 320
+
+    # Session end closes the last turn with the trailing non-reply audio.
+    tail = b"T" * 320
+    observer._route_audio(tail)
+    await observer.finalize_session()
+    await asyncio.sleep(0.05)
+    assert committed == [storage1, storage2]
+    assert storage2.listen_pcm_bytes == tail
