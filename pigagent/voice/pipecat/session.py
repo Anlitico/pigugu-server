@@ -19,7 +19,7 @@ from pipecat.pipeline.pipeline import Pipeline
 from pipecat.processors.frame_processor import FrameProcessor
 from pipecat.transports.base_transport import TransportParams
 from pipecat.pipeline.worker import PipelineWorker
-from pipecat.turns.user_start import VADUserTurnStartStrategy
+from pipecat.turns.user_start import MinWordsUserTurnStartStrategy
 from pipecat.turns.user_stop import SpeechTimeoutUserTurnStopStrategy
 from pipecat.turns.user_turn_processor import UserTurnProcessor
 from pipecat.turns.user_turn_strategies import UserTurnStrategies
@@ -65,7 +65,14 @@ def _default_processors(
             PiguguSttBridge(stt, state=state),
             UserTurnProcessor(
                 user_turn_strategies=UserTurnStrategies(
-                    start=[VADUserTurnStartStrategy()],
+                    # Official pipecat barge-in pattern (turn-management
+                    # interruption example): MinWords gates turn start by word
+                    # count, and only while the bot is speaking — a short
+                    # affirmation can't interrupt, a real interruption needs
+                    # min_words. Turn start broadcasts the interruption
+                    # (enable_interruptions defaults True): a user turn starting
+                    # over the bot IS the barge-in.
+                    start=[MinWordsUserTurnStartStrategy(min_words=3)],
                     stop=[SpeechTimeoutUserTurnStopStrategy(user_speech_timeout=0.6)],
                 ),
             ),
@@ -100,7 +107,8 @@ def _default_processors(
         PiguguSttBridge(stt, state=state),
         UserTurnProcessor(
             user_turn_strategies=UserTurnStrategies(
-                start=[VADUserTurnStartStrategy()],
+                # Official pipecat barge-in pattern (see the M2 branch comment).
+                start=[MinWordsUserTurnStartStrategy(min_words=3)],
                 stop=[SpeechTimeoutUserTurnStopStrategy(user_speech_timeout=0.6)],
             ),
         ),

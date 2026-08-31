@@ -20,7 +20,12 @@ from typing import Any
 
 from loguru import logger
 from metrics.turn import TelemetryCollector
-from pipecat.frames.frames import Frame, InterruptionFrame
+from pipecat.frames.frames import (
+    BotStartedSpeakingFrame,
+    BotStoppedSpeakingFrame,
+    Frame,
+    InterruptionFrame,
+)
 from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 
 from voice.pipecat.pigugu_serializer import (
@@ -181,6 +186,12 @@ class PiguguTtsBridge(FrameProcessor):
             self._state.client_is_speaking = True
             self._state.current_sentence_id = self._current_sentence_id
             self._tts_started = True
+            # Tell the turn layer the bot is speaking: MinWordsUserTurnStartStrategy
+            # uses BotStartedSpeakingFrame to raise its barge-in word threshold
+            # while playback is live (short affirmations can't interrupt). This
+            # bridge sits AFTER the UserTurnProcessor, so the frame must go
+            # UPSTREAM to reach the strategy (downstream would end at output).
+            await self.push_frame(BotStartedSpeakingFrame(), FrameDirection.UPSTREAM)
             TelemetryCollector.mark("tts_start")
             if self._on_start:
                 await self._on_start()
@@ -290,6 +301,10 @@ class PiguguTtsBridge(FrameProcessor):
             # non-cancelled turns).
             if not self._state.interrupt_event.is_set() and not cancelled:
                 self._schedule_ctx("assistant", holder["full"])
+            if self._state.client_is_speaking:
+                # Playback ended naturally: tell the turn layer the bot stopped
+                # speaking (MinWords drops its barge-in word threshold).
+                await self.push_frame(BotStoppedSpeakingFrame(), FrameDirection.UPSTREAM)
             self._state.client_is_speaking = False
             # Keep current_sentence_id live after send-complete: the device
             # acks tts_played on the first DAC output, which lags the server
@@ -311,6 +326,9 @@ class PiguguTtsBridge(FrameProcessor):
                 pass
         if had_started:
             await self._push_message({"type": "tts", "state": "abort"})
+            # Bot stopped speaking (aborted): MinWords drops its barge-in
+            # word threshold so the user's interruption turn can proceed.
+            await self.push_frame(BotStoppedSpeakingFrame(), FrameDirection.UPSTREAM)
         self._state.client_is_speaking = False
         self._state.current_sentence_id = 0
         self._reset_clock()
@@ -327,6 +345,8 @@ class PiguguTtsBridge(FrameProcessor):
                 await self._tts_task
             except (asyncio.CancelledError, Exception):
                 pass
+        if self._state.client_is_speaking:
+            await self.push_frame(BotStoppedSpeakingFrame(), FrameDirection.UPSTREAM)
         self._state.client_is_speaking = False
         self._state.current_sentence_id = 0
         await self._push_message({"type": "tts", "state": "abort"})
@@ -474,6 +494,7 @@ class PiguguTtsBridge(FrameProcessor):
             return
         await self._push_message({"type": "tts", "state": "start"})
         self._state.client_is_speaking = True
+        await self.push_frame(BotStartedSpeakingFrame(), FrameDirection.UPSTREAM)
         await self._pace(frames, mark_first=False, extra_break=stale)
         if (
             not stale()
@@ -481,6 +502,8 @@ class PiguguTtsBridge(FrameProcessor):
             and await self._wait_playback_drain(extra_break=stale)
         ):
             await self._push_message({"type": "tts", "state": "stop"})
+        if self._state.client_is_speaking:
+            await self.push_frame(BotStoppedSpeakingFrame(), FrameDirection.UPSTREAM)
         self._state.client_is_speaking = False
 
     # ── wire helpers ──────────────────────────────────────────────────
