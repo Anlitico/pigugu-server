@@ -14,23 +14,6 @@ from loguru import logger
 from providers.base import InterfaceType, STTProvider
 
 
-def _should_barge_in(conn: Any, text: str) -> bool:
-    """Decide whether this interim transcript should abort TTS playback.
-
-    Only meaningful while the assistant is speaking — during listening the
-    interim is the user's own utterance and there is nothing to abort.
-    Short interrupts are the norm ("what", "stop it"), so the bar is low:
-    ≥2 words, or a single word ≥4 chars, or ≥2 CJK chars (Chinese interims
-    arrive without spaces, so word counts don't apply).
-    """
-    if not getattr(conn, "client_is_speaking", False):
-        return False
-    stripped = text.strip()
-    words = stripped.split()
-    cjk = sum(1 for ch in stripped if "一" <= ch <= "鿿")
-    return len(words) >= 2 or (len(words) == 1 and len(stripped) >= 4) or cjk >= 2
-
-
 class DeepgramSTT(STTProvider):
     """Deepgram Nova-3 STT — streaming via WebSocket v1, batch via REST."""
 
@@ -109,9 +92,9 @@ class DeepgramSTT(STTProvider):
                     logger.info(f"[Deepgram] interim: '{text[:80]}'")
                     # Feed the per-turn voice.turns sidecar with every
                     # interim transcript so a downstream tool can see
-                    # what the LLM was being driven by. The PiguguSttBridge
-                    # handles barge-in itself (client_is_speaking + interim
-                    # → broadcast_interruption), so no barge-in dispatch here.
+                    # what the LLM was being driven by. Barge-in is handled by
+                    # MinWordsUserTurnStartStrategy (a turn start over the bot
+                    # broadcasts the interruption), so no dispatch here.
                     if hasattr(conn, "_on_stt_interim"):
                         try:
                             if hasattr(conn, "_loop") and conn._loop and conn._loop.is_running():

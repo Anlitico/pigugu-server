@@ -35,6 +35,49 @@ def test_websockets_logger_silenced_for_health_check_probes():
     assert ws_logger.level == logging.WARNING
 
 
+def test_min_words_start_strategy_matches_official_semantics():
+    """Barge-in is official-pipecat MinWordsUserTurnStartStrategy (matches the
+    upstream tests/test_user_turn_start_strategy.py semantics):
+    - while the bot is speaking (BotStartedSpeakingFrame), min_words are
+      required to start a turn — a short affirmation can't interrupt;
+    - when the bot is silent, a single word starts the turn."""
+    from pipecat.frames.frames import (
+        BotStartedSpeakingFrame,
+        InterimTranscriptionFrame,
+        TranscriptionFrame,
+    )
+    from pipecat.turns.user_start import MinWordsUserTurnStartStrategy
+
+    strategy = MinWordsUserTurnStartStrategy(min_words=3)
+    started: list[str] = []
+
+    async def on_start(strategy, params):
+        started.append(strategy)
+
+    strategy.add_event_handler("on_user_turn_started", on_start)
+
+    async def run():
+        # Bot speaking: 1-2 words do not start a turn (can't interrupt).
+        await strategy.process_frame(BotStartedSpeakingFrame())
+        await strategy.process_frame(TranscriptionFrame(text="Hello", user_id="", timestamp=""))
+        await strategy.process_frame(
+            InterimTranscriptionFrame(text="Hello there", user_id="", timestamp="")
+        )
+        assert started == [], "short interims must not start a turn over the bot"
+        # 3 words (interim) crosses the threshold.
+        await strategy.process_frame(
+            InterimTranscriptionFrame(text="Hello there friend", user_id="", timestamp="")
+        )
+        assert len(started) == 1, "min_words met while bot speaking must start the turn"
+
+        # New turn re-arms the threshold; bot silent → 1 word starts.
+        await strategy.handle_user_turn_started()
+        await strategy.process_frame(TranscriptionFrame(text="Okay", user_id="", timestamp=""))
+        assert len(started) == 2, "a single word must start a turn when the bot is silent"
+
+    asyncio.run(run())
+
+
 def test_vad_bridge_provides_silero_conn_contract():
     """PiguguVadBridge is the ``conn`` object SileroVAD.is_vad writes to (the
     migration from connection.py must keep the contract). Missing
@@ -67,12 +110,13 @@ class _FakeSileroVad:
 
 
 @pytest.mark.asyncio
-async def test_wake_suppression_suppresses_start_but_not_stop():
-    """Wake-word suppression must gate only the server-VAD START frame. Silero's
-    stop detection reads client_have_voice on the NEXT frame to arm the silence
-    timer; the old code zeroed it during suppression, so the wake-word utterance
-    never ended and later speech got swallowed into the same turn (prod: turn 1
-    input_pcm_ms=19920 across two utterances)."""
+async def test_vad_emits_no_start_or_stop_frames():
+    """Server VAD emits NO turn frames: turn-start is MinWords
+    (transcription-driven) and turn-end is Deepgram's utterance-end. A VAD
+    start frame with no matching stop would set the turn controller's
+    _user_speaking (and stop strategy's _vad_user_speaking) stuck True,
+    blocking the 5s turn-stop watchdog — so a lost utterance-end would hang
+    the turn forever. voice state is still tracked for the segments sidecar."""
     from pipecat.frames.frames import VADUserStartedSpeakingFrame, VADUserStoppedSpeakingFrame
 
     from voice.pipecat.pigugu_serializer import PiguguMessageFrame
@@ -87,27 +131,17 @@ async def test_wake_suppression_suppresses_start_but_not_stop():
 
     bridge.push_frame = capture
 
-    # Wake word fires → server-VAD start suppression armed for 2s.
+    # Wake word + listen/start controls, then voice → silence audio: none of
+    # it may emit a VAD start/stop frame.
     await bridge._on_control(PiguguMessageFrame({"type": "listen", "state": "detect"}))
-    # User keeps talking: VAD confirms voice DURING the suppression window.
+    await bridge._on_control(PiguguMessageFrame({"type": "listen", "state": "start"}))
     await bridge._on_audio(b"\xff" * 640)
-    # ...then stops: the voice→silence transition must still yield a stop.
     await bridge._on_audio(b"\x00" * 640)
 
     started = [f for f in frames if isinstance(f, VADUserStartedSpeakingFrame)]
     stopped = [f for f in frames if isinstance(f, VADUserStoppedSpeakingFrame)]
-    assert started == [], "server-VAD start must stay suppressed inside the wake window"
-    assert len(stopped) == 1, "voice stop must fire even inside the wake window"
-    assert stopped[0].stop_secs == 0.7
-
-    # After the window lapses, a fresh voice→silence pair emits both frames.
-    bridge._suppress_until = 0.0
-    await bridge._on_audio(b"\xff" * 640)
-    await bridge._on_audio(b"\x00" * 640)
-    started = [f for f in frames if isinstance(f, VADUserStartedSpeakingFrame)]
-    stopped = [f for f in frames if isinstance(f, VADUserStoppedSpeakingFrame)]
-    assert len(started) == 1
-    assert len(stopped) == 2
+    assert started == [], "VAD must never emit a start frame (MinWords drives turn start)"
+    assert stopped == [], "VAD must never emit a stop frame (utterance-end drives turn end)"
 
 
 @pytest.mark.asyncio
@@ -360,13 +394,13 @@ async def test_server_wiring_full_turn(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_server_silero_stop_full_turn(monkeypatch):
-    """The PRODUCTION turn-end path: the server's own VAD silence (Silero)
-    drives the stop, not the Deepgram utterance-end fallback. The fake VAD
-    confirms voice on the first frame and declares silence on the second,
-    which must end the turn end-to-end (STT finals → merged turn → reply)."""
+async def test_vad_silence_does_not_end_turn_utterance_end_does(monkeypatch):
+    """STT-only turn-end: VAD silence must NOT end the turn even when Silero
+    reports a voice→silence transition — only the Deepgram utterance-end
+    drives the stop. The fake VAD confirms voice then declares silence (the
+    old turn-end signal); the turn must still complete via utterance-end."""
     monkeypatch.setattr(server, "_get_shared_vad", lambda: _FakeSileroStopVad())
-    monkeypatch.setattr(server, "_get_shared_stt", lambda: _FakeSttFinalsOnly())
+    monkeypatch.setattr(server, "_get_shared_stt", lambda: FakeSTT())
     monkeypatch.setattr(server, "_get_shared_tts", lambda: FakeTTS())
 
     async def _fake_ensure_pig(self):  # noqa: ARG001
@@ -383,8 +417,87 @@ async def test_server_silero_stop_full_turn(monkeypatch):
 
     assert hello["type"] == "hello"
     states = [p["state"] for kind, p in seen if kind == "msg" and p["type"] == "tts"]
-    # The Silero stop ends the first turn; the inject cycle is VAD-independent.
+    # VAD reported silence but the turn still completed — end driven by
+    # utterance-end, not the VAD stop.
     assert states == ["start", "stop", "start", "stop"]
+    assert any(kind == "audio" for kind, _ in seen)
+
+
+class _FakeSilentVad:
+    """VAD that never reports speech — the regression case where Silero misses
+    the user's first utterance (prod 077528e3: prob=0.0005 during real speech,
+    so the turn never started and the STT final was dropped). The turn must
+    still start via the TranscriptionUserTurnStartStrategy fallback."""
+
+    def is_vad(self, conn, pcm):  # noqa: ARG002
+        return False
+
+
+async def _run_no_vad(port: int) -> tuple[dict, list[tuple[str, object]]]:
+    """Like _run but sends no listen/start and streams only 3 audio frames —
+    with a silent VAD the turn can ONLY start from a transcription frame, which
+    is the fix under test. The fake STT emits finals + utterance-end on the
+    first audio frame."""
+    seen: list[tuple[str, object]] = []
+    async with websockets.connect(
+        f"ws://127.0.0.1:{port}", additional_headers={"client-id": "no-vad"}
+    ) as ws:
+        await ws.send(
+            json.dumps(
+                {
+                    "type": "hello",
+                    "version": 1,
+                    "transport": "websocket",
+                    "audio_params": {
+                        "format": "opus",
+                        "sample_rate": 16000,
+                        "channels": 1,
+                        "frame_duration": 60,
+                    },
+                }
+            )
+        )
+        hello = json.loads(await asyncio.wait_for(ws.recv(), 5))
+        # Let the pipeline settle after hello before streaming audio.
+        await asyncio.sleep(0.2)
+        for _ in range(3):
+            await ws.send(_make_opus_tone())
+        # The fake STT's utterance-end fires on the first audio frame; without
+        # a VAD start the turn must still complete (transcription start →
+        # utterance-end stop → reply). Timeout bounds a stuck pipeline.
+        await asyncio.wait_for(_read_until_stop(ws, seen), timeout=10)
+        await ws.close()
+        return hello, seen
+
+
+@pytest.mark.asyncio
+async def test_turn_starts_from_stt_final_when_vad_silent(monkeypatch):
+    """Regression (prod 077528e3): the first utterance's VAD prob was 0.0005
+    (Silero missed it), so VADUserTurnStartStrategy never fired, the turn never
+    started, and the STT final was dropped — the user's first question got no
+    reply. With TranscriptionUserTurnStartStrategy in the start list, a
+    transcription frame alone must start the turn and drive it to a reply."""
+    monkeypatch.setattr(server, "_get_shared_vad", lambda: _FakeSilentVad())
+    monkeypatch.setattr(server, "_get_shared_stt", lambda: FakeSTT())
+    monkeypatch.setattr(server, "_get_shared_tts", lambda: FakeTTS())
+
+    async def _fake_ensure_pig(self):  # noqa: ARG001
+        return FakeAgent()
+
+    monkeypatch.setattr(PiguguTtsBridge, "_ensure_pig", _fake_ensure_pig)
+
+    async def on_connect(ws):
+        await server._on_connect(ws)
+
+    async with serve(on_connect, "127.0.0.1", 0) as wss:
+        port = wss.sockets[0].getsockname()[1]
+        hello, seen = await asyncio.wait_for(_run_no_vad(port), timeout=12)
+
+    assert hello["type"] == "hello"
+    states = [p["state"] for kind, p in seen if kind == "msg" and p["type"] == "tts"]
+    assert states == ["start", "stop"], (
+        "a turn must run to a TTS reply even when VAD never detects speech"
+    )
     assert any(kind == "audio" for kind, _ in seen)
 
 
