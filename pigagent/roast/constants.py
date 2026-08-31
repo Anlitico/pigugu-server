@@ -4,6 +4,7 @@
 ROAST_BODY_PREFIX = "[Game Background]"
 GAME_EVENT_PREFIX = "[Game Event]"
 FREE_CHAT_MODE_PREFIX = "[Free Chat Mode]"
+FREE_CHAT_EVENT_PREFIX = "[Free Chat Event]"
 
 # Tool names
 TOOL_MARK_ROAST_COMPLETE = "mark_roast_complete"

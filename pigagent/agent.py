@@ -28,6 +28,7 @@ from metrics.turn import TelemetryCollector
 from core.llm.types import Message
 from core.agent.runner import AgentRunner, RunnerConfig
 from core.agent.stop import no_tool_calls
+from context.degradation import apply_degradation_guard
 from context.manager import ContextManager
 from roast.pending import consume
 from roast.constants import GAME_EVENT_PREFIX, FREE_CHAT_MODE_PREFIX
@@ -203,6 +204,14 @@ class PigAgent:
         TelemetryCollector.mark("ctx_done")
 
         # 5. User message is persisted by session.py (user_input_transcribed event).
+
+        # 5b. Degradation guard: if the assistant has been repeating the same
+        # reply across recent turns, inject a corrective hint so this turn
+        # answers freshly (low-cost, deterministic — no extra LLM call).
+        # Skipped during an active roast game — a "[Free Chat Event]" tag would
+        # contradict the game-mode framing, and the director already steers.
+        if roast_state is None and apply_degradation_guard(messages):
+            logger.info(f"[PigAgent] degradation guard fired for user={self.user_id}")
 
         # 6. Stream and collect response
         response_chunks: list[str] = []
