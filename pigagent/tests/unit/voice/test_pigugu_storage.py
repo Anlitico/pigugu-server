@@ -76,8 +76,13 @@ class FakeSTT:
     async def receive_audio(self, conn, pcm, have_voice):
         if not self._emitted and pcm:
             self._emitted = True
+            # Finals arrive spaced (like Deepgram streaming), not in one batch:
+            # the first final starts the turn (and broadcasts an interruption,
+            # which resets the pipeline), so later finals must arrive AFTER that
+            # reset to be accumulated into the same turn.
             for text in SPLIT_FINALS:
                 await conn._on_stt_final(text)
+                await asyncio.sleep(0.3)
             await conn._on_utterance_end()
 
 

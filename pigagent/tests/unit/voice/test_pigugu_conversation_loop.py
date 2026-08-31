@@ -74,12 +74,18 @@ class FakeSTT:
             return
         if not self._emitted:
             self._emitted = True
+            # Finals arrive spaced (like Deepgram streaming), not in one batch:
+            # the first final starts the turn and broadcasts an interruption
+            # (pipeline reset), so later finals must arrive after that reset to
+            # accumulate into the same turn.
             for text in SPLIT_FINALS:
                 await conn._on_stt_final(text)
+                await asyncio.sleep(0.3)
             await conn._on_utterance_end()
         if self._interim_after_start and self.fire_interim:
             self.fire_interim = False
-            await conn._on_stt_interim("stop it")
+            # 3 words: MinWords requires min_words=3 while the bot is speaking.
+            await conn._on_stt_interim("stop it now")
 
 
 def _make_opus_tone() -> bytes:

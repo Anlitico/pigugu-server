@@ -26,7 +26,6 @@ from pipecat.frames.frames import (
 )
 from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 
-from providers.stt.deepgram import _should_barge_in
 from voice.pipecat.state import PiguguTurnState
 
 _INPUT_GAIN = 10.0
@@ -96,12 +95,11 @@ class PiguguSttBridge(FrameProcessor):
             return
         if self._state.interims is not None:
             self._state.interims.record(text)
+        # Barge-in is handled by MinWordsUserTurnStartStrategy (official pipecat
+        # pattern): a turn start over the bot broadcasts the interruption.
         await self.push_frame(
             InterimTranscriptionFrame(text=text, user_id="", timestamp=_now())
         )
-        if self.client_is_speaking and _should_barge_in(self, text):
-            logger.info(f"[PiguguSttBridge] barge-in: '{text[:60]}'")
-            await self.broadcast_interruption()
 
     async def _on_utterance_end(self) -> None:
         """Deepgram's definitive end-of-utterance marker (utterance_end_ms).

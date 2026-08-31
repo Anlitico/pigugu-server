@@ -50,36 +50,3 @@ class TestDeepgramSTT:
         assert "linear16" in url
 
 
-class TestShouldBargeIn:
-    """Barge-in decision: only while TTS is playing, low bar for short interrupts."""
-
-    def _check(self, text, speaking, expected):
-        from types import SimpleNamespace
-
-        from providers.stt.deepgram import _should_barge_in
-
-        conn = SimpleNamespace(client_is_speaking=speaking)
-        assert _should_barge_in(conn, text) == expected
-
-    def test_no_barge_in_while_listening(self):
-        # The user's own utterance — nothing to abort. Regression: long
-        # interims here used to fire aborts the firmware then ignored.
-        self._check("Change of job, please.", False, False)
-
-    def test_single_word_interrupt(self):
-        self._check("What", True, True)
-
-    def test_two_word_interrupt(self):
-        self._check("job, please.", True, True)
-
-    def test_short_noise_word_ignored(self):
-        self._check("um", True, False)
-
-    def test_chinese_interrupt_without_spaces(self):
-        self._check("停一下", True, True)
-
-    def test_single_cjk_char_ignored(self):
-        self._check("停", True, False)
-
-    def test_blank_text(self):
-        self._check("   ", True, False)

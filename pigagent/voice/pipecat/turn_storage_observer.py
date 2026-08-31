@@ -184,7 +184,15 @@ class PiguguTurnStorageObserver(FrameProcessor):
         beyond the cap so a never-ending turn cannot grow memory without
         bound."""
         if not self._turn_buf:
-            self._begin_turn_window()
+            # Apply the pending window start on the first byte of a new window
+            # (always — the window really does begin here), but only reset the
+            # transcript flags between turns: a turn started by MinWords on the
+            # first transcription is active before all of its audio has
+            # streamed, and resetting _saw_text then would drop the confirmed
+            # transcript from storage.
+            self._apply_turn_window_start()
+            if not self._user_turn_active:
+                self._reset_transcript_flags()
         self._turn_buf.extend(pcm)
         excess = len(self._turn_buf) - _AUDIO_BUF_CAP
         if excess > 0:
@@ -197,6 +205,27 @@ class PiguguTurnStorageObserver(FrameProcessor):
         if excess > 0:
             del self._gap_buf[:excess]
 
+    def _apply_turn_window_start(self):
+        """Apply the pending window start captured at the last turn stop.
+
+        Does nothing once ``_turn_buf`` holds audio — a late listen/start must
+        NOT move the boundary past audio that already beat it. Runs on every
+        new window (even mid-turn continuation), so audio_start_ms and the
+        voice_segments slice never inherit a previous turn's position.
+        """
+        if self._turn_buf:
+            return
+        if self._pending_turn_start_ms is not None:
+            self._turn_start_ms = self._pending_turn_start_ms
+            self._voice_chunk_start = self._pending_voice_chunk_start or 0
+
+    def _reset_transcript_flags(self):
+        """Clear per-turn transcript flags — only between turns. A MinWords turn
+        starts on the first transcription before all audio has streamed, so
+        resetting these mid-turn would drop the confirmed transcript."""
+        self._saw_text = False
+        self._stt_final_marked = False
+
     def _begin_turn_window(self):
         """Apply the pending window start captured at the last turn stop.
 
@@ -204,13 +233,8 @@ class PiguguTurnStorageObserver(FrameProcessor):
         ``listen/start``). Does nothing once ``_turn_buf`` holds audio — a late
         listen/start must NOT move the boundary past audio that already beat it.
         """
-        if self._turn_buf:
-            return
-        if self._pending_turn_start_ms is not None:
-            self._turn_start_ms = self._pending_turn_start_ms
-            self._voice_chunk_start = self._pending_voice_chunk_start or 0
-        self._saw_text = False
-        self._stt_final_marked = False
+        self._apply_turn_window_start()
+        self._reset_transcript_flags()
 
     # ── turn lifecycle ────────────────────────────────────────────────
 
@@ -277,6 +301,11 @@ class PiguguTurnStorageObserver(FrameProcessor):
             # no detect, so turn_type is follow_up and the transcript has no
             # wake word to strip either way.
             self._gap_buf = bytearray()
+            # The turn ended (no transcript) — clear the active flag too. The
+            # _append_turn guard keys the input window off _user_turn_active,
+            # so a stuck True here would keep the next turn from reopening its
+            # window (_saw_text/_turn_start_ms stay stale).
+            self._user_turn_active = False
             return
         # Reset buffers for the next turn, capturing the pending window start
         # at this boundary.

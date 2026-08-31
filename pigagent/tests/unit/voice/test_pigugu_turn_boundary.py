@@ -15,7 +15,7 @@ import opuslib
 import pytest
 import websockets
 from websockets.asyncio.server import serve
-from pipecat.turns.user_start import VADUserTurnStartStrategy
+from pipecat.turns.user_start import MinWordsUserTurnStartStrategy
 from pipecat.turns.user_stop import SpeechTimeoutUserTurnStopStrategy
 from pipecat.turns.user_turn_processor import UserTurnProcessor
 from pipecat.turns.user_turn_strategies import UserTurnStrategies
@@ -45,8 +45,12 @@ class FakeSTT:
     async def receive_audio(self, conn, pcm, have_voice):
         if not self._emitted and pcm:
             self._emitted = True
+            # Finals arrive spaced (like Deepgram streaming): the first final
+            # starts the turn and broadcasts an interruption (pipeline reset),
+            # so later finals must arrive after that reset to accumulate.
             for text in SPLIT_FINALS:
                 await conn._on_stt_final(text)
+                await asyncio.sleep(0.3)
             # Server-side turn-end (Deepgram utterance-end path), the only
             # stop signal in the xiaozhi-aligned model — no more vad_silence.
             await conn._on_utterance_end()
@@ -107,7 +111,7 @@ async def test_split_finals_merge_into_one_turn():
             PiguguSttBridge(FakeSTT()),
             UserTurnProcessor(
                 user_turn_strategies=UserTurnStrategies(
-                    start=[VADUserTurnStartStrategy()],
+                    start=[MinWordsUserTurnStartStrategy(min_words=3)],
                     stop=[SpeechTimeoutUserTurnStopStrategy(user_speech_timeout=0.6)],
                 ),
             ),
