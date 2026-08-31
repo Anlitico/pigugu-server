@@ -275,10 +275,12 @@ async def test_observer_listen_wav_attached_at_next_turn(monkeypatch):
     )
     monkeypatch.setattr(observer, "_make_storage", fake_make_storage)
 
-    # Turn 1: assistant idle, user speaks → turn buffer.
+    # Turn 1: assistant idle, user speaks → turn buffer. (The STT final
+    # arrives before the stop, so this is a real turn, not a phantom.)
     state.client_is_speaking = False
     observer._route_audio(b"A" * 320)
     observer._route_audio(b"B" * 320)
+    observer._saw_text = True
     await observer._on_user_stopped()
     storage1 = made[0]
     # Nothing committed yet — commit is deferred to the next boundary.
@@ -296,11 +298,15 @@ async def test_observer_listen_wav_attached_at_next_turn(monkeypatch):
     gap = b"G" * 640
     state.client_is_speaking = True
     observer._route_audio(gap)
+    # Reply finished — the TTS bridge marks turn 1's storage finalized, so the
+    # turn-2 boundary can commit it immediately (no 5s finalize timeout).
+    storage1.mark_finalized()
 
     # Turn 2: reply done, user speaks → turn buffer again. This boundary
     # closes turn 1 and attaches the listening-period audio (TTFT + echo).
     state.client_is_speaking = False
     observer._route_audio(b"C" * 320)
+    observer._saw_text = True
     await observer._on_user_stopped()
     await asyncio.sleep(0.05)  # let the fire-and-forget close + commit land
     storage2 = made[1]
@@ -314,10 +320,70 @@ async def test_observer_listen_wav_attached_at_next_turn(monkeypatch):
     # Session end closes the last turn with the trailing non-reply audio.
     tail = b"T" * 320
     observer._route_audio(tail)
+    storage2.mark_finalized()
     await observer.finalize_session()
     await asyncio.sleep(0.05)
     assert committed == [storage1, storage2]
     assert storage2.listen_pcm_bytes == tail
+
+
+@pytest.mark.asyncio
+async def test_observer_skips_no_transcript_turn(monkeypatch):
+    """Regression: the wake-word audio burst drives a full VAD start→stop before
+    Deepgram emits an is_final, so the first "turn" has audio but no transcript.
+    The old code committed it as a phantom row (stt_status=no_stt,
+    tts_status=empty) and abandoned the buffered interims — the user's first
+    sentence got split and the device went silent on it. A no-transcript turn
+    must create no storage and must carry its audio + interims into the
+    following turn."""
+    monkeypatch.setenv("AUDIO_S3_BUCKET", "test-bucket")
+    monkeypatch.setenv("AUDIO_S3_PREFIX", "voice-turns")
+    monkeypatch.setenv("CLICKHOUSE_HOST", "ch")
+    monkeypatch.setenv("CLICKHOUSE_PASSWORD", "secret")
+
+    made: list[TurnStorage] = []
+
+    def fake_make_storage():
+        s = _make_observer_turn(session_id="s1", turn_idx=len(made) + 1)
+        # Real _make_storage passes the shared interim buffer; the phantom turn
+        # must leave it intact so this storage sees the preserved interims.
+        s.interims = state.interims
+        made.append(s)
+        return s
+
+    state = PiguguTurnState()
+    observer = PiguguTurnStorageObserver(
+        None, state, session_id="s1", client_id="d1", user_id="u1"
+    )
+    monkeypatch.setattr(observer, "_make_storage", fake_make_storage)
+
+    # Wake-word burst: audio + Deepgram interims flow, but the turn stops
+    # before any is_final (Silero silence between the wake burst and the rest).
+    state.turn_type = "wake_word"
+    state.interims.record("Alexa, good evening. Nice to meet you.")
+    observer._route_audio(b"W" * 320)
+    observer._route_audio(b"U" * 320)
+    await observer._on_user_stopped()
+
+    assert made == [], "a no-transcript turn must not create a phantom storage"
+    assert bytes(observer._turn_buf) == b"W" * 320 + b"U" * 320, (
+        "the audio must carry into the following turn, not be dropped"
+    )
+    assert len(state.interims) == 1, "interims must not be abandoned by the phantom turn"
+
+    # The real turn finalizes → storage is created, and the TTS bridge's mark
+    # (mark_stt_final) sees the full text + the preserved interims + audio.
+    observer._route_audio(b"V" * 320)
+    observer._saw_text = True
+    await observer._on_user_stopped()
+
+    assert len(made) == 1
+    storage = made[0]
+    storage.mark_stt_final("good evening. Nice to meet you.")
+    assert storage.stt_text == "good evening. Nice to meet you."
+    assert storage.stt_status == "final"
+    assert storage.stt_interims == ["Alexa, good evening. Nice to meet you."]
+    assert storage.user_pcm_bytes == b"W" * 320 + b"U" * 320 + b"V" * 320
 
 
 @pytest.mark.asyncio

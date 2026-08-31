@@ -386,3 +386,93 @@ async def test_server_silero_stop_full_turn(monkeypatch):
     # The Silero stop ends the first turn; the inject cycle is VAD-independent.
     assert states == ["start", "stop", "start", "stop"]
     assert any(kind == "audio" for kind, _ in seen)
+
+
+@pytest.mark.asyncio
+async def test_session_idle_survives_active_audio(monkeypatch):
+    """Regression for the 120s force-kill: the custom transports/bridges never
+    emit pipecat's default idle-reset frames (BotSpeakingFrame/UserSpeakingFrame),
+    so with the old config every session was torn down exactly IDLE_TIMEOUT_SECS
+    after connect, no matter how active the conversation. A session streaming
+    mic audio (InputAudioRawFrame) must stay alive past the window; a session
+    that falls silent must still be dropped."""
+    monkeypatch.setattr(server, "_get_shared_vad", lambda: FakeVAD())
+    monkeypatch.setattr(server, "_get_shared_stt", lambda: _FakeSttFinalsOnly())
+    monkeypatch.setattr(server, "_get_shared_tts", lambda: FakeTTS())
+
+    async def _fake_ensure_pig(self):  # noqa: ARG001
+        return FakeAgent()
+
+    monkeypatch.setattr(PiguguTtsBridge, "_ensure_pig", _fake_ensure_pig)
+
+    import voice.pipecat.session as session_mod
+
+    monkeypatch.setattr(session_mod, "IDLE_TIMEOUT_SECS", 1.0)
+
+    from websockets.exceptions import ConnectionClosed
+
+    async def on_connect(ws):
+        await server._on_connect(ws)
+
+    async with serve(on_connect, "127.0.0.1", 0) as wss:
+        port = wss.sockets[0].getsockname()[1]
+        async with websockets.connect(
+            f"ws://127.0.0.1:{port}", additional_headers={"client-id": "idle-probe"}
+        ) as ws:
+            await ws.send(
+                json.dumps(
+                    {
+                        "type": "hello",
+                        "version": 1,
+                        "transport": "websocket",
+                        "persona_id": 3,
+                        "hw_id": "hw-42",
+                        "audio_params": {
+                            "format": "opus",
+                            "sample_rate": 16000,
+                            "channels": 1,
+                            "frame_duration": 60,
+                        },
+                    }
+                )
+            )
+            hello = json.loads(await asyncio.wait_for(ws.recv(), 5))
+            assert hello["type"] == "hello"
+            await ws.send(json.dumps({"type": "listen", "state": "start"}))
+            await asyncio.sleep(0.2)
+
+            closed: list[str] = []
+
+            async def _watch_close():
+                try:
+                    while True:
+                        await ws.recv()
+                except ConnectionClosed:
+                    closed.append("closed")
+
+            watcher = asyncio.create_task(_watch_close())
+
+            async def _stream_audio():
+                while True:
+                    await ws.send(_make_opus_tone())
+                    await asyncio.sleep(0.05)
+
+            streamer = asyncio.create_task(_stream_audio())
+            try:
+                # Phase A: continuous mic audio must keep the session alive for
+                # well past the (shortened) idle window.
+                await asyncio.sleep(2.5)
+                assert not closed, f"session killed despite active audio: {closed}"
+                # Phase B: once the mic stream stops, the idle timeout must drop it.
+                streamer.cancel()
+                await asyncio.wait_for(
+                    _until(lambda: bool(closed)), timeout=3.0
+                )
+                assert closed
+            finally:
+                watcher.cancel()
+
+
+async def _until(pred) -> None:
+    while not pred():
+        await asyncio.sleep(0.05)
