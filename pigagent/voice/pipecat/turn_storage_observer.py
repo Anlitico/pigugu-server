@@ -261,6 +261,23 @@ class PiguguTurnStorageObserver(FrameProcessor):
             self._open_storage = None
             storage_to_close.set_listen_pcm(bytes(self._gap_buf))
             asyncio.ensure_future(self._close_storage(storage_to_close))
+        if not self._saw_text:
+            # No transcript → no real user turn. The wake-word burst (or a
+            # noise blip) drives a full VAD start→stop before Deepgram emits an
+            # is_final, so the turn has audio but no text and the gateway fires
+            # no turn frame (nothing to reply to). Skip the storage and keep the
+            # accumulated audio + interim buffer for the following turn: without
+            # this the wake word produced a phantom turn (stt_status=no_stt,
+            # tts_status=empty) that split the user's first sentence and
+            # abandoned its interims — the device went silent on their first
+            # question. turn_type is deliberately left untouched (not reset to
+            # follow_up): with legacy firmware that still sends the detect
+            # control, the following real turn stays classified wake_word so
+            # the gateway strips the wake word from it; current firmware sends
+            # no detect, so turn_type is follow_up and the transcript has no
+            # wake word to strip either way.
+            self._gap_buf = bytearray()
+            return
         # Reset buffers for the next turn, capturing the pending window start
         # at this boundary.
         self._gap_buf = bytearray()
@@ -295,16 +312,9 @@ class PiguguTurnStorageObserver(FrameProcessor):
         # acks when the user starts a new turn (barge-in or natural end), so
         # any tts_played ack still in flight must not match the next reply.
         self._state.current_sentence_id = 0
-        if not self._saw_text:
-            # No TranscriptionFrame → the gateway emits no turn frame → the
-            # TTS bridge never finalizes. Mark it here; commit is still
-            # deferred to the next boundary so the listen window is included.
-            storage.mark_stt_final("")
-            storage.mark_tts_complete("", ok=False, truncated_reason="no_stt")
-            storage.mark_finalized()
         # Reset per-turn transcript flags for the next turn here too, so an
         # empty turn that never runs _begin_turn_window does not inherit this
-        # turn's _saw_text (which would skip the no_stt mark above next round).
+        # turn's _saw_text.
         self._saw_text = False
         self._stt_final_marked = False
 

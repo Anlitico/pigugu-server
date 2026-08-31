@@ -14,6 +14,7 @@ import uuid
 from typing import Any
 
 from loguru import logger
+from pipecat.frames.frames import InputAudioRawFrame
 from pipecat.pipeline.pipeline import Pipeline
 from pipecat.processors.frame_processor import FrameProcessor
 from pipecat.transports.base_transport import TransportParams
@@ -34,6 +35,12 @@ from voice.pipecat.transports import PiguguInputTransport, PiguguOutputTransport
 from voice.pipecat.tts_bridge import PiguguTtsBridge
 from voice.pipecat.turn_storage_observer import PiguguTurnStorageObserver
 from voice.pipecat.vad_bridge import PiguguVadBridge
+
+# Idle timeout for the pipeline worker: a session with no liveness frames for
+# this long is dropped instead of leaking. Liveness frames are the device mic
+# stream (see the PipelineWorker comment in run()); an idle-connected device
+# that has stopped streaming is dropped, but an active conversation stays up.
+IDLE_TIMEOUT_SECS = 120
 
 
 def _default_processors(
@@ -209,8 +216,15 @@ class PiguguSession:
             enable_rtvi=False,
             enable_turn_tracking=False,
             # Match the old no-voice close: drop idle connections (~120s of
-            # no frames) instead of leaking sessions.
-            idle_timeout_secs=120,
+            # no frames) instead of leaking sessions. The custom transports
+            # and bridges never emit pipecat's default idle-reset frames
+            # (BotSpeakingFrame / UserSpeakingFrame), so without an explicit
+            # frame set every session was killed exactly 120s after connect,
+            # mid-conversation. The device mic stream is the authoritative
+            # liveness signal: it flows in every conversation state (including
+            # TTS playback) and stops only when the device returns to standby.
+            idle_timeout_frames=(InputAudioRawFrame,),
+            idle_timeout_secs=IDLE_TIMEOUT_SECS,
             name=f"pigugu-{self.session_id}",
         )
         self._inject_task = asyncio.ensure_future(self._inject_consumer())
