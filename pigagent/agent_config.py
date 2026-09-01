@@ -91,6 +91,12 @@ class AgentConfig(BaseSettings):
     DEEPGRAM_STT_LANGUAGE: str = Field(default_factory=lambda: get_config_value("DEEPGRAM_STT_LANGUAGE", "en"))
     DEEPGRAM_STT_SAMPLE_RATE: int = Field(default_factory=lambda: int(get_config_value("DEEPGRAM_STT_SAMPLE_RATE", 16000)))
     DEEPGRAM_ENABLE_DIARIZATION: bool = Field(default_factory=lambda: get_bool_config_value("DEEPGRAM_ENABLE_DIARIZATION", False))
+
+    # STT Configuration (AssemblyAI U3.5 Pro Realtime)
+    ASSEMBLYAI_STT_MODEL: str = Field(default_factory=lambda: get_config_value("ASSEMBLYAI_STT_MODEL", "u3-rt-pro"))
+    ASSEMBLYAI_STT_SAMPLE_RATE: int = Field(default_factory=lambda: int(get_config_value("ASSEMBLYAI_STT_SAMPLE_RATE", 16000)))
+    ASSEMBLYAI_MIN_TURN_SILENCE: int = Field(default_factory=lambda: int(get_config_value("ASSEMBLYAI_MIN_TURN_SILENCE", 300)))
+    ASSEMBLYAI_MAX_TURN_SILENCE: int = Field(default_factory=lambda: int(get_config_value("ASSEMBLYAI_MAX_TURN_SILENCE", 1500)))
     
     # STT Configuration (Cartesia)
     CARTESIA_STT_MODEL: str = Field(default_factory=lambda: get_config_value("CARTESIA_STT_MODEL", "ink-whisper"))
@@ -208,6 +214,7 @@ def _log_config_summary(cfg: AgentConfig) -> None:
         ("WS_PORT", cfg.WS_PORT),
         ("STT_PROVIDER", cfg.STT_PROVIDER),
         ("DEEPGRAM", f"model={cfg.DEEPGRAM_STT_MODEL} lang={cfg.DEEPGRAM_STT_LANGUAGE} rate={cfg.DEEPGRAM_STT_SAMPLE_RATE} diarization={cfg.DEEPGRAM_ENABLE_DIARIZATION}"),
+        ("ASSEMBLYAI", f"model={cfg.ASSEMBLYAI_STT_MODEL} rate={cfg.ASSEMBLYAI_STT_SAMPLE_RATE} min_silence={cfg.ASSEMBLYAI_MIN_TURN_SILENCE} max_silence={cfg.ASSEMBLYAI_MAX_TURN_SILENCE}"),
         ("CARTESIA_STT", f"model={cfg.CARTESIA_STT_MODEL} lang={cfg.CARTESIA_STT_LANGUAGE} encoding={cfg.CARTESIA_STT_ENCODING} rate={cfg.CARTESIA_STT_SAMPLE_RATE}"),
         ("CARTESIA_TTS", f"model={cfg.CARTESIA_TTS_MODEL} voice={cfg.CARTESIA_TTS_VOICE} lang={cfg.CARTESIA_TTS_LANGUAGE} speed={cfg.CARTESIA_TTS_SPEED} emotion={cfg.CARTESIA_TTS_EMOTION} volume={cfg.CARTESIA_TTS_VOLUME}"),
         ("LLM_MODEL", cfg.LLM_MODEL),

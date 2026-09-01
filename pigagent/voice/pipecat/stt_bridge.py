@@ -21,6 +21,7 @@ from pipecat.frames.frames import (
     Frame,
     InputAudioRawFrame,
     InterimTranscriptionFrame,
+    ProposedUserStoppedSpeakingFrame,
     TranscriptionFrame,
     VADUserStoppedSpeakingFrame,
 )
@@ -34,12 +35,27 @@ _INPUT_GAIN = 10.0
 class PiguguSttBridge(FrameProcessor):
     """Feeds audio to Deepgram and translates results into Pipecat frames."""
 
-    def __init__(self, stt: Any, *, state: PiguguTurnState | None = None, **kwargs):
+    def __init__(
+        self,
+        stt: Any,
+        *,
+        state: PiguguTurnState | None = None,
+        context_loader: Any = None,
+        **kwargs,
+    ):
         super().__init__(**kwargs)
         self.stt = stt
         self._state = state or PiguguTurnState()
         self._dg_final_buffer: list[str] = []
         self._loop: asyncio.AbstractEventLoop | None = None
+        # Latest conversation context (the agent's last reply), fed to the STT
+        # when it supports_context. Produced by the TTS bridge via push_context.
+        self._last_context: str = ""
+        # Optional async callable returning the user's last agent reply from
+        # persisted history. Fired once when the stream opens and we have no
+        # in-session context yet — so a reconnect starts with the last reply as
+        # STT context instead of a blank decoder.
+        self._context_loader = context_loader
 
     # Deepgram callback contract (read by deepgram.py on_message):
     # client_is_speaking is owned by the TTS bridge via the shared turn state.
@@ -61,8 +77,27 @@ class PiguguSttBridge(FrameProcessor):
         if self.stt is None:
             return
         gained = self._gain(pcm)
-        if not hasattr(self, "_dg_socket"):
+        # Default (no is_open): treat as not-open so open_audio_channels runs
+        # (idempotent in real providers, a no-op in the FakeSTT test doubles).
+        is_open = getattr(self.stt, "is_open", lambda _c: False)
+        if not is_open(self):
             await self.stt.open_audio_channels(self)
+            # Seed context on open, BEFORE the first audio frame is sent, so the
+            # decoder has the agent's last reply from the start. Prefers the
+            # in-session context (push_context); falls back to the persisted
+            # history loader so a reconnect doesn't start blank.
+            if not self._last_context and self._context_loader is not None:
+                try:
+                    # Bound the DB query: this runs on the hot first-frame path
+                    # before audio flows, so a hung PG must not stall the pipeline.
+                    ctx = await asyncio.wait_for(self._context_loader(), timeout=2.0)
+                    if ctx:
+                        trim = getattr(self.stt, "trim_context", lambda t: t)
+                        self._last_context = trim(str(ctx).strip())
+                except Exception:
+                    logger.warning("[SttBridge] context_loader failed", exc_info=True)
+            if self._last_context:
+                await self.push_context(self._last_context)
         await self.stt.receive_audio(self, gained, True)
 
     @staticmethod
@@ -102,17 +137,54 @@ class PiguguSttBridge(FrameProcessor):
         )
 
     async def _on_utterance_end(self) -> None:
-        """Deepgram's definitive end-of-utterance marker (utterance_end_ms).
+        """The STT provider's definitive end-of-utterance marker.
 
+        The frame type depends on the provider's ``turn_end_signal``:
+          - "vad" (Deepgram): VADUserStoppedSpeakingFrame — the speech-timeout
+            stop strategy's stt wait short-circuits immediately (stop_secs=0,
+            transcript already final).
+          - "external" (AssemblyAI): ProposedUserStoppedSpeakingFrame — the
+            ExternalUserTurnStopStrategy decides, with no inactivity fallback,
+            so mid-sentence pauses never split a turn.
         A turn-stop that does not depend on server VAD — it fires on the STT
         model's own endpointing, so it stays reliable through the wake-word
-        audio burst, a noisy room, and absent device vad_silence (all cases
-        where Silero can fail). stop_secs=0: the transcript is already final,
-        so the stop strategy's stt wait short-circuits immediately.
+        audio burst, a noisy room, and absent device vad_silence.
         """
         if self._loop is None:
             return
-        await self.push_frame(VADUserStoppedSpeakingFrame(stop_secs=0.0))
+        if getattr(self.stt, "turn_end_signal", "vad") == "external":
+            await self.push_frame(ProposedUserStoppedSpeakingFrame())
+        else:
+            await self.push_frame(VADUserStoppedSpeakingFrame(stop_secs=0.0))
+
+    async def push_context(self, context: str) -> None:
+        """Forward fresh conversation context to a context-aware STT provider.
+
+        The producer is the TTS bridge (agent's last spoken reply). Providers
+        without ``supports_context`` (e.g. Deepgram) are untouched — the whole
+        routing is inert for them.
+        """
+        if self.stt is None or not getattr(self.stt, "supports_context", False):
+            return
+        text = (context or "").strip()
+        if not text:
+            return
+        trim = getattr(self.stt, "trim_context", lambda t: t)
+        self._last_context = trim(text)
+        update = getattr(self.stt, "update_context", None)
+        if update is not None:
+            try:
+                # conn = this bridge — the context belongs to this session.
+                await update(self, self._last_context)
+            except Exception:
+                logger.exception("[SttBridge] update_context failed")
+
+    async def cleanup(self) -> None:
+        """Close the provider's per-connection stream at session end."""
+        await super().cleanup()
+        close = getattr(self.stt, "close_connection", None) if self.stt is not None else None
+        if close is not None:
+            await close(self)
 
 
 def _now() -> str:

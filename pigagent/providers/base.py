@@ -38,6 +38,22 @@ class STTProvider(ABC):
     """
 
     interface_type: InterfaceType = InterfaceType.SPEECH
+    # How this provider signals end-of-turn. "vad" (default) → the bridge maps
+    # utterance_end to a VADUserStoppedSpeakingFrame, handled by a speech-timeout
+    # stop strategy. "external" → the provider's own semantic endpointing maps to
+    # a ProposedUserStoppedSpeakingFrame, handled by ExternalUserTurnStopStrategy
+    # (no inactivity fallback — mid-sentence pauses don't split turns).
+    turn_end_signal: str = "vad"
+    # Whether this provider consumes conversation context (e.g. the agent's
+    # last spoken reply) to sharpen decoding. False → the framework's context
+    # routing is fully inert, so non-context providers are untouched. The
+    # pipeline feeds context via ``update_context`` (and seeds it when the
+    # stream opens); the producer side is the TTS bridge.
+    supports_context: bool = False
+    # Cap applied by the framework's ``trim_context`` before a context value is
+    # sent (keep the TRAILING part — the portion closest to the user's next
+    # turn carries the most signal).
+    max_context_chars: int = 1750
 
     @abstractmethod
     async def transcribe(self, pcm: bytes) -> str:
@@ -59,8 +75,43 @@ class STTProvider(ABC):
         """Called when audio streaming starts. Override for streaming init."""
         pass
 
+    def is_open(self, conn: Any) -> bool:
+        """True if the streaming connection is open (idempotency guard for the
+        bridge's per-frame ``open_audio_channels`` call). Providers set
+        ``conn._stt_open`` when they open their stream."""
+        return bool(getattr(conn, "_stt_open", False))
+
     async def close_audio_channels(self) -> None:
         """Called when connection closes. Clean up streaming resources."""
+        pass
+
+    async def close_connection(self, conn: Any) -> None:
+        """Per-connection teardown (cancel tasks, close sockets). Called by the
+        bridge's ``cleanup()`` at session end. Default no-op."""
+        pass
+
+    def trim_context(self, text: str) -> str:
+        """Trim a context value to ``max_context_chars``, keeping the tail.
+
+        The tail is the portion closest to the user's next turn — e.g. the
+        question the agent just asked — and carries the most signal, so we keep
+        it rather than the head when truncating.
+        """
+        text = text or ""
+        if len(text) <= self.max_context_chars:
+            return text
+        return text[-self.max_context_chars:]
+
+    async def update_context(self, conn: Any, context: str) -> None:
+        """Push fresh conversation context into the decoder (no-op default).
+
+        Only context-aware providers (``supports_context=True``) implement this.
+        ``conn`` is the per-session connection the context belongs to — the
+        provider instance may be shared across sessions, so context state must
+        be kept on ``conn``, not on ``self``. Called mid-conversation whenever
+        the producer emits new context (the agent's last spoken reply), and
+        seeded when the stream opens.
+        """
         pass
 
 

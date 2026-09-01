@@ -39,6 +39,9 @@ class DeepgramSTT(STTProvider):
         Deepgram handles endpointing internally (1000ms silence → final).
         Final results delivered via conn._on_stt_final(text)."""
         if not self._api_key:
+            # Mark attempted so the per-frame open guard stops here — an
+            # unconfigured key must not log at frame rate.
+            conn._stt_open = True
             logger.error("[Deepgram] DEEPGRAM_API_KEY not set")
             return
 
@@ -110,13 +113,25 @@ class DeepgramSTT(STTProvider):
             logger.error(f"[Deepgram] STT WS error: {error}")
 
         # Enter sync context manager (connects WS) + register events
-        conn._dg_ctx = client.listen.v1.connect(
-            model=self._model, language=self._language,
-            encoding="linear16", sample_rate=self._sample_rate,
-            channels=1, smart_format=True, interim_results=True,
-            punctuate=True, endpointing=350, utterance_end_ms=2000,
-        )
-        conn._dg_socket = conn._dg_ctx.__enter__()
+        try:
+            conn._dg_ctx = client.listen.v1.connect(
+                model=self._model, language=self._language,
+                encoding="linear16", sample_rate=self._sample_rate,
+                channels=1, smart_format=True, interim_results=True,
+                punctuate=True, endpointing=350, utterance_end_ms=2000,
+            )
+            conn._dg_socket = conn._dg_ctx.__enter__()
+        except Exception as e:
+            # Mark attempted so the bridge's per-frame open guard stops retrying
+            # (a refused endpoint would otherwise storm ~50 connects/sec). The
+            # flag is set ONLY after a successful open elsewhere — here it caps
+            # the retries for this session.
+            conn._stt_open = True
+            logger.error(f"[Deepgram] connect failed: {e!r}")
+            return
+        # Generic idempotency flag read by the bridge — set AFTER connect so a
+        # failed open is not treated as open.
+        conn._stt_open = True
         conn._dg_socket.on(EventType.MESSAGE, on_message)
         conn._dg_socket.on(EventType.ERROR, on_error)
 
@@ -126,6 +141,20 @@ class DeepgramSTT(STTProvider):
 
     async def close_audio_channels(self) -> None:
         logger.debug("[Deepgram] Closing STT WS")
+
+    async def close_connection(self, conn: Any) -> None:
+        """Exit the sync context manager — closes the WS and joins the daemon
+        thread. Prevents a socket/thread leak per session (the base default is
+        a no-op)."""
+        ctx = getattr(conn, "_dg_ctx", None)
+        if ctx is not None:
+            try:
+                ctx.__exit__(None, None, None)
+            except Exception:
+                logger.warning("[Deepgram] close_connection failed", exc_info=True)
+            conn._dg_ctx = None
+        conn._dg_socket = None
+        conn._stt_open = False
 
     async def receive_audio(self, conn: Any, pcm: bytes, have_voice: bool) -> None:
         if not hasattr(conn, "_dg_socket"):

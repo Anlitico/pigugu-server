@@ -20,7 +20,7 @@ from pipecat.processors.frame_processor import FrameProcessor
 from pipecat.transports.base_transport import TransportParams
 from pipecat.pipeline.worker import PipelineWorker
 from pipecat.turns.user_start import MinWordsUserTurnStartStrategy
-from pipecat.turns.user_stop import SpeechTimeoutUserTurnStopStrategy
+from pipecat.turns.user_stop import ExternalUserTurnStopStrategy, SpeechTimeoutUserTurnStopStrategy
 from pipecat.turns.user_turn_processor import UserTurnProcessor
 from pipecat.turns.user_turn_strategies import UserTurnStrategies
 from pipecat.utils.asyncio.task_manager import TaskManager
@@ -43,12 +43,33 @@ from voice.pipecat.vad_bridge import PiguguVadBridge
 IDLE_TIMEOUT_SECS = 120
 
 
+def _stop_strategies(stt):
+    """Pick the user turn-stop strategy for the active STT provider.
+
+    "vad" providers (Deepgram): speech-timeout — an inactivity fallback ends
+    the turn when no new transcript arrives within 0.6s (their utterance_end
+    is slow, so the fallback carries the turn-end).
+    "external" providers (AssemblyAI): the model's semantic endpointing drives
+    turn-end via ProposedUserStoppedSpeakingFrame — no inactivity fallback, so
+    a mid-sentence pause never splits a turn.
+    """
+    if getattr(stt, "turn_end_signal", "vad") == "external":
+        # wait_for_transcript=False: the provider's semantic endpointing is the
+        # authoritative stop signal — an end_of_turn with an empty transcript
+        # must still end the turn (otherwise it hangs until the watchdog and the
+        # user's next utterance merges into the same turn). The 0.2s timeout
+        # batches the final transcript that precedes the stop signal anyway.
+        return [ExternalUserTurnStopStrategy(timeout=0.2, wait_for_transcript=False)]
+    return [SpeechTimeoutUserTurnStopStrategy(user_speech_timeout=0.6)]
+
+
 def _default_processors(
     *,
     vad: Any | None = None,
     stt: Any | None = None,
     pig: Any | None = None,
     tts: Any | None = None,
+    stt_context_loader: Any = None,
     session_id: str = "",
     client_id: str = "",
     user_id: str = "",
@@ -62,7 +83,7 @@ def _default_processors(
         # M2: no TTS yet — stop at transcript accumulation.
         chain = [
             PiguguVadBridge(vad, state=state),
-            PiguguSttBridge(stt, state=state),
+            PiguguSttBridge(stt, state=state, context_loader=stt_context_loader),
             UserTurnProcessor(
                 user_turn_strategies=UserTurnStrategies(
                     # Official pipecat barge-in pattern (turn-management
@@ -73,7 +94,7 @@ def _default_processors(
                     # (enable_interruptions defaults True): a user turn starting
                     # over the bot IS the barge-in.
                     start=[MinWordsUserTurnStartStrategy(min_words=3)],
-                    stop=[SpeechTimeoutUserTurnStopStrategy(user_speech_timeout=0.6)],
+                    stop=_stop_strategies(stt),
                 ),
             ),
             PiguguAgentGateway(state=state),
@@ -102,14 +123,20 @@ def _default_processors(
         user_id=user_id,
         persona_id=persona_id,
     )
+    stt_bridge = PiguguSttBridge(stt, state=state, context_loader=stt_context_loader)
+    # Context-aware STT (supports_context): route each completed agent reply
+    # into the decoder as conversation context (e.g. AssemblyAI agent_context).
+    # Providers without it (Deepgram) keep a fully inert path.
+    if stt is not None and getattr(stt, "supports_context", False):
+        tts_bridge.set_stt_context_cb(stt_bridge.push_context)
     chain = [
         vad_bridge,
-        PiguguSttBridge(stt, state=state),
+        stt_bridge,
         UserTurnProcessor(
             user_turn_strategies=UserTurnStrategies(
                 # Official pipecat barge-in pattern (see the M2 branch comment).
                 start=[MinWordsUserTurnStartStrategy(min_words=3)],
-                stop=[SpeechTimeoutUserTurnStopStrategy(user_speech_timeout=0.6)],
+                stop=_stop_strategies(stt),
             ),
         ),
         observer,
@@ -134,6 +161,7 @@ class PiguguSession:
         stt: Any | None = None,
         pig: Any | None = None,
         tts: Any | None = None,
+        stt_context_loader: Any = None,
         persona_id: int = 1,
     ):
         self._ws = websocket
@@ -155,6 +183,7 @@ class PiguguSession:
                 stt=stt,
                 pig=pig,
                 tts=tts,
+                stt_context_loader=stt_context_loader,
                 session_id=self.session_id,
                 client_id=client_id,
                 user_id=self.user_id,
