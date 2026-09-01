@@ -71,6 +71,19 @@ class PiguguTtsBridge(FrameProcessor):
         self._play_position = 0.0
         self._clock_start = time.monotonic()
         self._current_sentence_id = 0
+        # Optional coroutine callback invoked with the full reply text after
+        # each reply completes — wired by the session builder to the STT
+        # bridge's push_context (context-aware STT, e.g. agent_context).
+        self._stt_context_cb = None
+
+    def set_stt_context_cb(self, cb) -> None:
+        """Wire the STT context sink (e.g. stt_bridge.push_context).
+
+        Called with the full reply text after each reply completes, so a
+        context-aware STT decoder can carry the agent's last reply into the
+        next user turn. Unset (None) → no-op.
+        """
+        self._stt_context_cb = cb
 
     async def process_frame(self, frame: Frame, direction: FrameDirection):
         await super().process_frame(frame, direction)
@@ -295,12 +308,17 @@ class PiguguTtsBridge(FrameProcessor):
                 # attaches this turn's listen.wav there). Signal finalization
                 # so the observer never commits before the TTS mark lands.
                 storage.mark_finalized()
-            # Persist the assistant reply only when it completed naturally — an
-            # interrupted reply is a partial sentence that would corrupt
-            # multi-turn memory (old code persisted assistant only on
-            # non-cancelled turns).
+            # Persist the assistant reply and feed STT context only when the
+            # reply completed naturally — an interrupted reply is a partial
+            # sentence that would corrupt multi-turn memory / mis-hint the STT
+            # decoder (old code persisted assistant only on non-cancelled turns).
             if not self._state.interrupt_event.is_set() and not cancelled:
                 self._schedule_ctx("assistant", holder["full"])
+                if self._stt_context_cb is not None:
+                    try:
+                        await self._stt_context_cb(holder["full"])
+                    except Exception:
+                        logger.exception("[PiguguTtsBridge] stt context push failed")
             if self._state.client_is_speaking:
                 # Playback ended naturally: tell the turn layer the bot stopped
                 # speaking (MinWords drops its barge-in word threshold).

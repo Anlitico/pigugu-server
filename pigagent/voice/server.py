@@ -72,8 +72,8 @@ def _get_shared_vad():
 def _get_shared_stt():
     global _shared_stt
     if _shared_stt is None:
-        from providers.stt.deepgram import DeepgramSTT
-        _shared_stt = DeepgramSTT()
+        from providers.stt import create_stt_provider
+        _shared_stt = create_stt_provider()
     return _shared_stt
 
 
@@ -83,6 +83,29 @@ def _get_shared_tts():
         from providers.tts.cartesia import CartesiaTTS
         _shared_tts = CartesiaTTS()
     return _shared_tts
+
+
+async def _load_last_agent_reply(user_id: str) -> str:
+    """Return the user's most recent assistant reply from persisted history.
+
+    Used to seed a context-aware STT after a reconnect (a fresh WebSocket
+    session starts with a blank decoder). Empty string if none exists.
+    """
+    try:
+        from context.storage.pg import _ensure_pg_pool
+
+        pool = await _ensure_pg_pool()
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "SELECT content FROM agent_conversations "
+                "WHERE user_id = $1 AND role = 'assistant' AND content != '' "
+                "ORDER BY turn_number DESC LIMIT 1",
+                user_id,
+            )
+        return row["content"] if row else ""
+    except Exception:
+        logger.warning(f"[Voice] load last agent reply failed for {user_id}", exc_info=True)
+        return ""
 
 
 # ── WebSocket handler ────────────────────────────────────────────────
@@ -117,13 +140,20 @@ async def _on_connect(ws: websockets.ServerConnection) -> None:
 
     # The PigAgent is lazy (created by the TTS bridge on the first turn, once
     # the device hello provides user/hw identity). Providers are shared.
+    stt = _get_shared_stt()
+    # Reconnect seed: a context-aware STT starts a fresh session blank; load the
+    # user's last agent reply from history so the first turn is decoded with it.
+    stt_context_loader = None
+    if getattr(stt, "supports_context", False):
+        stt_context_loader = lambda: _load_last_agent_reply(client_id)
     session = PiguguSession(
         ws,
         client_id=client_id,
         user_id=client_id,
         vad=_get_shared_vad(),
-        stt=_get_shared_stt(),
+        stt=stt,
         tts=_get_shared_tts(),
+        stt_context_loader=stt_context_loader,
     )
     _connections[client_id] = session
     try:
