@@ -3,7 +3,7 @@ kind: ConfigMap
 metadata:
   name: pigugu-agent-config
 data:
-  STT_PROVIDER: "deepgram"
+  STT_PROVIDER: "assemblyai"
   LLM_MODEL: "grok-4-3"
   CARTESIA_TTS_MODEL: "sonic-3.5"
   POLICY_SEARCH_BACKEND: "built_in"
@@ -85,6 +85,11 @@ spec:
             secretKeyRef:
               name: pigugu-secrets
               key: DEEPGRAM_API_KEY
+        - name: ASSEMBLYAI_API_KEY
+          valueFrom:
+            secretKeyRef:
+              name: pigugu-secrets
+              key: ASSEMBLYAI_API_KEY
         - name: DASHSCOPE_API_KEY
           valueFrom:
             secretKeyRef:
