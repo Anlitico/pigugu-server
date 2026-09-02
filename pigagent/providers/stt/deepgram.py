@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import os
 from typing import Any
+from urllib.parse import quote_plus
 
 import aiohttp
 from deepgram import DeepgramClient
@@ -25,11 +26,13 @@ class DeepgramSTT(STTProvider):
         model: str = "nova-3",
         language: str = "en",
         sample_rate: int = 16000,
+        keyterms: list[str] | None = None,
     ):
         self._api_key = api_key or os.getenv("DEEPGRAM_API_KEY", "")
         self._model = model
         self._language = language
         self._sample_rate = sample_rate
+        self._keyterms = [k for k in (keyterms or []) if k.strip()]
         self._http: aiohttp.ClientSession | None = None
 
     # ── Streaming (v7 SDK: client.listen.v1.connect()) ────────────────
@@ -119,6 +122,7 @@ class DeepgramSTT(STTProvider):
                 encoding="linear16", sample_rate=self._sample_rate,
                 channels=1, smart_format=True, interim_results=True,
                 punctuate=True, endpointing=350, utterance_end_ms=2000,
+                keyterm=self._keyterms or None,
             )
             conn._dg_socket = conn._dg_ctx.__enter__()
         except Exception as e:
@@ -189,6 +193,8 @@ class DeepgramSTT(STTProvider):
             f"&encoding=linear16"
             f"&sample_rate={self._sample_rate}"
         )
+        for term in self._keyterms:
+            url += f"&keyterm={quote_plus(term)}"
         try:
             http = await self._ensure_http()
             async with http.post(

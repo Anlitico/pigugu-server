@@ -7,6 +7,7 @@ is chosen at runtime by ``create_stt_provider()`` (env ``STT_PROVIDER`` =
 """
 
 from providers.stt.deepgram import DeepgramSTT
+from vocabulary import stt_keyterms
 
 __all__ = ["DeepgramSTT", "AssemblyAISttProvider", "create_stt_provider"]
 
@@ -16,6 +17,7 @@ def create_stt_provider():
     from agent_config import get_config
 
     provider = get_config().STT_PROVIDER
+    keyterms = stt_keyterms()
     if provider == "assemblyai":
         from providers.stt.assemblyai import AssemblyAISttProvider
 
@@ -25,7 +27,8 @@ def create_stt_provider():
             sample_rate=cfg.ASSEMBLYAI_STT_SAMPLE_RATE,
             min_turn_silence=cfg.ASSEMBLYAI_MIN_TURN_SILENCE,
             max_turn_silence=cfg.ASSEMBLYAI_MAX_TURN_SILENCE,
+            keyterms=keyterms,
         )
     if provider == "deepgram":
-        return DeepgramSTT()
+        return DeepgramSTT(keyterms=keyterms)
     raise ValueError(f"unknown STT_PROVIDER: {provider!r}")

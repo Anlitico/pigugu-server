@@ -65,6 +65,7 @@ class AssemblyAISttProvider(STTProvider):
         sample_rate: int = 16000,
         min_turn_silence: int = 300,
         max_turn_silence: int = 1500,
+        keyterms: list[str] | None = None,
     ):
         self._api_key = api_key or os.getenv("ASSEMBLYAI_API_KEY", "")
         self._model = model
@@ -72,6 +73,7 @@ class AssemblyAISttProvider(STTProvider):
         self._sample_rate = sample_rate
         self._min_turn_silence = min_turn_silence
         self._max_turn_silence = max_turn_silence
+        self._keyterms = [k for k in (keyterms or []) if k.strip()]
 
     # ── Streaming ─────────────────────────────────────────────────────
 
@@ -99,6 +101,10 @@ class AssemblyAISttProvider(STTProvider):
             "min_turn_silence": self._min_turn_silence,
             "max_turn_silence": self._max_turn_silence,
         }
+        if self._keyterms:
+            # keyterms_prompt takes ONE JSON-array string (repeated query keys
+            # are rejected: server error 3006 "Invalid JSON array").
+            params["keyterms_prompt"] = json.dumps(self._keyterms)
         # Seed the session with whatever context the framework already pushed
         # for this connection (e.g. the agent replied before the stream opened).
         conn_context = getattr(conn, "_aai_agent_context", "")
