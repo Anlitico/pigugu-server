@@ -127,6 +127,7 @@ class CartesiaTTS(TTSProvider):
         text_source: AsyncIterator[str],
         interrupt_event: asyncio.Event,
         collect_pcm: bytearray | None = None,
+        collect_words: list[tuple[str, float, float]] | None = None,
         receive_timeout: float = 15.0,
     ) -> AsyncIterator[list[bytes]]:
         """Stream LLM text through the Cartesia WebSocket TTS.
@@ -143,6 +144,10 @@ class CartesiaTTS(TTSProvider):
           - contexts expire ~1 s after the last audio — one per turn;
           - ``no_more_inputs()`` ends the stream; the receive loop then
             terminates on the ``done`` event.
+          - ``add_timestamps=True`` makes Cartesia emit per-word timestamps
+            (pipecat pattern): each word is appended to ``collect_words`` as
+            ``(word, start_s, end_s)`` relative to the context's audio start,
+            so the caller can reconstruct exactly which words were spoken.
         """
         if not self._api_key:
             logger.error("[Cartesia] CARTESIA_API_KEY not set")
@@ -178,6 +183,7 @@ class CartesiaTTS(TTSProvider):
                     output_format=output_format,
                     language="en",
                     timeout=receive_timeout,
+                    add_timestamps=True,
                 )
 
                 async def _feed() -> None:
@@ -235,6 +241,24 @@ class CartesiaTTS(TTSProvider):
                             raise RuntimeError(
                                 f"[Cartesia] stream error: {getattr(event, 'error', 'unknown')}"
                             )
+                        if event.type == "timestamps":
+                            # Word-level timestamps (seconds, relative to the
+                            # context's audio start). Collected so the bridge can
+                            # truncate an interrupted reply to the words actually
+                            # sent to the device.
+                            if collect_words is not None:
+                                wt = getattr(event, "word_timestamps", None)
+                                if (
+                                    wt
+                                    and wt.words
+                                    and wt.start
+                                    and wt.end
+                                    # Guard against a ragged array: a mismatched
+                                    # length would silently drop words at the cut.
+                                    and len(wt.words) == len(wt.start) == len(wt.end)
+                                ):
+                                    collect_words.extend(zip(wt.words, wt.start, wt.end))
+                            continue
                         if event.type != "chunk" or not getattr(event, "audio", None):
                             continue
                         received_audio = True

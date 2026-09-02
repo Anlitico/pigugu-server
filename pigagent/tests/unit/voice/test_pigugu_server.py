@@ -279,7 +279,7 @@ class FakeSTT:
 class FakeTTS:
     interface_type = "stream"
 
-    async def stream_audio(self, text_source, interrupt_event, collect_pcm=None):
+    async def stream_audio(self, text_source, interrupt_event, collect_pcm=None, collect_words=None):
         async for text in text_source:
             if interrupt_event and interrupt_event.is_set():
                 break
