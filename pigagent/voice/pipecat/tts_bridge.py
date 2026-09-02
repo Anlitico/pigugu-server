@@ -41,6 +41,12 @@ TTS_FRAME_INTERVAL = 0.06  # 60 ms per Opus frame at 16 kHz
 TTS_MAX_SEND_AHEAD = 1.2   # keep the device decode queue ~1.2s ahead
 TTS_STREAM_WARMUP_FRAMES = 5
 
+# Marker appended to an interrupted reply's context text so the LLM knows the
+# user cut the reply off mid-speech (Azure ``appended_text_after_truncation``
+# pattern). global.j2 defines its meaning: a reply ending with this marker is
+# NOT the full output — the part after it was never spoken.
+INTERRUPTED_MARKER = "[The user interrupted me.]"
+
 
 class PiguguTtsBridge(FrameProcessor):
     """Runs one reply per user turn and paces it out to the device."""
@@ -161,6 +167,16 @@ class PiguguTtsBridge(FrameProcessor):
 
         tts_pcm = bytearray()  # debug PCM → tts.wav
         holder: dict[str, str] = {"full": ""}
+        # Word-level timestamps reported by the TTS provider (Cartesia
+        # add_timestamps): (word, start_s, end_s) in audio time. The spoken
+        # portion of an interrupted reply is reconstructed from these — the
+        # exact words whose audio reached the device (pipecat pattern).
+        spoken_words: list[tuple[str, float, float]] = []
+        # Text chunks actually pulled by the TTS provider (lags the LLM
+        # producer by the synthesis pipeline). Fallback base for the ratio
+        # truncation when the provider gives no word timestamps (e.g. the
+        # degraded REST path).
+        consumed: list[str] = []
         text_queue: asyncio.Queue[str | None] = asyncio.Queue()
 
         async def _producer() -> str:
@@ -186,10 +202,31 @@ class PiguguTtsBridge(FrameProcessor):
 
         async def _iter_text() -> AsyncIterator[str]:
             while True:
-                chunk = await text_queue.get()
-                if chunk is None:
-                    return
-                yield chunk
+                pending = ""
+                while True:
+                    chunk = await text_queue.get()
+                    if chunk is None:
+                        # Stream ended: the provider consumed the last chunk, so
+                        # it counts toward the synthesized text.
+                        if pending:
+                            consumed.append(pending)
+                        return
+                    # Count the PREVIOUS chunk now: reaching this point means the
+                    # provider finished processing it (its own pre-push interrupt
+                    # check either pushed it or dropped it). Counting on pull —
+                    # BEFORE the interrupt check below — so a barge-in between
+                    # pushes never drops the last played chunk (which would
+                    # under-record, even to "" for a short reply).
+                    if pending:
+                        consumed.append(pending)
+                    if self._state.interrupt_event.is_set():
+                        # The TTS provider would drop this chunk too (Cartesia
+                        # breaks before push once the interrupt fires) — a chunk
+                        # pulled but never synthesized has no audio, so it must
+                        # not count toward the spoken portion.
+                        return
+                    pending = chunk
+                    yield chunk
 
         async def _send_start():
             payload: dict = {"type": "tts", "state": "start"}
@@ -220,10 +257,19 @@ class PiguguTtsBridge(FrameProcessor):
         tts_ok = False
         truncated_reason = ""
         cancelled = False
+        # True when the played audio came from the one-shot REST fallback
+        # synthesis. The WS phase may have consumed a text prefix (and even
+        # reported word timestamps) before dying, but that audio never played —
+        # the interrupt cut must then be based on the FULL reply that REST
+        # synthesized, never on the WS-prefix state.
+        rest_fallback = False
         try:
             pending: list[bytes] = []
             async for frames in self._tts.stream_audio(
-                _iter_text(), self._state.interrupt_event, collect_pcm=tts_pcm
+                _iter_text(),
+                self._state.interrupt_event,
+                collect_pcm=tts_pcm,
+                collect_words=spoken_words,
             ):
                 if self._state.interrupt_event.is_set():
                     break
@@ -252,15 +298,38 @@ class PiguguTtsBridge(FrameProcessor):
                 truncated_reason = "stream_failed"
             elif not self._state.interrupt_event.is_set():
                 logger.warning("[PiguguTtsBridge] WS stream failed — falling back to REST")
-                full = await producer_task
-                if full.strip() and self._tts:
-                    try:
-                        frames = await self._tts.synthesize(full.strip(), collect_pcm=tts_pcm)
-                    except Exception:
-                        logger.exception("[PiguguTtsBridge] REST fallback synthesize failed")
-                    else:
-                        if frames:
-                            await _send_batch(frames, first=True)
+                rest_fallback = True
+                try:
+                    full = await producer_task
+                    if full.strip() and self._tts:
+                        try:
+                            frames = await self._tts.synthesize(
+                                full.strip(), collect_pcm=tts_pcm
+                            )
+                        except Exception:
+                            logger.exception("[PiguguTtsBridge] REST fallback synthesize failed")
+                        else:
+                            if frames:
+                                await _send_batch(frames, first=True)
+                except asyncio.CancelledError:
+                    # A bare cancel (disconnect/shutdown) inside the fallback is
+                    # NOT caught by the sibling CancelledError handler below —
+                    # an exception raised in a handler body only matches the
+                    # enclosing try. Without this, the cancelled reply would be
+                    # recorded as a complete delivered reply.
+                    cancelled = True
+                    truncated_reason = truncated_reason or (
+                        "barge_in"
+                        if self._state.interrupt_event.is_set()
+                        else "cancelled"
+                    )
+                    if not producer_task.done():
+                        producer_task.cancel()
+                        try:
+                            await producer_task
+                        except (asyncio.CancelledError, Exception):
+                            pass
+                    raise
         except asyncio.CancelledError:
             cancelled = True
             # Record WHY the turn was interrupted for the storage sidecar
@@ -278,23 +347,80 @@ class PiguguTtsBridge(FrameProcessor):
                     pass
             raise
         finally:
-            if not self._state.interrupt_event.is_set():
-                drained = await self._wait_playback_drain()
+            interrupted = self._state.interrupt_event.is_set() or cancelled
+            if not interrupted:
+                try:
+                    drained = await self._wait_playback_drain()
+                except asyncio.CancelledError:
+                    # A cancel while waiting out the drain must not abort the
+                    # finally: the reply was cut off, so record the
+                    # interruption instead of losing the storage/ctx writes
+                    # below.
+                    drained = False
+                    interrupted = True
+                    truncated_reason = truncated_reason or (
+                        "barge_in"
+                        if self._state.interrupt_event.is_set()
+                        else "cancelled"
+                    )
                 if drained:
                     await self._push_message({"type": "tts", "state": "stop"})
                     tts_ok = True
                     TelemetryCollector.mark("tts_end")
+                elif self._state.interrupt_event.is_set():
+                    # The drain ending with the event set means the reply was
+                    # cut off mid-playback — record it as interrupted, never as
+                    # a complete full reply (the "drain completed" reading would
+                    # record the whole text the user never heard).
+                    interrupted = True
+                    truncated_reason = truncated_reason or "barge_in"
                 elif not cancelled:
+                    # Drain exited without the interrupt (extra_break / inject).
                     truncated_reason = truncated_reason or "drain_timeout"
             elif not cancelled:
                 truncated_reason = truncated_reason or "barge_in"
+            # The reply text actually spoken. A completed reply is the full
+            # generated text; an interrupted reply is only the portion whose
+            # audio reached the device — the full text must never be recorded
+            # as spoken (it would claim a reply the user never heard).
+            reply_text = holder["full"]
+            if interrupted:
+                if spoken_words and not rest_fallback:
+                    # Exact words whose audio reached the device (pipecat
+                    # word-timestamp pattern). Word timestamps only describe
+                    # WS-streamed audio; the REST fallback re-synthesized the
+                    # whole reply, so its played portion must be cut from the
+                    # full text below, not from the WS-prefix words.
+                    reply_text = self._spoken_prefix(
+                        spoken_words, self._play_position
+                    )
+                else:
+                    # No word timestamps (e.g. degraded REST path) — fall back
+                    # to the sent/synthesized ratio estimate. On the REST path
+                    # the whole reply was synthesized, so base the ratio on the
+                    # full text (consumed holds only the WS-streamed prefix);
+                    # otherwise on the WS text actually consumed. Note: on the
+                    # REST path any unplayed WS warm-up PCM (<5 frames) still
+                    # sits in tts_pcm, slightly inflating the denominator and
+                    # under-recording the played portion — conservative, never
+                    # over-records.
+                    base = holder["full"] if rest_fallback else "".join(consumed)
+                    reply_text = self._truncate_to_played(base, tts_pcm)
+            # The text recorded as spoken, identical everywhere: ctx (Redis/PG)
+            # AND the ClickHouse/S3 tts_text carry the interrupt marker so every
+            # layer is byte-consistent, and the LLM sees the reply was cut off.
+            recorded = (
+                f"{reply_text} {INTERRUPTED_MARKER}"
+                if interrupted and reply_text
+                else reply_text
+            )
             if storage is not None:
                 if not self._tts_started:
                     truncated_reason = truncated_reason or "no_tts_started"
                 if tts_pcm:
                     storage.tts_pcm_buf.extend(tts_pcm)
                 storage.mark_tts_complete(
-                    holder["full"],
+                    recorded,
                     ok=tts_ok and not truncated_reason,
                     truncated_reason=truncated_reason,
                 )
@@ -308,11 +434,22 @@ class PiguguTtsBridge(FrameProcessor):
                 # attaches this turn's listen.wav there). Signal finalization
                 # so the observer never commits before the TTS mark lands.
                 storage.mark_finalized()
-            # Persist the assistant reply and feed STT context only when the
-            # reply completed naturally — an interrupted reply is a partial
-            # sentence that would corrupt multi-turn memory / mis-hint the STT
-            # decoder (old code persisted assistant only on non-cancelled turns).
-            if not self._state.interrupt_event.is_set() and not cancelled:
+            # Persist the assistant reply and feed STT context. An interrupted
+            # reply persists only the spoken portion, explicitly marked as cut
+            # off so the LLM knows it was interrupted rather than a complete
+            # short reply (industry pattern: stash partial + interrupted flag);
+            # a partial sentence is never used to hint the STT decoder.
+            if interrupted:
+                if recorded:
+                    # Inline natural-language marker so the LLM sees the reply
+                    # was cut off (Azure appended_text_after_truncation pattern;
+                    # global.j2 defines its meaning); partial=True so the stored
+                    # record carries the structured flag (the degradation guard
+                    # skips partial replies when detecting repeated responses).
+                    self._schedule_ctx(
+                        "assistant", recorded, partial=True
+                    )
+            else:
                 self._schedule_ctx("assistant", holder["full"])
                 if self._stt_context_cb is not None:
                     try:
@@ -397,7 +534,7 @@ class PiguguTtsBridge(FrameProcessor):
         storage.mark_tts_complete("", ok=False, truncated_reason=reason)
         storage.mark_finalized()
 
-    def _schedule_ctx(self, role: str, content: str) -> None:
+    def _schedule_ctx(self, role: str, content: str, partial: bool = False) -> None:
         """Fire-and-forget user/assistant turn persistence into ctx (the old
         connection.py _persist_turn). Only meaningful for the real PigAgent —
         test fakes without a ctx are skipped."""
@@ -407,16 +544,74 @@ class PiguguTtsBridge(FrameProcessor):
         if pig is None or getattr(pig, "ctx", None) is None:
             return
         try:
-            asyncio.ensure_future(self._ctx_add(role, content))
+            asyncio.ensure_future(self._ctx_add(role, content, partial))
         except RuntimeError:
             # No running loop (shutdown) — dropping the turn text is acceptable.
             pass
 
-    async def _ctx_add(self, role: str, content: str) -> None:
+    async def _ctx_add(self, role: str, content: str, partial: bool = False) -> None:
         try:
-            await self._pig.ctx.add_turn(role=role, content=content)
+            await self._pig.ctx.add_turn(
+                role=role, content=content, partial=partial
+            )
         except Exception:
             logger.exception(f"[PiguguTtsBridge] ctx.add_turn({role}) failed")
+
+    # ── interrupt text truncation ─────────────────────────────────────
+
+    def _spoken_prefix(self, words: list[tuple[str, float, float]], sent_s: float) -> str:
+        """Reconstruct the reply text whose audio reached the device.
+
+        ``words`` are ``(word, start_s, end_s)`` from the TTS provider's word
+        timestamps, ordered along the audio timeline (seconds from the audio
+        start, the same origin as ``_play_position``). A word is kept only if
+        it was fully sent (``end_s <= sent_s``); the in-progress word is
+        dropped so the partial never carries a fragment the user didn't hear.
+        Returns "" when nothing was sent.
+        """
+        kept: list[str] = []
+        for word, _, end_s in words:
+            if end_s <= sent_s:
+                kept.append(word)
+            else:
+                break
+        if not kept:
+            return ""
+        return " ".join(kept).strip()
+
+    def _truncate_to_played(self, text: str, tts_pcm: bytes | bytearray) -> str:
+        """Fallback when the TTS provider gives no word timestamps (e.g. the
+        degraded REST path): approximate how much was actually spoken.
+
+        Without a text→audio-frame correlation the practical proxy is a
+        character-ratio cut: the fraction of synthesized audio (``tts_pcm``)
+        that reached the device (``_play_position``, seconds paced out) applied
+        to the consumed text, snapped back to the last sentence boundary. The
+        abort flushes the device queue, so the sent position is an upper bound
+        on what was heard; snapping to a sentence boundary absorbs that
+        over-estimate. Returns "" when nothing was sent.
+        """
+        text = (text or "").strip()
+        if not text:
+            return ""
+        total_s = len(tts_pcm) / (16000 * 2)  # 16 kHz mono int16 → bytes/s
+        sent_s = self._play_position
+        if total_s <= 0 or sent_s <= 0:
+            return ""
+        ratio = min(1.0, sent_s / total_s)
+        if ratio >= 0.99:
+            return text
+        target = int(len(text) * ratio)
+        if target <= 0:
+            return ""
+        prefix = text[:target]
+        best = max(
+            (prefix.rfind(p) for p in (".", "!", "?", "\n", "…")),
+            default=-1,
+        )
+        if best < 0:
+            return prefix.rstrip()
+        return prefix[: best + 1].rstrip()
 
     # ── pacing (virtual playback clock, ported from connection.py) ────
 
