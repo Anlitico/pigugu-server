@@ -28,6 +28,9 @@ data:
   # Feature flag — set "false" to disable the new S3+ClickHouse path
   # entirely (turns still go through the legacy /tmp WAV saves).
   ENABLE_TURN_STORAGE: "true"
+  # Metrics exporter (metrics/*.py): routes per-turn/compression telemetry to
+  # the CH `metrics` database. Off by default in code — keep ON in prod.
+  ENABLE_METRICS_EXPORT: "true"
 ---
 apiVersion: apps/v1
 kind: Deployment

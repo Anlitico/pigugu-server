@@ -70,6 +70,73 @@ data:
     -- S3 URI of the post-turn upstream mic wav (AEC probe): the audio between
     -- this turn's input.wav end and the next turn's input start (or session end).
     ALTER TABLE voice.turns ADD COLUMN IF NOT EXISTS s3_listen_wav String DEFAULT '';
+  0004_metrics.sql: |
+    -- Metrics consolidation: all latency/telemetry structured metrics land in
+    -- CH (migrated from pgsql `metrics` / `compression_metrics`). JSON stays
+    -- String + JSONExtract* (CH 24.3 JSON type is experimental).
+    CREATE DATABASE IF NOT EXISTS metrics;
+
+    -- Per-turn latency breakdown (port of pgsql `metrics`).
+    -- ts_ms = event anchor (agent_spk/stt_final unix ms when present, else write time).
+    -- marks:    {key: {perf_counter, unix_ms}} — forensic recompute
+    -- segments: {label: {role, ms}} + e2e — main/diagnostic split
+    -- meta:     models, tokens, turn_phase, ...
+    CREATE TABLE IF NOT EXISTS metrics.turn_latency
+    (
+        ts_ms       Int64,
+        user_id     LowCardinality(String),
+        turn_id     UInt32,
+        persona_id  UInt16 DEFAULT 0,
+        turn_phase  LowCardinality(String) DEFAULT '',
+        marks       String DEFAULT '',
+        segments    String DEFAULT '',
+        meta        String DEFAULT '',
+        inserted_at DateTime DEFAULT now()
+    )
+    ENGINE = MergeTree
+    PARTITION BY toYYYYMM(fromUnixTimestamp64Milli(ts_ms))
+    ORDER BY (user_id, ts_ms, turn_id)
+    TTL toDateTime(fromUnixTimestamp64Milli(ts_ms)) + INTERVAL 90 DAY;
+
+    -- Compression-run latency (port of pgsql compression_metrics).
+    CREATE TABLE IF NOT EXISTS metrics.compression
+    (
+        ts_ms       Int64,
+        user_id     LowCardinality(String),
+        scenario    LowCardinality(String) DEFAULT 'free_chat',
+        segments    String DEFAULT '',
+        meta        String DEFAULT '',
+        inserted_at DateTime DEFAULT now()
+    )
+    ENGINE = MergeTree
+    PARTITION BY toYYYYMM(fromUnixTimestamp64Milli(ts_ms))
+    ORDER BY (user_id, ts_ms)
+    TTL toDateTime(fromUnixTimestamp64Milli(ts_ms)) + INTERVAL 90 DAY;
+  0005_metrics_perceived.sql: |
+    -- Perceived-latency columns on metrics.turn_latency. stt_tail = user_stop
+    -- -> stt_final (device vad_silence anchor); e2e_perceived = user_stop ->
+    -- agent_spk. 0 when the firmware did not report a user stop yet.
+    ALTER TABLE metrics.turn_latency
+        ADD COLUMN IF NOT EXISTS stt_tail_ms Int32 DEFAULT 0,
+        ADD COLUMN IF NOT EXISTS e2e_perceived_ms Int32 DEFAULT 0;
+  0006_metrics_session.sql: |
+    -- Per-connection connect_pre_roll (server clock): accept -> hello and
+    -- accept -> first uplink audio frame. Answers "is the wake/session open
+    -- slow because of the connection?" with a number, not a guess.
+    CREATE TABLE IF NOT EXISTS metrics.session
+    (
+        ts_ms                  Int64,
+        user_id                LowCardinality(String),
+        device_id              LowCardinality(String),
+        session_id             String,
+        connect_hello_ms       Int32 DEFAULT 0,
+        connect_first_audio_ms Int32 DEFAULT 0,
+        inserted_at            DateTime DEFAULT now()
+    )
+    ENGINE = MergeTree
+    PARTITION BY toYYYYMM(fromUnixTimestamp64Milli(ts_ms))
+    ORDER BY (user_id, ts_ms)
+    TTL toDateTime(fromUnixTimestamp64Milli(ts_ms)) + INTERVAL 90 DAY;
 ---
 apiVersion: batch/v1
 kind: Job
