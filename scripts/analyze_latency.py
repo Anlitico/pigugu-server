@@ -1,15 +1,12 @@
 #!/usr/bin/env python3
 """
-NOTE: Run with `pigagent/.venv/bin/python` — asyncpg + loguru
-are installed there, not in the project root `.venv`.
+analyze_latency.py — Read metrics from ClickHouse and print latency stats.
 
-
-analyze_latency.py — Read metrics from PostgreSQL and print latency stats.
-
-Reads from the same DATABASE_URL the voice server uses. Works on rows in
-both the old flat format ({key: float}) and the new structured format
-({key: {perf_counter, unix_ms}} / {key: {role, ms}}), so it can be run
-before AND after running migrate_metrics_format.py.
+Reads the ``metrics.turn_latency`` table over the ClickHouse HTTP interface
+(port 8123) using only the Python standard library (urllib), so it runs in
+any python image without extra deps — no asyncpg / loguru / image rebuild.
+Works on rows in both the old flat format ({key: float}) and the new
+structured format ({key: {perf_counter, unix_ms}} / {key: {role, ms}}).
 
 USAGE
 ─────────────────────────────────────────────────────────────
@@ -42,26 +39,31 @@ segments or missing required marks.
 from __future__ import annotations
 
 import argparse
-import asyncio
 import json
 import math
 import os
 import statistics
 import sys
+import urllib.error
+import urllib.request
 from datetime import datetime, timedelta, timezone
 from typing import Any
-
-import asyncpg
 
 
 # ── Constants ────────────────────────────────────────────────────────────
 
+# Which section a segment is shown under is decided per-row by the segment's
+# stored ``role`` (segments JSON). These lists only keep the report's column
+# order stable and supply the default for rows written before the role field
+# existed. ``stt`` left the main chain when metrics moved to ClickHouse: the
+# writer now emits it with role="diagnostic" (server_received_vad_at is a
+# device-clock anchor, not part of the serial server E2E chain).
 MAIN_SEGMENT_LABELS: list[str] = [
-    "stt", "agent_init", "orchestrator", "context",
+    "agent_init", "orchestrator", "context",
     "llm_prep", "llm_ttft", "llm_to_tts", "tts_ttfb",
 ]
 DIAG_SEGMENT_LABELS: list[str] = [
-    "vad", "server_vad", "vad_to_recv", "llm_rest", "tts",
+    "stt", "vad", "server_vad", "vad_to_recv", "llm_rest", "tts",
 ]
 ALL_SEGMENT_LABELS: list[str] = MAIN_SEGMENT_LABELS + DIAG_SEGMENT_LABELS
 
@@ -156,35 +158,18 @@ def fmt_pct(num: int, denom: int) -> str:
     return f"{(num / denom * 100):>5.1f}%"
 
 
-# ── SQL ──────────────────────────────────────────────────────────────────
+# ── ClickHouse query ─────────────────────────────────────────────────────
 
-# Pull only what we need; everything else is in marks/segments jsonb.
-FETCH_SQL_TEMPLATE = """
-SELECT
-  user_id,
-  turn_id,
-  meta,
-  marks,
-  segments,
-  -- epoch milliseconds (turn-finish-ish; created_at style — falls back to NULL)
-  EXTRACT(EPOCH FROM now()) * 1000 AS now_ms
-FROM metrics
-WHERE ($1::text IS NULL OR user_id = $1)
-  AND ($2::timestamptz IS NULL OR (marks->'agent_spk'->>'unix_ms')::bigint >= $3)
-  AND ($4::timestamptz IS NULL OR (marks->'agent_spk'->>'unix_ms')::bigint <= $5)
-ORDER BY (marks->'agent_spk'->>'unix_ms')::bigint NULLS LAST
-LIMIT $6;
-"""
+CH_TABLE = "metrics.turn_latency"
 
 
-def build_query(args: argparse.Namespace) -> tuple[str, list]:
-    """Build the SQL and parameters for the latency query.
+def _ch_literal(v: str) -> str:
+    """Single-quoted ClickHouse string literal."""
+    return "'" + v.replace("\\", "\\\\").replace("'", "\\'") + "'"
 
-    Time range is expressed as agent_spk unix_ms bounds (in milliseconds
-    since epoch UTC). If --since / --until are not given, the upper bound
-    is "now" and the lower bound is "now - hours".
-    """
-    until_ms: int
+
+def resolve_time_bounds(args: argparse.Namespace) -> tuple[int, int]:
+    """agent_spk unix_ms bounds (ms since epoch UTC) for the window."""
     if args.until:
         until_dt = datetime.fromisoformat(args.until).replace(tzinfo=timezone.utc)
         until_ms = int(until_dt.timestamp() * 1000)
@@ -194,44 +179,52 @@ def build_query(args: argparse.Namespace) -> tuple[str, list]:
     if args.since:
         since_dt = datetime.fromisoformat(args.since).replace(tzinfo=timezone.utc)
         since_ms = int(since_dt.timestamp() * 1000)
-    elif args.hours:
-        since_ms = until_ms - args.hours * 3600 * 1000
     else:
-        since_ms = until_ms - 24 * 3600 * 1000
+        since_ms = until_ms - int((args.hours or 24) * 3600 * 1000)
+    return since_ms, until_ms
 
-    # We re-use the same query template, but inject the bounds. Simpler to
-    # inline the SQL with the computed bounds than to thread more params
-    # through the (slightly awkward) template above.
-    sql = f"""
-    SELECT
-      user_id,
-      turn_id,
-      meta,
-      marks,
-      segments
-    FROM metrics
-    WHERE ($1::text IS NULL OR user_id = $1)
-      AND (
-        (marks->'agent_spk'->>'unix_ms')::bigint IS NOT NULL
-        AND (marks->'agent_spk'->>'unix_ms')::bigint >= {since_ms}
-        AND (marks->'agent_spk'->>'unix_ms')::bigint <= {until_ms}
-      )
-    ORDER BY (marks->'agent_spk'->>'unix_ms')::bigint
-    LIMIT $2;
+
+def build_query(args: argparse.Namespace, since_ms: int, until_ms: int) -> str:
+    """SELECT the window from metrics.turn_latency over ClickHouse HTTP.
+
+    Filtering mirrors the old pgsql query: only rows whose
+    ``marks.agent_spk.unix_ms`` falls inside the window qualify; rows without
+    that mark are skipped. JSON columns stay as text and are parsed in Python
+    (marks/segments/meta are single-line JSON, so TSV round-trips them fine).
     """
-    return sql, [args.user_id, args.limit]
+    conds = [
+        "JSONHas(marks, 'agent_spk', 'unix_ms')",
+        f"JSONExtractInt(marks, 'agent_spk', 'unix_ms') >= {int(since_ms)}",
+        f"JSONExtractInt(marks, 'agent_spk', 'unix_ms') <= {int(until_ms)}",
+    ]
+    if args.user_id:
+        conds.append(f"user_id = {_ch_literal(args.user_id)}")
+    sql = (
+        "SELECT user_id, turn_id, marks, segments, meta, stt_tail_ms, "
+        "e2e_perceived_ms\n"
+        f"FROM {CH_TABLE}\n"
+        "WHERE " + "\n  AND ".join(conds) + "\n"
+        "ORDER BY JSONExtractInt(marks, 'agent_spk', 'unix_ms')\n"
+        f"LIMIT {int(args.limit)}\n"
+        "FORMAT TSV"
+    )
+    return sql
 
 
 # ── Aggregation ──────────────────────────────────────────────────────────
 
-def aggregate(rows: list[asyncpg.Record], percentiles: list[float]) -> dict:
+def aggregate(rows: list[dict], percentiles: list[float]) -> tuple[dict, dict[str, str]]:
     e2e_values: list[float] = []
+    server_e2e_values: list[float] = []
+    stt_tail_values: list[float] = []
     segment_values: dict[str, list[float]] = {k: [] for k in ALL_SEGMENT_LABELS}
     phase_buckets: dict[str, list[float]] = {}
     fallback_buckets: dict[str, list[float]] = {}
+    seg_roles: dict[str, str] = {}
     rows_with_negative_segments: list[dict] = []
-    rows_missing_server_received: list[dict] = []
+    rows_without_device_anchor: list[dict] = []
     rows_with_vad_end_fallback_detect: int = 0
+    anchored_turns: int = 0
     total_rows: int = 0
     new_format_count: int = 0
     old_format_count: int = 0
@@ -255,15 +248,34 @@ def aggregate(rows: list[asyncpg.Record], percentiles: list[float]) -> dict:
         if fb == "detect":
             rows_with_vad_end_fallback_detect += 1
 
-        # E2E: prefer recompute from marks (consistent definition regardless
-        # of when the row was written). Fall back to stored segments.e2e
-        # if the marks aren't available.
-        agent_spk = extract_perf_counter(marks, "agent_spk")
-        srv_recv = extract_perf_counter(marks, "server_received_vad_at")
-        if agent_spk is not None and srv_recv is not None:
-            e2e_ms = (agent_spk - srv_recv) * 1000.0
+        # New typed columns (0005): stt_tail = user_stop -> stt_final,
+        # e2e_perceived = user_stop -> first bot audio. The firmware reports a
+        # device user-stop (vad_silence), so rows written by the current writer
+        # carry both > 0 when the anchor exists; pre-column rows are 0.
+        typed_stt_tail = int(row.get("stt_tail_ms") or 0)
+        typed_perceived = int(row.get("e2e_perceived_ms") or 0)
+        server_e2e = extract_segment_ms(segments, "e2e")
+
+        if typed_stt_tail > 0 or typed_perceived > 0:
+            anchored_turns += 1
+        if typed_stt_tail > 0:
+            stt_tail_values.append(float(typed_stt_tail))
+
+        # Headline E2E = PERCEIVED (user_stop -> first bot audio), as the
+        # writer computed it. Pre-column rows fall back to the stored server
+        # E2E (stt_final -> agent_spk) so history stays comparable.
+        if typed_perceived > 0:
+            e2e_ms = float(typed_perceived)
         else:
-            e2e_ms = extract_segment_ms(segments, "e2e")
+            e2e_ms = server_e2e
+            if e2e_ms is None:
+                agent_spk = extract_perf_counter(marks, "agent_spk")
+                if agent_spk is not None:
+                    for k in ("stt_final", "server_received_vad_at", "vad_end"):
+                        s = extract_perf_counter(marks, k)
+                        if s is not None:
+                            e2e_ms = (agent_spk - s) * 1000.0
+                            break
         if e2e_ms is None:
             continue
         if e2e_ms < 0:
@@ -285,8 +297,17 @@ def aggregate(rows: list[asyncpg.Record], percentiles: list[float]) -> dict:
             continue
         e2e_values.append(e2e_ms)
 
-        # Per-segment
+        # Server E2E (stt_final -> agent_spk) for reconciliation with the main
+        # chain; excludes STT, so it is naturally <= perceived.
+        if server_e2e is not None and MIN_E2E_MS <= server_e2e <= MAX_E2E_MS:
+            server_e2e_values.append(server_e2e)
+
+        # Per-segment. The stored role decides the main-vs-diagnostic section
+        # at render time; the constant lists only provide order/fallback.
         for k in ALL_SEGMENT_LABELS:
+            raw = segments.get(k)
+            if isinstance(raw, dict) and isinstance(raw.get("role"), str):
+                seg_roles[k] = raw["role"]
             v = extract_segment_ms(segments, k)
             if v is not None:
                 if v < 0:
@@ -304,8 +325,8 @@ def aggregate(rows: list[asyncpg.Record], percentiles: list[float]) -> dict:
         phase_buckets.setdefault(phase, []).append(e2e_ms)
         fallback_buckets.setdefault(fb, []).append(e2e_ms)
 
-        if srv_recv is None:
-            rows_missing_server_received.append({
+        if typed_stt_tail == 0:
+            rows_without_device_anchor.append({
                 "user_id": row["user_id"],
                 "turn_id": row["turn_id"],
             })
@@ -323,25 +344,38 @@ def aggregate(rows: list[asyncpg.Record], percentiles: list[float]) -> dict:
             "percentiles": {p: percentile(values, p) for p in percentiles},
         }
 
-    return {
+    report = {
         "total_rows": total_rows,
         "new_format_count": new_format_count,
         "old_format_count": old_format_count,
+        "anchored_turns": anchored_turns,
         "e2e": stats(e2e_values),
+        "server_e2e": stats(server_e2e_values),
+        "stt_tail": stats(stt_tail_values),
         "segments": {k: stats(v) for k, v in segment_values.items()},
         "by_phase": {k: stats(v) for k, v in phase_buckets.items()},
         "by_fallback": {k: stats(v) for k, v in fallback_buckets.items()},
         "anomalies": {
             "negative_or_outlier": rows_with_negative_segments[:50],  # cap
-            "missing_server_received": rows_missing_server_received[:50],
+            "missing_device_anchor": rows_without_device_anchor[:50],
             "detect_fallback_count": rows_with_vad_end_fallback_detect,
         },
     }
+    return report, seg_roles
 
 
 # ── Rendering ────────────────────────────────────────────────────────────
 
-def render_text(report: dict, percentiles: list[float],
+def effective_segment_role(label: str, seg_roles: dict[str, str]) -> str:
+    """Section a segment belongs in: the row's stored role wins, else the
+    canonical default from the label lists."""
+    r = seg_roles.get(label)
+    if r in ("main", "diagnostic"):
+        return r
+    return "main" if label in MAIN_SEGMENT_LABELS else "diagnostic"
+
+
+def render_text(report: dict, seg_roles: dict[str, str], percentiles: list[float],
                 time_range: tuple[int, int]) -> str:
     out: list[str] = []
     since_iso = datetime.fromtimestamp(time_range[0] / 1000, tz=timezone.utc).isoformat(
@@ -358,7 +392,11 @@ def render_text(report: dict, percentiles: list[float],
     out.append("=" * 78)
 
     def header(name: str) -> str:
-        cols = "  ".join(f"p{p:>3d}" for p in percentiles)
+        # p may be int (argparse default) or float (parsed from "--percentiles
+        # 50,90,99.9") — format without assuming an integral type.
+        labels = [f"p{format(p, 'g')}" for p in percentiles]
+        width = max(len(x) for x in labels)
+        cols = "  ".join(x.rjust(width) for x in labels)
         return f"\n{name}\n  {'n':>6s}  {'min':>9s}  {'mean':>9s}  {'max':>9s}  {'std':>9s}  {cols}"
 
     def row(name: str, s: dict) -> str:
@@ -371,16 +409,28 @@ def render_text(report: dict, percentiles: list[float],
                 f"{fmt_ms(s['min'])}  {fmt_ms(s['mean'])}  "
                 f"{fmt_ms(s['max'])}  {fmt_ms(s['std'])}  {p_str}")
 
-    out.append(header("── E2E (server_received_vad_at → agent_spk) ──"))
+    out.append(header("── E2E perceived (user_stop → first bot audio) ──"))
     out.append(row("e2e", report["e2e"]))
+    out.append(
+        f"  anchored device user-stops: {report['anchored_turns']} / "
+        f"{report['total_rows']} ({fmt_pct(report['anchored_turns'], report['total_rows']).strip()})"
+    )
 
-    out.append(header("── Main chain (sum == E2E in theory) ──"))
+    out.append(header("── Server E2E (stt_final → agent_spk) ──"))
+    out.append(row("server_e2e", report["server_e2e"]))
+
+    out.append(header("── STT tail (user_stop → stt_final; device-anchored) ──"))
+    out.append(row("stt_tail", report["stt_tail"]))
+
+    out.append(header("── Main chain (sum == server E2E in theory) ──"))
     for k in MAIN_SEGMENT_LABELS:
-        out.append(row(k, report["segments"][k]))
+        if effective_segment_role(k, seg_roles) == "main":
+            out.append(row(k, report["segments"][k]))
 
     out.append(header("── Diagnostics (overlap / can be negative) ──"))
     for k in DIAG_SEGMENT_LABELS:
-        out.append(row(k, report["segments"][k]))
+        if effective_segment_role(k, seg_roles) == "diagnostic":
+            out.append(row(k, report["segments"][k]))
 
     out.append("\n── Breakdown by turn_phase ──")
     for phase, s in sorted(report["by_phase"].items(), key=lambda x: -x[1]["n"]):
@@ -400,8 +450,8 @@ def render_text(report: dict, percentiles: list[float],
 
     a = report["anomalies"]
     out.append("\n── Anomalies ──")
-    out.append(f"  turns missing server_received_vad_at: {len(a['missing_server_received'])}"
-               f"  (sample: {a['missing_server_received'][:3]})")
+    out.append(f"  turns with no device user-stop (server-e2e fallback): "
+               f"{len(a['missing_device_anchor'])}  (sample: {a['missing_device_anchor'][:3]})")
     out.append(f"  turns with negative / outlier E2E:    {len(a['negative_or_outlier'])}"
                f"  (sample: {a['negative_or_outlier'][:3]})")
     out.append(f"  turns using detect as vad_end fallback: {a['detect_fallback_count']}")
@@ -409,78 +459,138 @@ def render_text(report: dict, percentiles: list[float],
     return "\n".join(out)
 
 
+# ── ClickHouse transport (stdlib urllib) ─────────────────────────────────
+
+def _ch_http_endpoint() -> str:
+    host = os.getenv("CLICKHOUSE_HOST", "clickhouse").strip()
+    port = os.getenv("CLICKHOUSE_PORT", "8123").strip()
+    return f"http://{host}:{port}"
+
+
+def _tsv_unescape(s: str) -> str:
+    """Undo ClickHouse TSV backslash escaping on a single column value."""
+    if "\\" not in s:
+        return s
+    out: list[str] = []
+    i = 0
+    while i < len(s):
+        c = s[i]
+        if c == "\\" and i + 1 < len(s):
+            nxt = s[i + 1]
+            if nxt == "t":
+                out.append("\t")
+                i += 2
+                continue
+            if nxt == "n":
+                out.append("\n")
+                i += 2
+                continue
+            if nxt == "r":
+                out.append("\r")
+                i += 2
+                continue
+            if nxt == "\\":
+                out.append("\\")
+                i += 2
+                continue
+        out.append(c)
+        i += 1
+    return "".join(out)
+
+
+def _json_field(s: str) -> dict:
+    if not s:
+        return {}
+    try:
+        v = json.loads(s)
+    except ValueError:
+        return {}
+    return v if isinstance(v, dict) else {}
+
+
+def fetch_rows(sql: str) -> list[dict]:
+    """POST the query to ClickHouse HTTP and parse the TSV response."""
+    endpoint = _ch_http_endpoint()
+    user = os.getenv("CLICKHOUSE_USER", "default").strip()
+    password = os.getenv("CLICKHOUSE_PASSWORD", "")
+    database = os.getenv("CLICKHOUSE_DATABASE", "voice").strip()
+    headers = {"X-ClickHouse-User": user, "Content-Type": "text/plain"}
+    if database:
+        headers["X-ClickHouse-Database"] = database
+    if password:
+        headers["X-ClickHouse-Key"] = password
+    req = urllib.request.Request(endpoint + "/", data=sql.encode("utf-8"),
+                                 headers=headers, method="POST")
+    try:
+        with urllib.request.urlopen(req, timeout=60) as resp:
+            raw = resp.read().decode("utf-8")
+    except urllib.error.HTTPError as e:
+        print(f"ERROR: ClickHouse HTTP {e.code}: "
+              f"{e.read().decode('utf-8', 'replace').strip()}", file=sys.stderr)
+        sys.exit(1)
+    except urllib.error.URLError as e:
+        print(f"ERROR: cannot reach ClickHouse at {endpoint}: {e.reason}",
+              file=sys.stderr)
+        sys.exit(1)
+
+    rows: list[dict] = []
+    for line in raw.split("\n"):
+        if not line:
+            continue
+        parts = line.split("\t")
+        if len(parts) < 7:  # defensive — SELECT lists exactly 7 columns
+            continue
+        user_id = _tsv_unescape(parts[0])
+        try:
+            turn_id = int(_tsv_unescape(parts[1]))
+        except ValueError:
+            turn_id = 0
+        marks = _json_field(_tsv_unescape(parts[2]))
+        segments = _json_field(_tsv_unescape(parts[3]))
+        meta = _json_field(_tsv_unescape(parts[4]))
+
+        def _int_col(raw_col: str) -> int:
+            try:
+                return int(_tsv_unescape(raw_col))
+            except ValueError:
+                return 0
+
+        rows.append({
+            "user_id": user_id,
+            "turn_id": turn_id,
+            "marks": marks,
+            "segments": segments,
+            "meta": meta,
+            "stt_tail_ms": _int_col(parts[5]),
+            "e2e_perceived_ms": _int_col(parts[6]),
+        })
+    return rows
+
+
 # ── Entry point ──────────────────────────────────────────────────────────
 
-def get_dsn() -> str:
-    """Resolve the PostgreSQL DSN from environment.
+def run(args: argparse.Namespace) -> None:
+    since_ms, until_ms = resolve_time_bounds(args)
+    sql = build_query(args, since_ms, until_ms)
+    print(f"Connecting to {_ch_http_endpoint()} ...", file=sys.stderr)
+    rows = fetch_rows(sql)
+    print(f"Fetched {len(rows)} row(s).", file=sys.stderr)
 
-    Order of preference:
-    1. ``DATABASE_URL`` if set and points to a non-localhost host (i.e. the
-       production RDS endpoint). This is what the voice server uses.
-    2. ``PGHOST``/``PGUSER``/``PGPASSWORD``/``PGDATABASE`` set by
-       ``.claude/skills/ops/pg`` pointing to the same RDS — used when
-       ``DATABASE_URL`` is bound to ``localhost`` (local dev) and we want
-       to query production from this script.
-    3. As a last resort, whatever ``DATABASE_URL`` says (will fail loudly
-       if the connection is unreachable).
-    """
-    dsn = os.getenv("DATABASE_URL", "").replace("+asyncpg", "")
-    if dsn and "localhost" not in dsn and "127.0.0.1" not in dsn:
-        return dsn
-    host = os.getenv("PGHOST")
-    user = os.getenv("PGUSER")
-    password = os.getenv("PGPASSWORD")
-    database = os.getenv("PGDATABASE", "pigugu")
-    port = os.getenv("PGPORT", "5432")
-    if host and user and password:
-        return f"postgresql://{user}:{password}@{host}:{port}/{database}"
-    if dsn:
-        return dsn
-    print("ERROR: DATABASE_URL or PGHOST/PGUSER/PGPASSWORD must be set.",
-          file=sys.stderr)
-    sys.exit(1)
+    report, seg_roles = aggregate(rows, args.percentiles)
 
-
-def host_label(dsn: str) -> str:
-    return dsn.split("@", 1)[-1] if "@" in dsn else dsn
-
-
-async def run(args: argparse.Namespace) -> None:
-    dsn = get_dsn()
-    print(f"Connecting to {host_label(dsn)} ...", file=sys.stderr)
-    conn = await asyncpg.connect(dsn)
-    try:
-        sql, params = build_query(args)
-        rows = await conn.fetch(sql, *params)
-        print(f"Fetched {len(rows)} row(s).", file=sys.stderr)
-
-        # Compute time range for header
-        until_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
-        if args.until:
-            until_ms = int(datetime.fromisoformat(args.until)
-                           .replace(tzinfo=timezone.utc).timestamp() * 1000)
-        since_ms = (int(datetime.fromisoformat(args.since)
-                        .replace(tzinfo=timezone.utc).timestamp() * 1000)
-                    if args.since
-                    else until_ms - (args.hours or 24) * 3600 * 1000)
-
-        report = aggregate(rows, args.percentiles)
-
-        if args.output:
-            # JSON output includes raw aggregates; CSV-style per-turn data
-            # is intentionally omitted to keep file small — use the
-            # migrate script's --output or a separate query for that.
-            report["time_range"] = {
-                "since_utc": datetime.fromtimestamp(since_ms / 1000, tz=timezone.utc).isoformat(),
-                "until_utc": datetime.fromtimestamp(until_ms / 1000, tz=timezone.utc).isoformat(),
-            }
-            with open(args.output, "w") as f:
-                json.dump(report, f, indent=2, default=str)
-            print(f"Wrote {args.output}", file=sys.stderr)
-        else:
-            print(render_text(report, args.percentiles, (since_ms, until_ms)))
-    finally:
-        await conn.close()
+    if args.output:
+        # JSON output includes raw aggregates; CSV-style per-turn data
+        # is intentionally omitted to keep file small — use the
+        # migrate script's --output or a separate query for that.
+        report["time_range"] = {
+            "since_utc": datetime.fromtimestamp(since_ms / 1000, tz=timezone.utc).isoformat(),
+            "until_utc": datetime.fromtimestamp(until_ms / 1000, tz=timezone.utc).isoformat(),
+        }
+        with open(args.output, "w") as f:
+            json.dump(report, f, indent=2, default=str)
+        print(f"Wrote {args.output}", file=sys.stderr)
+    else:
+        print(render_text(report, seg_roles, args.percentiles, (since_ms, until_ms)))
 
 
 def parse_percentiles(s: str) -> list[float]:
@@ -495,7 +605,7 @@ def parse_percentiles(s: str) -> list[float]:
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Analyze pigugu voice agent latency from PostgreSQL.",
+        description="Analyze pigugu voice agent latency from ClickHouse.",
     )
     parser.add_argument(
         "--hours", type=float, default=24,
@@ -526,7 +636,7 @@ def main() -> None:
         help="Write JSON report to this file instead of printing text.",
     )
     args = parser.parse_args()
-    asyncio.run(run(args))
+    run(args)
 
 
 if __name__ == "__main__":

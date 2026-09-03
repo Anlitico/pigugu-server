@@ -59,3 +59,9 @@ class PiguguTurnState:
         # others. We share the dict explicitly here and re-bind it per
         # processor (see telemetry.ensure_turn_context).
         self.active_turn: Any | None = None
+        # Connection pre-roll timestamps (perf_counter, 0 = unset) for the
+        # per-session connect_pre_roll metric (metrics.session): when the
+        # server accepted / parsed hello / saw the first audio frame.
+        self.accept_pc: float = 0.0
+        self.hello_pc: float = 0.0
+        self.first_audio_pc: float = 0.0

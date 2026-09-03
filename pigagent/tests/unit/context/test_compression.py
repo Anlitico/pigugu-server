@@ -99,7 +99,7 @@ class TestCompressionMetrics:
         m.mark("profile_done")
         m.finish()
 
-        segs = m._compute_segments()
+        segs = m.segments
         assert segs["check"] > 0
         assert segs["llm"] > 0
         assert segs["profile"] > 0
@@ -112,9 +112,9 @@ class TestCompressionMetrics:
         m.set_meta("turns_in", 100)
         m.set_meta("model", "test")
         m.set_meta("has_l4", True)
-        assert m._meta["turns_in"] == 100
-        assert m._meta["model"] == "test"
-        assert m._meta["has_l4"] is True
+        assert m._scope.meta["turns_in"] == 100
+        assert m._scope.meta["model"] == "test"
+        assert m._scope.meta["has_l4"] is True
 
     def test_skip_missing_marks(self):
         from metrics.compression import CompressionMetrics
@@ -122,7 +122,7 @@ class TestCompressionMetrics:
         # Don't mark check_done — segment should be omitted
         m.mark("llm_done")
         m.finish()
-        segs = m._compute_segments()
+        segs = m.segments
         assert "check" not in segs
         assert "llm" not in segs  # start→check_done missing
         assert "total" in segs
@@ -130,7 +130,7 @@ class TestCompressionMetrics:
     def test_scenario_stored(self):
         from metrics.compression import CompressionMetrics
         m = CompressionMetrics("u2", "roast")
-        assert m._scenario == "roast"
+        assert m._scope.meta["scenario"] == "roast"
 
 
 # ── Compressor _rebuild_memory tests ─────────────────────────────────────────
