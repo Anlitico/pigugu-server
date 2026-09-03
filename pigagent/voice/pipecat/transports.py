@@ -12,6 +12,7 @@ transport serializes downstream audio/control frames back to the wire.
 from __future__ import annotations
 
 import json
+import time
 from typing import Any
 
 from loguru import logger
@@ -89,6 +90,9 @@ class PiguguInputTransport(BaseInputTransport):
                 if isinstance(frame, PiguguMessageFrame):
                     await self._handle_control(frame)
                 elif isinstance(frame, InputAudioRawFrame):
+                    # First uplink audio frame stamps the end of connect_pre_roll.
+                    if self._state.first_audio_pc == 0.0:
+                        self._state.first_audio_pc = time.perf_counter()
                     # No VAD/processing here — the bridges handle that (M2).
                     # push_audio_frame() needs the base audio task's _audio_in_queue,
                     # which we don't run; push downstream directly instead.
@@ -106,6 +110,7 @@ class PiguguInputTransport(BaseInputTransport):
         msg = frame.message
         mtype = msg.get("type", "")
         if mtype == "hello":
+            self._state.hello_pc = time.perf_counter()
             audio_params = msg.get("audio_params", {})
             self._serializer.raw_pcm = audio_params.get("format", "opus") == "pcm"
             try:

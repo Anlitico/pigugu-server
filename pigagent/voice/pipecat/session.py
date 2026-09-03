@@ -10,6 +10,7 @@ callback, which stops the worker gracefully).
 from __future__ import annotations
 
 import asyncio
+import time
 import uuid
 from typing import Any
 
@@ -231,6 +232,8 @@ class PiguguSession:
             await self._observer.finalize_session()
 
     async def run(self):
+        # Server-side accept anchor for the per-session connect_pre_roll metric.
+        self.state.accept_pc = time.perf_counter()
         params = TransportParams(
             audio_in_enabled=True,
             audio_in_sample_rate=SAMPLE_RATE,
@@ -281,6 +284,31 @@ class PiguguSession:
             await self._cleanup()
             logger.info(f"[PiguguSession] {self.session_id} pipeline ended")
 
+    def _submit_session_metrics(self) -> None:
+        """Emit one ``metrics.session`` row (connect_pre_roll) for this
+        connection. Fire-and-forget; a no-op when the exporter is disabled."""
+        try:
+            st = self.state
+            if not (st.accept_pc and (st.hello_pc or st.first_audio_pc)):
+                return
+            from metrics.exporter import enqueue
+            from metrics.scope import SessionScope
+
+            scope = SessionScope(
+                user_id=self.user_id,
+                device_id=self.client_id,
+                session_id=self.session_id,
+            )
+            scope.set_meta("accept_pc", st.accept_pc)
+            if st.hello_pc:
+                scope.set_meta("hello_pc", st.hello_pc)
+            if st.first_audio_pc:
+                scope.set_meta("first_audio_pc", st.first_audio_pc)
+            scope.finish()
+            enqueue(scope)
+        except Exception:
+            logger.debug(f"[PiguguSession] {self.session_id} session metrics failed")
+
     async def _cleanup(self) -> None:
         """Release per-connection resources (old connection.py _cleanup):
         the Deepgram socket, the conversation-context flush, and the final
@@ -294,6 +322,7 @@ class PiguguSession:
                 TelemetryCollector._flush_turn()
             except Exception:
                 logger.debug(f"[PiguguSession] {self.session_id} telemetry flush failed")
+        self._submit_session_metrics()
         if self._stt is not None:
             try:
                 await self._stt.close_audio_channels()

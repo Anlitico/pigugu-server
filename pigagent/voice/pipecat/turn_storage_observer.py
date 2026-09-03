@@ -242,6 +242,14 @@ class PiguguTurnStorageObserver(FrameProcessor):
         # New VAD turn — telemetry only (audio is routed by client_is_speaking,
         # not by VAD start).
         self._user_turn_active = True
+        # NOTE: the stashed device vad_silence anchor (state.server_received_vad_at
+        # / vad_end_mark) is deliberately NOT cleared here. In the xiaozhi flow a
+        # turn starts on MinWords (first STT final) at the END of the same
+        # utterance whose stop the device reported — so the anchor usually arrives
+        # BEFORE this UserStarted and belongs to THIS turn, consumed at its stop.
+        # Clearing at start would drop it (see audit #4: cross-turn staleness is
+        # left as an accepted narrow residual — a stale anchor only applies if a
+        # turn stops with no device report of its own).
         TelemetryCollector.start_turn(
             user_id=self._user_id,
             persona_id=self._persona_id,
