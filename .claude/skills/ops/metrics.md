@@ -5,67 +5,65 @@ description: Run latency analysis against the production metrics table on AWS RD
 
 # Latency Metrics Analysis
 
-Runs `scripts/analyze_latency.py` against the production `metrics` table on
-AWS RDS. The script handles both the old flat format (`{key: float}`) and
-the new structured format (`{key: {perf_counter, unix_ms}}`) so it works
-on data written by either voice-server version.
-
-Like `/ops:pg`, this module runs inside an ephemeral K8s pod in the EKS
-cluster, so the local Mac never touches RDS directly. **No separate AWS
-auth needed beyond `kubectl`** (which the project already requires).
+Runs `scripts/analyze_latency.py` against ClickHouse `metrics.turn_latency`
+(the observability refactor migrated all metrics off the pgsql `metrics` table
+into CH; see `docs/architecture/voice-latency-metrics-design.md` §8/§10).
+The script needs only the Python standard library (urllib -> CH HTTP :8123),
+so it runs anywhere ClickHouse is reachable — typically an ephemeral K8s pod
+in the EKS cluster, like `/ops:pg`. **No separate AWS auth needed beyond
+`kubectl`.**
 
 ## Quick Reference
 
 ```bash
 PY=/Users/lijinzhao/Developer/pigugu/pigugu-server/scripts/analyze_latency.py
+
+# CH creds come from the cluster secret (same values the agent uses).
 set -a && source /Users/lijinzhao/Developer/pigugu/pigugu-server/pigagent/.env && set +a
+# .env may not carry CLICKHOUSE_PASSWORD; fall back to the k8s secret:
+CH_PW="$(kubectl get secret clickhouse-password -o jsonpath='{.data.password}' | base64 -d)"
 
-TOOLS=537557168531.dkr.ecr.us-west-1.amazonaws.com/pigugu-tools:latest
+# Last 24 hours (default), from a plain python pod:
+kubectl run analyze --rm -i --restart=Never --image=python:3.13-alpine \
+  --env "CLICKHOUSE_HOST=clickhouse" \
+  --env "CLICKHOUSE_PORT=8123" \
+  --env "CLICKHOUSE_USER=default" \
+  --env "CLICKHOUSE_PASSWORD=$CH_PW" \
+  -- python < "$PY"
 
-# Last 24 hours (default)
-kubectl run analyze --rm -i --restart=Never --image=$TOOLS \
-  --env "PGHOST=$PGHOST" --env "PGUSER=$PGUSER" \
-  --env "PGPASSWORD=$PGPASSWORD" --env "PGDATABASE=$PGDATABASE" \
-  -- python /scripts/analyze_latency.py
-
-# Last 7 days
-... -- python /scripts/analyze_latency.py -- --hours 168
-
-# Specific date range (UTC)
-... -- python /scripts/analyze_latency.py -- --since 2026-08-18 --until 2026-08-25
-
-# Filter by user
-... -- python /scripts/analyze_latency.py -- --user-id web-123
-
-# Custom percentile set
-... -- python /scripts/analyze_latency.py -- --percentiles 50,90,99
+# Last 7 days / date range / by user / custom percentiles
+kubectl run analyze --rm -i --restart=Never --image=python:3.13-alpine \
+  --env "CLICKHOUSE_HOST=clickhouse" --env "CLICKHOUSE_PASSWORD=$CH_PW" \
+  -- python < "$PY" -- --hours 168
+... -- python < "$PY" -- --since 2026-08-18 --until 2026-08-25
+... -- python < "$PY" -- --user-id web-123
+... -- python < "$PY" -- --percentiles 50,90,99
 
 # Output JSON for BI / further processing
-... -- python /scripts/analyze_latency.py -- --output /tmp/latency-report.json
-
-# Run the migration script (destructive) from the same image
-kubectl run migrate --rm -i --restart=Never --image=$TOOLS \
-  --env "PGHOST=$PGHOST" --env "PGUSER=$PGUSER" \
-  --env "PGPASSWORD=$PGPASSWORD" --env "PGDATABASE=$PGDATABASE" \
-  -- python /scripts/migrate_metrics_format.py           # dry-run
-...                                                    -- --apply   # actual
+... -- python < "$PY" -- --output /tmp/latency-report.json
 ```
 
-> The trailing `--` separates kubectl's args from the Python script's
-> args, so `--hours 168` etc. reach the script correctly.
+> `--` separates kubectl's args from the Python args so `--hours 168` reaches
+> the script. The script reads `CLICKHOUSE_HOST/PORT/USER/PASSWORD/DATABASE`
+> (defaults `clickhouse`/8123/`default`/``/`voice`); the table is always the
+> fully-qualified `metrics.turn_latency`.
 
 ## What the report shows
 
-- **E2E (server_received_vad_at → agent_spk)** — p50 / p90 / p95 / p99
-  / min / mean / max / std + count
-- **Main chain segments** (sum == E2E in theory): `stt`, `agent_init`,
+- **E2E perceived** — p50 / p90 / p95 / p99 / min / mean / max / std + count.
+  True E2E = user_stop → first bot audio (`e2e_perceived_ms`, anchored on the
+  device-reported `vad_silence` user-stop; falls back to the server E2E when
+  the firmware did not report one). Rows also carry `stt_tail_ms` (user_stop →
+  stt_final) and a coverage line showing how many turns had a real device
+  anchor.
+- **Server E2E** — `stt_final → agent_spk` (stored `segments.e2e`), the
+  main-chain reconciliation number (excludes STT, so ≤ perceived).
+- **Main-chain segments** (`role="main"` in the stored segments): `agent_init`,
   `orchestrator`, `context`, `llm_prep`, `llm_ttft`, `llm_to_tts`, `tts_ttfb`
-- **Diagnostic segments** (overlap / can be negative): `vad`,
-  `server_vad`, `vad_to_recv` (network RTT), `llm_rest`, `tts`
-- **Breakdown by `turn_phase`**: `wake_word` vs `follow_up` vs
-  `first_after_connect`
-- **Breakdown by `vad_end_fallback`**: `detect` vs `(none)` — high
-  `detect` count means device-side VAD is broken on a lot of units
+- **Diagnostic segments** (`role="diagnostic"`, overlap / can be negative):
+  `stt`, `vad`, `server_vad`, `vad_to_recv`, `llm_rest`, `tts`, `turn_end`,
+  `ctx_l1/l2/roast`
+- **Breakdown by `turn_phase`**: `wake_word` vs `follow_up`
 - **Anomalies**: turns missing `server_received_vad_at`, negative or
   outlier E2E (> 60s or < 30ms)
 
@@ -93,10 +91,10 @@ kubectl run migrate --rm -i --restart=Never --image=$TOOLS \
 ### Is the latency improving after a deploy?
 
 ```bash
+CH_PW="$(kubectl get secret clickhouse-password -o jsonpath='{.data.password}' | base64 -d)"
 kubectl run analyze --rm -i --restart=Never --image=python:3.13-alpine \
-  --env "PGHOST=$PGHOST" --env "PGUSER=$PGUSER" \
-  --env "PGPASSWORD=$PGPASSWORD" --env "PGDATABASE=$PGDATABASE" \
-  -- sh -c "pip install -q asyncpg && python" < "$PY" \
+  --env "CLICKHOUSE_HOST=clickhouse" --env "CLICKHOUSE_PASSWORD=$CH_PW" \
+  -- python < "$PY" \
   -- --since "$(date -u -v-2d +%Y-%m-%d)" --until "$(date -u +%Y-%m-%d)"
 ```
 
@@ -121,9 +119,3 @@ Run with a narrow time window and custom percentiles, look at the
 ... < "$PY" -- --since 2026-08-24T14:00 --until 2026-08-24T16:00 \
   --percentiles 50,90,95,99,99.9
 ```
-
-## Migration (one-time, destructive)
-
-The same image also contains `migrate_metrics_format.py`. See the Quick
-Reference for the invocation. **Always run with no args (dry-run) first**
-to see row counts before adding `--apply`.
