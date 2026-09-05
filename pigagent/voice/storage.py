@@ -99,6 +99,20 @@ def get_utc_date_for_ms(utc_ms: int) -> str:
 
 # ── ClickHouse row shape (column order must match INSERT) ───────────
 
+
+def _int_ms(value: Any) -> int:
+    """Coerce a telemetry latency value to whole milliseconds for the CH
+    ``Int32`` columns.
+
+    ``metrics.render`` computes latencies as 1-decimal floats (its metrics.*
+    tables are Float columns); the native-protocol INSERT type-checks the
+    row against voice.turns' Int32 columns, so a float there raises
+    TypeMismatchError and the whole row is lost. None/absent → 0."""
+    if value is None:
+        return 0
+    return int(round(float(value)))
+
+
 # Tuple of (column_name, value_extractor) used to build the INSERT
 # row from a TurnStorage instance. The order MUST match the column
 # order in the INSERT statement below. Keep both in sync with
@@ -137,11 +151,11 @@ _CH_ROW_EXTRACTORS: tuple[tuple[str, Callable[["TurnStorage"], Any]], ...] = (
     ("input_pcm_ms",        lambda s: len(s.user_pcm_bytes) * 1000 // (_SAMPLE_RATE * _SAMPLE_WIDTH * _CHANNELS)),
     ("tts_pcm_bytes",       lambda s: len(s.tts_pcm_buf)),
     ("tts_pcm_ms",          lambda s: len(s.tts_pcm_buf) * 1000 // (_SAMPLE_RATE * _SAMPLE_WIDTH * _CHANNELS)),
-    ("e2e_ms",              lambda s: s.telemetry.get("e2e_ms", 0) or 0),
-    ("stt_ms",              lambda s: s.telemetry.get("stt_ms", 0) or 0),
-    ("llm_ttft_ms",         lambda s: s.telemetry.get("llm_ttft_ms", 0) or 0),
-    ("tts_ttfb_ms",         lambda s: s.telemetry.get("tts_ttfb_ms", 0) or 0),
-    ("device_playback_ms",  lambda s: s.telemetry.get("device_playback_ms", 0) or 0),
+    ("e2e_ms",              lambda s: _int_ms(s.telemetry.get("e2e_ms"))),
+    ("stt_ms",              lambda s: _int_ms(s.telemetry.get("stt_ms"))),
+    ("llm_ttft_ms",         lambda s: _int_ms(s.telemetry.get("llm_ttft_ms"))),
+    ("tts_ttfb_ms",         lambda s: _int_ms(s.telemetry.get("tts_ttfb_ms"))),
+    ("device_playback_ms",  lambda s: _int_ms(s.telemetry.get("device_playback_ms"))),
     ("llm_model",           lambda s: s.telemetry.get("llm_model", "")),
 )
 
@@ -581,6 +595,10 @@ class TurnStorage:
         conn = ch_connect(self.clickhouse_dsn)
         async with conn:
             async with conn.cursor() as cur:
+                # Client-side type check: raises a precise Python error naming
+                # the offending column instead of the server's generic "Repeat
+                # query with types_check=True" hint (which drops the whole row).
+                cur.set_types_check(True)
                 await cur.execute(
                     f"INSERT INTO {self.clickhouse_table} ({columns}) VALUES",
                     values,

@@ -7,8 +7,10 @@ the S3-first-then-CH commit order.
 import asyncio
 import io
 import json
+import re
 import struct
 import wave
+from pathlib import Path
 from typing import Callable
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -16,7 +18,7 @@ import pytest
 
 from voice.interims import InterimBuffer
 from voice.segments import compute_voice_segments
-from voice.storage import TurnStorage, get_utc_date_for_ms
+from voice.storage import TurnStorage, _CH_ROW_EXTRACTORS, get_utc_date_for_ms
 
 
 # ── Helpers ────────────────────────────────────────────────────────
@@ -479,6 +481,7 @@ def test_clickhouse_insert_uses_native_insert_shape():
     """
     pytest.importorskip("asynch")
     calls: list[tuple[str, object]] = []
+    types_checks: list[bool] = []
 
     class FakeCursor:
         async def __aenter__(self):
@@ -486,6 +489,9 @@ def test_clickhouse_insert_uses_native_insert_shape():
 
         async def __aexit__(self, *exc):
             return False
+
+        def set_types_check(self, types_check):
+            types_checks.append(types_check)
 
         async def execute(self, query, args):
             calls.append((query, args))
@@ -519,6 +525,9 @@ def test_clickhouse_insert_uses_native_insert_shape():
         asyncio.run(s._clickhouse_insert())
 
     assert len(calls) == 1
+    # Client-side type checking must be on so a future float-on-Int32 leaks a
+    # precise column error in CI instead of the server's generic VALUES hint.
+    assert types_checks == [True], types_checks
     query, args = calls[0]
     assert query.startswith("INSERT INTO voice.turns (")
     assert query.endswith("VALUES")
@@ -535,3 +544,141 @@ def test_clickhouse_insert_uses_native_insert_shape():
     row = args[0]
     assert isinstance(row, tuple) and len(row) == 38
     assert row[0] == s.turn_id
+
+
+def test_latency_columns_coerced_to_int_for_ch_insert():
+    """Regression: the latency telemetry values are 1-decimal floats from
+    ``metrics.render`` (its metrics.* tables are Float columns), but
+    ``voice.turns`` declares ``e2e_ms``/``stt_ms``/``llm_ttft_ms``/
+    ``tts_ttfb_ms``/``device_playback_ms`` as ``Int32``. asynch's native
+    INSERT type-checks the row against the schema, so a float there raised
+    ``TypeMismatchError ... not an integer`` and dropped every real turn —
+    only empty-TTS turns whose values fell back to int ``0`` landed. The
+    extractors must hand the wire an int for these columns."""
+    s = _build_storage()
+    s.s3_uris = {
+        name: f"s3://test-bucket/{s.s3_prefix}/{name}"
+        for name in ("input.wav", "input.json", "tts.wav", "tts.json", "listen.wav", "turn.json")
+    }
+    # Exactly the shape voice/pipecat/telemetry.py:telemetry_snapshot emits.
+    s.set_telemetry(
+        {
+            "e2e_ms": 1243.5,
+            "stt_ms": 840.6,
+            "llm_ttft_ms": 121.8,
+            "tts_ttfb_ms": 240.9,
+            "device_playback_ms": 950.6,
+            "llm_model": "grok-4-3",
+        }
+    )
+    row = {name: extract(s) for name, extract in _CH_ROW_EXTRACTORS}
+    for col, expected in {
+        "e2e_ms": 1244,  # round(1243.5) — half-to-even up
+        "stt_ms": 841,
+        "llm_ttft_ms": 122,
+        "tts_ttfb_ms": 241,
+        "device_playback_ms": 951,  # round(950.6)
+    }.items():
+        val = row[col]
+        assert isinstance(val, int), f"{col} not int: {val!r}"
+        assert val == expected, f"{col}: {val} != {expected}"
+    # Missing/None marks (a turn with no reply) must still land as int 0.
+    empty = _build_storage()
+    empty.s3_uris = {
+        name: f"s3://test-bucket/{empty.s3_prefix}/{name}"
+        for name in ("input.wav", "input.json", "tts.wav", "tts.json", "listen.wav", "turn.json")
+    }
+    row = {name: extract(empty) for name, extract in _CH_ROW_EXTRACTORS}
+    for col in ("e2e_ms", "stt_ms", "llm_ttft_ms", "tts_ttfb_ms", "device_playback_ms"):
+        assert row[col] == 0, f"{col} default: {row[col]!r}"
+
+
+def _ddl_integer_columns() -> set[str]:
+    """Integer-typed (Int*/UInt*) columns of ``voice.turns``, parsed from the
+    canonical migration DDL so the contract tracks schema drift: a column
+    changed to Float drops out of the integer requirement, a newly added Int32
+    column is enforced automatically.
+
+    Reads the base CREATE TABLE (0001) and the ALTER-added columns in
+    0002/0003. Explicitly named files (not a directory glob): the migrations
+    dir will later hold other tables (metrics.*, Float columns) that are not
+    part of the voice.turns INSERT row."""
+    here = Path(__file__).resolve()
+    migrations_dir = next(
+        (p / "clickhouse" / "migrations" for p in here.parents if (p / "clickhouse" / "migrations").exists()),
+        None,
+    )
+    assert migrations_dir is not None, "clickhouse/migrations not found above test file"
+    cols: set[str] = set()
+    column_def = re.compile(r"^([A-Za-z_][A-Za-z0-9_]*)\s+(U?Int\d+)")
+    alter_add = re.compile(
+        r"ADD COLUMN\s+(?:IF NOT EXISTS\s+)?([A-Za-z_][A-Za-z0-9_]*)\s+(U?Int\d+)"
+    )
+    for fname in ("0001_voice_turns.sql", "0002_audio_start_ms.sql", "0003_listen_wav.sql"):
+        path = migrations_dir / fname
+        if not path.exists():
+            continue
+        in_block = False
+        for line in path.read_text(encoding="utf-8").splitlines():
+            s = line.strip()
+            if s.upper().startswith("CREATE TABLE"):
+                in_block = True
+                continue
+            if in_block:
+                # Close on a bare ")" or ") ENGINE ..." (they may share a line).
+                if s.startswith(")"):
+                    in_block = False
+                    continue
+                # Column def: "<name> <U?IntNN>" at line start. Nested IntNN
+                # inside Array(Tuple(...)) does not match (Array is the
+                # top-level type).
+                m = column_def.match(s)
+                if m:
+                    cols.add(m.group(1))
+                continue
+            m = alter_add.search(s)
+            if m:
+                cols.add(m.group(1))
+    return cols
+
+
+def test_ddl_integer_columns_produce_int():
+    """Contract between ``voice.turns`` DDL and the INSERT row: every Int*/
+    UInt* column in the migration must receive a python ``int`` from its
+    extractor. The regression — ``metrics.render``'s 1-decimal float leaking
+    into the Int32 latency columns — was invisible to pyright because the whole
+    chain is typed ``Any`` and the CH schema never enters the type graph; this
+    test makes the DDL the source of truth so a float on an integer column
+    fails in CI, not in production."""
+    int_cols = _ddl_integer_columns()
+    assert int_cols  # parser sanity — the table has integer columns
+    # The exact columns that burned session 92bae407 must be enforced.
+    for col in (
+        "e2e_ms", "stt_ms", "llm_ttft_ms", "tts_ttfb_ms",
+        "device_playback_ms", "utc_start_ms", "input_pcm_ms",
+    ):
+        assert col in int_cols, f"DDL parse missed integer column {col}"
+
+    s = _build_storage()
+    s.s3_uris = {
+        name: f"s3://test-bucket/{s.s3_prefix}/{name}"
+        for name in ("input.wav", "input.json", "tts.wav", "tts.json", "listen.wav", "turn.json")
+    }
+    # Realistic producer output: 1-decimal floats, exactly what
+    # voice/pipecat/telemetry.py:telemetry_snapshot emits for a real turn.
+    s.set_telemetry(
+        {
+            "e2e_ms": 1024.5,
+            "stt_ms": 660.2,
+            "llm_ttft_ms": 240.0,
+            "tts_ttfb_ms": 90.9,
+            "llm_model": "grok-4-3",
+        }
+    )
+    row = {name: extract(s) for name, extract in _CH_ROW_EXTRACTORS}
+    for col in sorted(int_cols):
+        assert col in row, f"extractor row is missing DDL integer column {col}"
+        val = row[col]
+        assert isinstance(val, int) and not isinstance(val, bool), (
+            f"DDL Int column {col} would carry {type(val).__name__}: {val!r}"
+        )
