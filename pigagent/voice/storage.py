@@ -235,16 +235,14 @@ class TurnStorage:
         # ``asr_audio`` mid-flight.
         self.user_pcm_bytes: bytes = b""
         self.tts_pcm_buf = bytearray()
-        # Upstream mic PCM captured AFTER this turn's input window (the
-        # reply-playback / listening period, ending at the next turn's input
-        # start or session end). Filled by the observer at the next turn
-        # boundary; empty until then.
+        # Upstream mic PCM captured during this turn's reply-playback (the
+        # AEC-probe / listening window). Filled by the observer when the
+        # reply finalizes; empty if no reply played.
         self.listen_pcm_bytes: bytes = b""
-        # Commit is deferred to the next turn boundary so the committed row
-        # carries listen.wav. ``finalized_event`` is set when the TTS bridge
-        # (or the observer, for a no-STT turn) has finished marking this
-        # storage — the observer awaits it before committing so a barge-in
-        # that races the TTS mark does not lose the reply.
+        # ``finalized_event`` is set when the TTS bridge (or the observer, for
+        # a no-STT turn / disconnect) has finished marking this storage — the
+        # observer's commit-on-finalize waiter awaits it before committing, so
+        # a barge-in that races the TTS mark does not lose the reply.
         self.finalized = False
         self.finalized_event = asyncio.Event()
         # Computed at commit from Silero chunk flags.

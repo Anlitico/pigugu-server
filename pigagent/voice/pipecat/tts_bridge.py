@@ -430,9 +430,11 @@ class PiguguTtsBridge(FrameProcessor):
                         turn=turn,
                     )
                 )
-                # Commit is deferred to the next turn boundary (the observer
-                # attaches this turn's listen.wav there). Signal finalization
-                # so the observer never commits before the TTS mark lands.
+                # Finalization signals the observer's commit-on-finalize
+                # waiter (turn_storage_observer) to commit this turn NOW — the
+                # reply is over, so a row must land without waiting for the
+                # user's next utterance. The observer attaches this turn's
+                # listen.wav at that point.
                 storage.mark_finalized()
             # Persist the assistant reply and feed STT context. An interrupted
             # reply persists only the spoken portion, explicitly marked as cut

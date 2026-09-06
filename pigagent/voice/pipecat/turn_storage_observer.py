@@ -11,9 +11,10 @@ Sits after the UserTurnProcessor and before the AgentGateway. It:
   device listen/start and UserStartedSpeakingFrame, so a window pointer keyed
   to those signals would pin the window to reply-echo audio and collapse the
   listen window,
-- on ``UserStoppedSpeakingFrame`` closes the previous turn's storage (its
-  listen.wav) and opens this turn's storage (input.wav), deferred to the next
-  boundary so the reply-period listen audio is included,
+- on ``UserStoppedSpeakingFrame`` opens this turn's storage (input.wav), and
+  each storage is committed as soon as the TTS bridge finalizes it (reply
+  drained / interrupted / no-tts) — a row lands right after its reply instead
+  of waiting for the user's next utterance,
 - marks the ``stt_final`` telemetry segment on the first transcript,
 - validates the device ``tts_played`` ack against the current sentence id and
   records ``device_playback_ms``,
@@ -87,9 +88,10 @@ class PiguguTurnStorageObserver(FrameProcessor):
         self._persona_id = persona_id
         self._enabled = is_turn_storage_enabled()
         self._turn_idx = 0
-        # The previous turn's storage, held open until the next turn boundary
-        # so its listen.wav (the reply-playback period) can be attached. The
-        # TTS bridge marks it (stt/tts); the observer closes + commits it.
+        # This turn's open storage, committed by ``_commit_on_finalize`` as
+        # soon as the TTS bridge finalizes it (reply drained / interrupted /
+        # no-tts). A next user turn (sweep) or ``finalize_session`` commit a
+        # storage only when it was never finalized.
         self._open_storage: TurnStorage | None = None
         # Audio routing: non-reply mic audio accumulates in ``_turn_buf`` and
         # becomes the next turn's input.wav; reply-period mic audio (echo) in
@@ -284,10 +286,11 @@ class PiguguTurnStorageObserver(FrameProcessor):
                 TelemetryCollector.set_mark("vad_end", self._state.vad_end_mark)
             self._state.server_received_vad_at = None
             self._state.vad_end_mark = None
-        # Close the PREVIOUS turn's storage in a background task: its listen.wav
-        # is the reply-period audio accumulated in _gap_buf since its reply
-        # played. The task awaits the TTS mark (so the committed row carries the
-        # reply) but never blocks this pipeline frame.
+        # Backstop sweep: a previous turn's storage that was NEVER finalized
+        # (e.g. a wake-word transcript the gateway stripped to empty, so no
+        # reply task ever ran) is committed here, at the next user boundary.
+        # Finalized turns were already committed by their own waiter
+        # (``_commit_on_finalize``), so ``_open_storage`` is normally None here.
         if self._open_storage is not None:
             storage_to_close = self._open_storage
             self._open_storage = None
@@ -339,6 +342,9 @@ class PiguguTurnStorageObserver(FrameProcessor):
         storage.set_user_pcm(turn_pcm)
         self._state.turn_storage = storage
         self._open_storage = storage
+        # Commit this turn as soon as its reply finalizes (see the new
+        # method) — do not wait for the user's next utterance.
+        self._arm_commit_on_finalize(storage)
         # The next turn defaults back to follow_up (a wake word re-arms it).
         self._state.turn_type = "follow_up"
         # A device_playback_ms ack belongs to exactly one turn — reset so the
@@ -355,12 +361,59 @@ class PiguguTurnStorageObserver(FrameProcessor):
         self._saw_text = False
         self._stt_final_marked = False
 
+    def _arm_commit_on_finalize(self, storage: TurnStorage) -> None:
+        """Start the commit-on-finalize waiter for a freshly opened turn."""
+        try:
+            asyncio.ensure_future(self._commit_on_finalize(storage))
+        except RuntimeError:
+            # Loop is closing — nothing will finalize this turn anyway.
+            logger.warning(
+                f"[PiguguTurnStorageObserver] commit waiter not scheduled "
+                f"(loop closing) turn_id={storage.turn_id}"
+            )
+
+    async def _commit_on_finalize(self, storage: TurnStorage) -> None:
+        """Commit this turn's storage the moment the TTS bridge finalizes it
+        (reply drained / interrupted / no-tts), so the row lands right after
+        its reply instead of at the user's next utterance.
+
+        The waiter owns the commit unless the boundary sweep or
+        ``finalize_session`` detached ``_open_storage`` first (a storage that
+        was never finalized) — whoever detached it commits it, so this backs
+        off. The snapshot/commit section is synchronous, hence atomic with
+        respect to ``_route_audio``.
+
+        Waits without a timeout: a reply may legitimately stream for more than
+        ``_FINALIZE_TIMEOUT_SECS``, and a never-finalized storage is cleaned up
+        by the next boundary sweep or session teardown instead."""
+        try:
+            await storage.finalized_event.wait()
+        except asyncio.CancelledError:
+            return  # session teardown — no I/O was started
+        if self._open_storage is not storage:
+            return  # sweep / finalize_session detached it — they own the commit
+        # ``_gap_buf`` holds this turn's reply echo (plus the pre-reply TTFT
+        # silence moved in at the reply-START edge); the reply has ended so it
+        # is stable. The final echo sliver is deliberately not chased — the
+        # listen.wav is only an AEC probe.
+        storage.set_listen_pcm(bytes(self._gap_buf))
+        self._open_storage = None
+        try:
+            asyncio.ensure_future(storage.commit())
+        except RuntimeError:
+            logger.warning(
+                f"[PiguguTurnStorageObserver] commit not scheduled (loop closing) "
+                f"turn_id={storage.turn_id}"
+            )
+
     async def _close_storage(self, storage: TurnStorage) -> None:
         """Background close: wait (bounded) for the TTS bridge to finish
         marking the turn, then commit. Runs off the pipeline's critical path
         and survives cancellation (a torn-down close still commits — the
         storage was already detached from ``_open_storage``, so nothing else
         will)."""
+        if storage is None or storage.commit_started or storage._committed:
+            return
         try:
             await asyncio.wait_for(
                 storage.finalized_event.wait(),
@@ -371,6 +424,11 @@ class PiguguTurnStorageObserver(FrameProcessor):
                 f"[PiguguTurnStorageObserver] finalize timeout "
                 f"turn_id={storage.turn_id}"
             )
+            # Release the commit-on-finalize waiter (audit: it would otherwise
+            # stay blocked on the never-set event for the whole session). It
+            # wakes, finds ``_open_storage`` detached by the sweep, and backs
+            # off — the commit below stays single-owner.
+            storage.mark_finalized()
         except asyncio.CancelledError:
             pass  # loop teardown — fall through and commit anyway
         try:
@@ -384,15 +442,14 @@ class PiguguTurnStorageObserver(FrameProcessor):
             )
 
     async def finalize_session(self) -> None:
-        """Session ended: close the open turn's storage with the trailing
-        audio — its reply echo (``_gap_buf``) plus any non-reply audio that
-        never became a turn (``_turn_buf``: partial utterance / post-reply
-        silence) — and commit. Waits (bounded) for the TTS bridge to finish
-        marking (like ``_close_storage``); only on timeout is the disconnect
-        fallback applied, so a reply actually generated before the disconnect
-        still lands in the row."""
+        """Session ended: commit the open turn's storage that was never
+        finalized by a reply (disconnect before the reply finished / before a
+        reply task ran), preserving the user's audio with the trailing
+        ``_turn_buf`` + ``_gap_buf``. Turns whose reply already finalized were
+        committed by ``_commit_on_finalize`` and detached, so this is purely a
+        disconnect backstop."""
         storage = self._open_storage
-        if storage is None:
+        if storage is None or storage.commit_started or storage._committed:
             return
         self._open_storage = None
         if not storage.finalized:

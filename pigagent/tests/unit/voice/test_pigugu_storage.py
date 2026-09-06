@@ -241,17 +241,12 @@ def _make_observer_turn(*, session_id: str, turn_idx: int) -> TurnStorage:
     )
 
 
-@pytest.mark.asyncio
-async def test_observer_listen_wav_attached_at_next_turn(monkeypatch):
-    """Turn N's listen.wav is the reply-period upstream mic audio (routed by
-    ``client_is_speaking``), attached and committed only when N+1's boundary
-    closes it — the commit is deferred, never losing the reply-playback echo."""
+def _stub_turn_io(monkeypatch, committed: list) -> None:
+    """Env + TurnStorage S3/CH stubs shared by the observer lifecycle tests."""
     monkeypatch.setenv("AUDIO_S3_BUCKET", "test-bucket")
     monkeypatch.setenv("AUDIO_S3_PREFIX", "voice-turns")
     monkeypatch.setenv("CLICKHOUSE_HOST", "ch")
     monkeypatch.setenv("CLICKHOUSE_PASSWORD", "secret")
-
-    committed: list[TurnStorage] = []
 
     async def fake_s3(self, payloads):
         for name in payloads:
@@ -263,22 +258,33 @@ async def test_observer_listen_wav_attached_at_next_turn(monkeypatch):
     monkeypatch.setattr(TurnStorage, "_s3_upload_all", fake_s3)
     monkeypatch.setattr(TurnStorage, "_clickhouse_insert", fake_ch_insert)
 
-    made: list[TurnStorage] = []
+
+def _make_observer(monkeypatch, made: list) -> tuple:
+    """Observer whose ``_make_storage`` records every storage it creates."""
+    state = PiguguTurnState()
+    observer = PiguguTurnStorageObserver(
+        None, state, session_id="s1", client_id="d1", user_id="u1"
+    )
 
     def fake_make_storage():
         s = _make_observer_turn(session_id="s1", turn_idx=len(made) + 1)
         made.append(s)
         return s
 
-    state = PiguguTurnState()
-    observer = PiguguTurnStorageObserver(
-        None,
-        state,
-        session_id="s1",
-        client_id="d1",
-        user_id="u1",
-    )
     monkeypatch.setattr(observer, "_make_storage", fake_make_storage)
+    return state, observer
+
+
+@pytest.mark.asyncio
+async def test_observer_commits_at_finalize_with_reply_echo(monkeypatch):
+    """Turn N commits as soon as the TTS bridge finalizes it (reply drained),
+    WITHOUT waiting for the user's next utterance. Its listen.wav is the
+    reply-period upstream mic audio (TTFT silence routed in at the reply-START
+    edge + reply echo). A later turn or finalize_session is a no-op for it."""
+    committed: list[TurnStorage] = []
+    _stub_turn_io(monkeypatch, committed)
+    made: list[TurnStorage] = []
+    state, observer = _make_observer(monkeypatch, made)
 
     # Turn 1: assistant idle, user speaks → turn buffer. (The STT final
     # arrives before the stop, so this is a real turn, not a phantom.)
@@ -288,48 +294,141 @@ async def test_observer_listen_wav_attached_at_next_turn(monkeypatch):
     observer._saw_text = True
     await observer._on_user_stopped()
     storage1 = made[0]
-    # Nothing committed yet — commit is deferred to the next boundary.
+    # Not finalized yet → nothing committed, no listen window.
     assert committed == []
     assert storage1.listen_pcm_bytes == b""
 
     # TTFT: reply not started yet, device still streams mic (latency silence).
-    # This must NOT go into turn 2's input — it belongs to turn 1's listen,
-    # before the reply echo.
+    # This must land BEFORE the reply echo in turn 1's listen.
     ttft = b"S" * 160
     observer._route_audio(ttft)
 
-    # The reply plays (assistant speaking): the mic keeps streaming and the
-    # echo routes to the GAP buffer (after the TTFT), NOT to turn 2's input.
+    # The reply plays (assistant speaking): the reply-START edge moves the
+    # TTFT silence into the gap buffer, then the echo accumulates after it.
     gap = b"G" * 640
     state.client_is_speaking = True
     observer._route_audio(gap)
-    # Reply finished — the TTS bridge marks turn 1's storage finalized, so the
-    # turn-2 boundary can commit it immediately (no 5s finalize timeout).
+    # Reply drained — the TTS bridge marks the storage finalized: the observer
+    # commits THIS turn now, with no second utterance and no finalize_session.
     storage1.mark_finalized()
+    await asyncio.sleep(0.05)  # let the commit-on-finalize waiter land
+    assert committed == [storage1]
+    assert storage1.listen_pcm_bytes == ttft + gap
 
-    # Turn 2: reply done, user speaks → turn buffer again. This boundary
-    # closes turn 1 and attaches the listening-period audio (TTFT + echo).
+    # Turn 2: reply done, user speaks → a fresh storage; turn 1 stays committed.
     state.client_is_speaking = False
     observer._route_audio(b"C" * 320)
     observer._saw_text = True
     await observer._on_user_stopped()
-    await asyncio.sleep(0.05)  # let the fire-and-forget close + commit land
+    await asyncio.sleep(0.05)
     storage2 = made[1]
     assert committed == [storage1]
-    # Turn 1's listen.wav = TTFT silence + reply echo, in chronological order.
-    assert storage1.listen_pcm_bytes == ttft + gap
-    # Turn 2's input.wav must NOT carry the TTFT silence or the reply echo.
+    # Turn 2's listen must NOT inherit turn 1's echo; its input is its own.
     assert storage2.listen_pcm_bytes == b""
     assert storage2.user_pcm_bytes == b"C" * 320
 
-    # Session end closes the last turn with the trailing non-reply audio.
-    tail = b"T" * 320
-    observer._route_audio(tail)
+    # Turn 2 commits at its own finalize too; finalize_session is then a no-op.
     storage2.mark_finalized()
+    await asyncio.sleep(0.05)
+    assert committed == [storage1, storage2]
     await observer.finalize_session()
     await asyncio.sleep(0.05)
     assert committed == [storage1, storage2]
-    assert storage2.listen_pcm_bytes == tail
+
+
+@pytest.mark.asyncio
+async def test_observer_commits_interrupted_reply_at_interruption(monkeypatch):
+    """A reply cut off by barge-in commits AT the interruption (its storage is
+    finalized by the TTS task's cancel finally) — not at the next user turn."""
+    committed: list[TurnStorage] = []
+    _stub_turn_io(monkeypatch, committed)
+    made: list[TurnStorage] = []
+    state, observer = _make_observer(monkeypatch, made)
+
+    state.client_is_speaking = False
+    observer._route_audio(b"A" * 320)
+    observer._saw_text = True
+    await observer._on_user_stopped()
+    storage1 = made[0]
+    assert committed == []
+
+    # Reply plays → echo into the gap buffer.
+    gap = b"G" * 640
+    state.client_is_speaking = True
+    observer._route_audio(gap)
+    # Barge-in: the TTS task's finally records the interruption and finalizes.
+    storage1.mark_tts_complete("partial", ok=False, truncated_reason="barge_in")
+    storage1.mark_finalized()
+    await asyncio.sleep(0.05)
+    assert committed == [storage1]
+    assert storage1.tts_status == "interrupted"
+    assert storage1.tts_truncated_reason == "barge_in"
+    assert storage1.listen_pcm_bytes == gap
+
+
+@pytest.mark.asyncio
+async def test_observer_finalize_session_backstops_never_finalized_storage(
+    monkeypatch,
+):
+    """A turn whose reply never finalized (disconnect before the reply) is
+    committed by ``finalize_session`` with the trailing audio + disconnect
+    reason — the pure disconnect backstop."""
+    monkeypatch.setattr(
+        "voice.pipecat.turn_storage_observer._FINALIZE_TIMEOUT_SECS", 0.02
+    )
+    committed: list[TurnStorage] = []
+    _stub_turn_io(monkeypatch, committed)
+    made: list[TurnStorage] = []
+    state, observer = _make_observer(monkeypatch, made)
+
+    state.client_is_speaking = False
+    observer._route_audio(b"A" * 320)
+    observer._saw_text = True
+    await observer._on_user_stopped()
+    storage1 = made[0]
+    assert committed == []
+
+    # Trailing non-reply mic audio after the turn.
+    tail = b"T" * 320
+    observer._route_audio(tail)
+    await observer.finalize_session()
+    await asyncio.sleep(0.05)
+    assert committed == [storage1]
+    assert storage1.tts_truncated_reason == "disconnect"
+    assert storage1.listen_pcm_bytes == tail
+
+
+@pytest.mark.asyncio
+async def test_observer_next_user_stop_sweeps_never_finalized_storage(
+    monkeypatch,
+):
+    """The next user boundary stays a backstop for a storage that was never
+    finalized (e.g. a wake-word transcript the gateway stripped to empty): it
+    is committed there, not left dangling until disconnect."""
+    monkeypatch.setattr(
+        "voice.pipecat.turn_storage_observer._FINALIZE_TIMEOUT_SECS", 0.02
+    )
+    committed: list[TurnStorage] = []
+    _stub_turn_io(monkeypatch, committed)
+    made: list[TurnStorage] = []
+    state, observer = _make_observer(monkeypatch, made)
+
+    # Turn 1 stops but its reply never finalizes (no turn frame → no TTS).
+    state.client_is_speaking = False
+    observer._route_audio(b"A" * 320)
+    observer._saw_text = True
+    await observer._on_user_stopped()
+    storage1 = made[0]
+    assert committed == []
+
+    # Turn 2's boundary sweeps turn 1.
+    observer._route_audio(b"B" * 320)
+    observer._saw_text = True
+    await observer._on_user_stopped()
+    await asyncio.sleep(0.05)
+    assert len(made) == 2
+    assert committed == [storage1]
+    assert storage1.listen_pcm_bytes == b""  # no reply ever played
 
 
 @pytest.mark.asyncio
