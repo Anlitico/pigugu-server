@@ -29,11 +29,16 @@ from voice.pipecat.pigugu_serializer import PiguguOutputMessageFrame, PiguguUser
 class PiguguAgentGateway(FrameProcessor):
     """Accumulate turn transcript; emit one ``PiguguUserTurnFrame`` on turn end."""
 
-    def __init__(self, on_turn=None, *, state=None, **kwargs):
+    def __init__(self, on_turn=None, *, state=None, emit_turn_start: bool = True, **kwargs):
         super().__init__(**kwargs)
         self._text_parts: list[str] = []
         self._on_turn = on_turn
         self._state = state
+        # turn/start is a promise that a reply will eventually be voiced and a
+        # tts/stop·abort will release the device's idle pause. Only the full
+        # chain (with a TTS bridge) can honor it — the no-TTS (M2) chain would
+        # dispatch a turn nobody answers, leaving the device disarmed.
+        self._emit_turn_start = emit_turn_start
         # Turn context captured from the FIRST transcript of the turn. The
         # observer (upstream) resets state.turn_type to "follow_up" on
         # UserStoppedSpeakingFrame, so by the time this processor merges, the
@@ -62,6 +67,15 @@ class PiguguAgentGateway(FrameProcessor):
                 await self.push_frame(
                     PiguguOutputMessageFrame(message={"type": "stt", "text": merged})
                 )
+                # turn/start: generation for this turn is starting (before any
+                # audio is ready). The device pauses its silence-idle timer so a
+                # slow LLM/tool turn is never killed, and resets its follow-up
+                # window — the turn's tts/stop·abort releases it. Every real
+                # turn (wake-word or follow-up) passes through this dispatch.
+                if self._emit_turn_start:
+                    await self.push_frame(
+                        PiguguOutputMessageFrame(message={"type": "turn", "state": "start"})
+                    )
                 await self.push_frame(PiguguUserTurnFrame(text=merged))
         # Pass everything downstream (audio dies at the output transport, which
         # only sends Opus / control frames).

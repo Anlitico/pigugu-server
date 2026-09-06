@@ -10,6 +10,8 @@ callback, which stops the worker gracefully).
 from __future__ import annotations
 
 import asyncio
+import math
+import os
 import time
 import uuid
 from typing import Any
@@ -37,11 +39,41 @@ from voice.pipecat.tts_bridge import PiguguTtsBridge
 from voice.pipecat.turn_storage_observer import PiguguTurnStorageObserver
 from voice.pipecat.vad_bridge import PiguguVadBridge
 
-# Idle timeout for the pipeline worker: a session with no liveness frames for
-# this long is dropped instead of leaking. Liveness frames are the device mic
-# stream (see the PipelineWorker comment in run()); an idle-connected device
-# that has stopped streaming is dropped, but an active conversation stays up.
-IDLE_TIMEOUT_SECS = 120
+# idle#1 (silence): bot finishes a reply, then this long with no new user
+# turn → close the WS. Driven by the UserIdleController that UserTurnProcessor
+# embeds (see _default_processors). Default 30s = the PRD follow-up window.
+# idle#2 (device lost): a session that stops receiving audio frames for this
+# long is judged dead (power off / network drop — the device never sent a clean
+# close). Realtime devices stream mic audio whenever connected, so an idle WS
+# with no frames only happens on abnormal loss. The PipelineWorker's
+# on_idle_timeout fires here (idle_timeout_frames=(InputAudioRawFrame,)).
+# Shrunk from the old 120s backstop to a ~30s reap.
+#
+# The prod values are injected by deploy.yml into the agent ConfigMap (see
+# k8s/agent.yaml). Tolerate a non-numeric value (e.g. a stray placeholder from
+# an out-of-band `kubectl apply`, or a mistyped Actions variable) instead of
+# crashing the pod at import: warn and fall back to the 30s default.
+
+
+def _env_float(name: str, default: float) -> float:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    try:
+        val = float(raw)
+    except ValueError:
+        logger.warning(f"[PiguguSession] {name}={raw!r} not a number — using {default}")
+        return default
+    if not math.isfinite(val):
+        # nan/inf parse but would poison asyncio.wait_for / idle timeouts
+        # (nan raises at runtime); treat them as misconfig like any bad value.
+        logger.warning(f"[PiguguSession] {name}={raw!r} not finite — using {default}")
+        return default
+    return val
+
+
+VOICE_IDLE_SILENCE_SECS = _env_float("VOICE_IDLE_SILENCE_SECS", 30.0)
+VOICE_LOST_TIMEOUT_SECS = _env_float("VOICE_LOST_TIMEOUT_SECS", 30.0)
 
 
 def _stop_strategies(stt):
@@ -75,32 +107,44 @@ def _default_processors(
     client_id: str = "",
     user_id: str = "",
     persona_id: int = 1,
-) -> tuple[list[FrameProcessor], PiguguTurnState, PiguguTtsBridge | None, PiguguTurnStorageObserver | None]:
+    user_idle_timeout: float = 0,
+) -> tuple[
+    list[FrameProcessor],
+    PiguguTurnState,
+    PiguguTtsBridge | None,
+    PiguguTurnStorageObserver | None,
+    UserTurnProcessor | None,
+]:
     state = PiguguTurnState()
     if vad is None and stt is None and pig is None and tts is None:
         # M1: loopback echo until the real chain is wired up.
-        return [PiguguEchoProcessor()], state, None, None
+        return [PiguguEchoProcessor()], state, None, None, None
     if tts is None:
         # M2: no TTS yet — stop at transcript accumulation.
+        turn_processor = UserTurnProcessor(
+            user_turn_strategies=UserTurnStrategies(
+                # Official pipecat barge-in pattern (turn-management
+                # interruption example): MinWords gates turn start by word
+                # count, and only while the bot is speaking — a short
+                # affirmation can't interrupt, a real interruption needs
+                # min_words. Turn start broadcasts the interruption
+                # (enable_interruptions defaults True): a user turn starting
+                # over the bot IS the barge-in.
+                start=[MinWordsUserTurnStartStrategy(min_words=3)],
+                stop=_stop_strategies(stt),
+            ),
+            user_idle_timeout=user_idle_timeout,
+        )
         chain = [
             PiguguVadBridge(vad, state=state),
             PiguguSttBridge(stt, state=state, context_loader=stt_context_loader),
-            UserTurnProcessor(
-                user_turn_strategies=UserTurnStrategies(
-                    # Official pipecat barge-in pattern (turn-management
-                    # interruption example): MinWords gates turn start by word
-                    # count, and only while the bot is speaking — a short
-                    # affirmation can't interrupt, a real interruption needs
-                    # min_words. Turn start broadcasts the interruption
-                    # (enable_interruptions defaults True): a user turn starting
-                    # over the bot IS the barge-in.
-                    start=[MinWordsUserTurnStartStrategy(min_words=3)],
-                    stop=_stop_strategies(stt),
-                ),
-            ),
-            PiguguAgentGateway(state=state),
+            turn_processor,
+            # No tts_bridge in this chain: a dispatched turn would never reach
+            # a tts/stop·abort, so turn/start (a promise of a release) must not
+            # be sent — it would leave the device's idle pause armed forever.
+            PiguguAgentGateway(state=state, emit_turn_start=False),
         ]
-        return chain, state, None, None
+        return chain, state, None, None, turn_processor
     # M3/M4: full loop — turn transcript → LLM → Cartesia → paced Opus, with
     # per-turn TurnStorage built by the observer and committed by the TTS bridge.
     # ``pig`` may be None: the TTS bridge creates it lazily on the first turn
@@ -130,21 +174,23 @@ def _default_processors(
     # Providers without it (Deepgram) keep a fully inert path.
     if stt is not None and getattr(stt, "supports_context", False):
         tts_bridge.set_stt_context_cb(stt_bridge.push_context)
+    turn_processor = UserTurnProcessor(
+        user_turn_strategies=UserTurnStrategies(
+            # Official pipecat barge-in pattern (see the M2 branch comment).
+            start=[MinWordsUserTurnStartStrategy(min_words=3)],
+            stop=_stop_strategies(stt),
+        ),
+        user_idle_timeout=user_idle_timeout,
+    )
     chain = [
         vad_bridge,
         stt_bridge,
-        UserTurnProcessor(
-            user_turn_strategies=UserTurnStrategies(
-                # Official pipecat barge-in pattern (see the M2 branch comment).
-                start=[MinWordsUserTurnStartStrategy(min_words=3)],
-                stop=_stop_strategies(stt),
-            ),
-        ),
+        turn_processor,
         observer,
         PiguguAgentGateway(state=state),
         tts_bridge,
     ]
-    return chain, state, tts_bridge, observer
+    return chain, state, tts_bridge, observer, turn_processor
 
 
 class PiguguSession:
@@ -176,10 +222,17 @@ class PiguguSession:
         self._observer: PiguguTurnStorageObserver | None = None
         self._inject_queue: asyncio.Queue[dict] = asyncio.Queue()
         self._inject_task: asyncio.Task | None = None
+        self._user_turn: UserTurnProcessor | None = None
         if processors is not None:
             self._processors = processors
         else:
-            self._processors, self.state, self._tts_bridge, self._observer = _default_processors(
+            (
+                self._processors,
+                self.state,
+                self._tts_bridge,
+                self._observer,
+                self._user_turn,
+            ) = _default_processors(
                 vad=vad,
                 stt=stt,
                 pig=pig,
@@ -189,9 +242,11 @@ class PiguguSession:
                 client_id=client_id,
                 user_id=self.user_id,
                 persona_id=persona_id,
+                user_idle_timeout=VOICE_IDLE_SILENCE_SECS,
             )
         self._worker: PipelineWorker | None = None
         self._stop_requested = False
+        self._idle_closing = False
 
     @property
     def serializer(self) -> PiguguFrameSerializer:
@@ -202,6 +257,36 @@ class PiguguSession:
             await self._worker.stop_when_done()
         else:
             self._stop_requested = True
+
+    # ── idle close (idle#1 silence / idle#2 device lost) ─────────────
+
+    async def _close_for_idle(self, reason: str) -> None:
+        """Server-initiated idle close: log the reason, close the device WS,
+        and let the input transport's read loop end (its finally fires
+        ``_on_disconnect`` → graceful worker stop → storage finalize)."""
+        if self._idle_closing:
+            return
+        self._idle_closing = True
+        logger.info(f"[PiguguSession] {self.session_id} idle close: {reason}")
+        try:
+            await self._ws.close()
+        except Exception:
+            logger.debug(f"[PiguguSession] {self.session_id} idle close ws error", exc_info=True)
+        # The read-loop finally may have raced us; make sure the worker stops
+        # even if the ws was already gone.
+        await self._on_disconnect()
+
+    async def _on_user_turn_idle(self, *_args: Any) -> None:
+        # idle#1: bot finished a reply and the user stayed silent for
+        # VOICE_IDLE_SILENCE_SECS with no new turn. Fired by the
+        # UserIdleController embedded in our UserTurnProcessor.
+        await self._close_for_idle("idle_no_speech")
+
+    async def _on_pipeline_idle_timeout(self, *_args: Any) -> None:
+        # idle#2: no audio frame for VOICE_LOST_TIMEOUT_SECS — the device is
+        # gone without a clean close (power off / network drop). Fired by the
+        # PipelineWorker on_idle_timeout.
+        await self._close_for_idle("lost")
 
     # ── inject (roast etc.), from the REST side via send_inject ───────
 
@@ -264,9 +349,20 @@ class PiguguSession:
             # liveness signal: it flows in every conversation state (including
             # TTS playback) and stops only when the device returns to standby.
             idle_timeout_frames=(InputAudioRawFrame,),
-            idle_timeout_secs=IDLE_TIMEOUT_SECS,
+            idle_timeout_secs=VOICE_LOST_TIMEOUT_SECS,
+            # idle#2: on_idle_timeout fires after no audio frame for
+            # VOICE_LOST_TIMEOUT_SECS (device lost). We own the teardown in
+            # _on_pipeline_idle_timeout (close WS → read loop ends → graceful
+            # stop → storage finalize), so disable the worker's own auto-cancel
+            # — two concurrent teardown paths would race.
+            cancel_on_idle_timeout=False,
             name=f"pigugu-{self.session_id}",
         )
+        self._worker.event_handler("on_idle_timeout")(self._on_pipeline_idle_timeout)
+        # idle#1: UserTurnProcessor embeds UserIdleController; arm it with the
+        # silence window and close the WS when it fires.
+        if self._user_turn is not None:
+            self._user_turn.event_handler("on_user_turn_idle")(self._on_user_turn_idle)
         self._inject_task = asyncio.ensure_future(self._inject_consumer())
         logger.info(f"[PiguguSession] {self.session_id} pipeline running")
         if self._stop_requested:

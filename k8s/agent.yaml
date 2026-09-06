@@ -31,6 +31,11 @@ data:
   # Metrics exporter (metrics/*.py): routes per-turn/compression telemetry to
   # the CH `metrics` database. Off by default in code — keep ON in prod.
   ENABLE_METRICS_EXPORT: "true"
+  # Device-idle timers (seconds). Values injected by deploy.yml from GitHub
+  # Actions variables at apply time (see __VOICE_IDLE_SILENCE_SECS__ there);
+  # code defaults to 30 if unset.
+  VOICE_IDLE_SILENCE_SECS: "__VOICE_IDLE_SILENCE_SECS__"
+  VOICE_LOST_TIMEOUT_SECS: "__VOICE_LOST_TIMEOUT_SECS__"
 ---
 apiVersion: apps/v1
 kind: Deployment

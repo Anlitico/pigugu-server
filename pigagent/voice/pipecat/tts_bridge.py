@@ -148,6 +148,11 @@ class PiguguTtsBridge(FrameProcessor):
         if self._tts is None:
             logger.warning("[PiguguTtsBridge] no tts wired — dropping turn")
             self._finalize_failed_storage(storage, text, "no_tts")
+            # The gateway already sent turn/start (device paused its idle
+            # timer); release it — this turn will never voice. No audio was
+            # started, so abort is a harmless no-op on the device that returns
+            # it to idle counting.
+            await self._push_message({"type": "tts", "state": "abort"})
             return
         # The PigAgent is lazy: it needs the user id + hw_id from the device
         # hello, which arrive after the session is built. Create it here on the
@@ -157,6 +162,8 @@ class PiguguTtsBridge(FrameProcessor):
             if self._pig is None:
                 logger.warning("[PiguguTtsBridge] no PigAgent — dropping turn")
                 self._finalize_failed_storage(storage, text, "agent_failed")
+                # Release the device's idle pause (see the no_tts branch above).
+                await self._push_message({"type": "tts", "state": "abort"})
                 return
         if storage is not None:
             storage.mark_stt_final(text)
