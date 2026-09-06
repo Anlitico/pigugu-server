@@ -161,12 +161,25 @@ async def test_full_conversation_loop():
 
     seen = result["seen"]
     # Protocol order: the merged stt text first (device displays it), then
-    # tts/start, audio, and finally tts/stop.
+    # turn/start (generation begins — the device pauses its silence-idle timer
+    # on it, audit#1 fix), then tts/start, audio, and finally tts/stop.
     assert seen[0][0] == "msg"
     stt = seen[0][1]
     assert stt["type"] == "stt" and stt["text"] == EXPECTED_MERGED
     start = next(p for kind, p in seen if kind == "msg" and p.get("type") == "tts" and p.get("state") == "start")
     assert start["sentence_id"] == 1
+    def _msg_pos(pred) -> int:
+        for i, (kind, p) in enumerate(seen):
+            if kind == "msg" and pred(p):
+                return i
+        return -1
+
+    i_turn = _msg_pos(lambda p: p.get("type") == "turn" and p.get("state") == "start")
+    i_start = _msg_pos(lambda p: p.get("type") == "tts" and p.get("state") == "start")
+    assert i_turn > 0, "turn/start must follow the stt echo"
+    assert (
+        i_turn < i_start
+    ), "turn/start must precede tts/start (device pauses idle during generation)"
     assert seen[-1][0] == "msg"
     stop = seen[-1][1]
     assert stop["type"] == "tts" and stop["state"] == "stop"

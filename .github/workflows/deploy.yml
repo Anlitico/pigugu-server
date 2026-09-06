@@ -211,6 +211,8 @@ jobs:
       env:
         ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
         IMAGE_TAG: ${{ github.event.inputs.image_tag }}
+        VOICE_IDLE_SILENCE_SECS: ${{ vars.VOICE_IDLE_SILENCE_SECS }}
+        VOICE_LOST_TIMEOUT_SECS: ${{ vars.VOICE_LOST_TIMEOUT_SECS }}
         DATABASE_URL: postgresql+asyncpg://pigugu:${{ secrets.DB_PASSWORD }}@pigugu-db.c1esma68egsk.us-west-1.rds.amazonaws.com:5432/pigugu
         REDIS_URL: redis://pigugu-redis.feoudk.ng.0001.usw1.cache.amazonaws.com:6379/0
         LIVEKIT_URL: ${{ secrets.LIVEKIT_URL }}
@@ -277,10 +279,15 @@ jobs:
         path.write_text(text)
         PY
         
-        # Apply K8s manifests
+        # Apply K8s manifests.
         kubectl apply -f k8s/secrets.yaml
         kubectl apply -f k8s/api.yaml
-        kubectl apply -f k8s/agent.yaml
+        # agent.yaml's configMap carries the device-idle timers as placeholders
+        # injected from Actions variables (code defaults to 30 if a variable is
+        # unset — fall back here so the pod never gets an empty value).
+        sed -e "s|__VOICE_IDLE_SILENCE_SECS__|${VOICE_IDLE_SILENCE_SECS:-30}|g" \
+            -e "s|__VOICE_LOST_TIMEOUT_SECS__|${VOICE_LOST_TIMEOUT_SECS:-30}|g" \
+            k8s/agent.yaml | kubectl apply -f -
         kubectl apply -f k8s/fluent-bit.yaml
         kubectl apply -f crawler/deploy/cronjob.yaml
         # Remove old trump-crawler if it still exists

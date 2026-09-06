@@ -394,6 +394,82 @@ async def test_server_wiring_full_turn(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_reply_silence_triggers_server_idle_close(monkeypatch):
+    """idle#1: after a full turn completes (bot reply ends → BotStopped), the
+    server's UserIdleController (embedded in UserTurnProcessor) arms the
+    VOICE_IDLE_SILENCE_SECS window; if the user stays silent (no follow-up
+    turn), the server closes the WS with the idle_no_speech reason instead of
+    waiting for the device. VOICE_LOST_TIMEOUT_SECS is left at default so the
+    worker idle (idle#2) does not fire first."""
+    monkeypatch.setattr(server, "_get_shared_vad", lambda: FakeVAD())
+    monkeypatch.setattr(server, "_get_shared_stt", lambda: FakeSTT())
+    monkeypatch.setattr(server, "_get_shared_tts", lambda: FakeTTS())
+
+    async def _fake_ensure_pig(self):  # noqa: ARG001
+        return FakeAgent()
+
+    monkeypatch.setattr(PiguguTtsBridge, "_ensure_pig", _fake_ensure_pig)
+
+    import voice.pipecat.session as session_mod
+
+    monkeypatch.setattr(session_mod, "VOICE_IDLE_SILENCE_SECS", 0.8)
+
+    from websockets.exceptions import ConnectionClosed
+
+    records: list[str] = []
+    sink_id = server.logger.add(records.append, level="INFO")
+
+    async def on_connect(ws):
+        await server._on_connect(ws)
+
+    try:
+        async with serve(on_connect, "127.0.0.1", 0) as wss:
+            port = wss.sockets[0].getsockname()[1]
+            async with websockets.connect(
+                f"ws://127.0.0.1:{port}", additional_headers={"client-id": "idle-silence"}
+            ) as ws:
+                await ws.send(
+                    json.dumps(
+                        {
+                            "type": "hello",
+                            "version": 1,
+                            "transport": "websocket",
+                            "persona_id": 3,
+                            "hw_id": "hw-42",
+                            "audio_params": {
+                                "format": "opus",
+                                "sample_rate": 16000,
+                                "channels": 1,
+                                "frame_duration": 60,
+                            },
+                        }
+                    )
+                )
+                await asyncio.wait_for(ws.recv(), 5)  # hello reply
+                await ws.send(json.dumps({"type": "listen", "state": "start"}))
+                await asyncio.sleep(0.2)
+                for _ in range(3):
+                    await ws.send(_make_opus_tone())
+                # Drive one full turn: audio → utterance-end → agent → TTS stop.
+                seen: list[tuple[str, object]] = []
+                await _read_until_stop(ws, seen)
+
+                # Reply finished; now the server arms idle#1 (0.8s). With no
+                # follow-up audio/turn the server must close the WS itself.
+                closed: list[str] = []
+                try:
+                    while True:
+                        await asyncio.wait_for(ws.recv(), timeout=5)
+                except ConnectionClosed:
+                    closed.append("closed")
+                assert closed, "server did not idle-close after reply silence"
+    finally:
+        server.logger.remove(sink_id)
+
+    assert any("idle_no_speech" in r for r in records), records
+
+
+@pytest.mark.asyncio
 async def test_vad_silence_does_not_end_turn_utterance_end_does(monkeypatch):
     """STT-only turn-end: VAD silence must NOT end the turn even when Silero
     reports a voice→silence transition — only the Deepgram utterance-end
@@ -520,7 +596,7 @@ async def test_session_idle_survives_active_audio(monkeypatch):
 
     import voice.pipecat.session as session_mod
 
-    monkeypatch.setattr(session_mod, "IDLE_TIMEOUT_SECS", 1.0)
+    monkeypatch.setattr(session_mod, "VOICE_LOST_TIMEOUT_SECS", 1.0)
 
     from websockets.exceptions import ConnectionClosed
 
