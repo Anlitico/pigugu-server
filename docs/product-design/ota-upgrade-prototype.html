@@ -1,0 +1,411 @@
+<title>Pigugu 固件升级原型</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Noto+Sans+SC:wght@500;700;900&family=JetBrains+Mono:wght@500;700&display=swap" rel="stylesheet">
+<style>
+  :root{
+    --page:#eef2f8; --ink:#0f172a; --slate6:#475569; --slate5:#64748b; --slate4:#94a3b8;
+    --line:#e2e8f0; --line2:#cbd5e1; --card:#ffffff; --soft:#f8fafc;
+    --acc:#6366f1; --acc2:#4f46e5; --accSoft:rgba(99,102,241,.1); --accLine:rgba(99,102,241,.35);
+    --ok:#10b981; --okSoft:#ecfdf5; --okLine:#a7f3d0; --okInk:#047857;
+    --warn:#f59e0b; --warnSoft:#fffbeb; --warnLine:#fde68a; --warnInk:#b45309;
+    --bad:#ef4444; --badSoft:#fef2f2; --badLine:#fecaca; --badInk:#b91c1c;
+    --mono:'JetBrains Mono',ui-monospace,'SF Mono',Menlo,monospace;
+    --sans:'Noto Sans SC','PingFang SC','Microsoft YaHei',system-ui,-apple-system,sans-serif;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;padding:0}
+  body{
+    background:var(--page);
+    background-image:radial-gradient(900px 360px at 12% -4%, rgba(99,102,241,.09), transparent 60%),radial-gradient(700px 300px at 96% 0%, rgba(99,102,241,.07), transparent 55%);
+    background-attachment:fixed;
+    color:var(--ink); font-family:var(--sans); min-height:100vh; -webkit-font-smoothing:antialiased;
+  }
+  .wrap{max-width:1320px; margin:0 auto; padding:34px 26px 90px}
+  .mast .eyebrow{font-family:var(--mono); font-size:11px; letter-spacing:.34em; color:var(--slate4); text-transform:uppercase; margin:0 0 14px}
+  .mast h1{font-size:30px; font-weight:900; letter-spacing:-.01em; margin:0 0 6px; text-wrap:balance}
+  .mast p.sub{color:var(--slate6); margin:0 0 18px; font-size:14px; max-width:66ch; line-height:1.65}
+  .tokens{display:flex; gap:8px; flex-wrap:wrap; margin-bottom:6px}
+  .tk{font-family:var(--mono); font-size:11px; color:var(--slate6); background:#fff; border:1px solid var(--line); padding:4px 9px; border-radius:999px}
+  .tk b{color:var(--ink); font-weight:600}
+  .dotc{display:inline-block; width:9px; height:9px; border-radius:50%; margin-right:6px; vertical-align:-1px}
+  .dotc.grad{background:linear-gradient(140deg,var(--acc),var(--acc2))}
+
+  .grid{display:grid; grid-template-columns: 340px 340px minmax(240px,1fr); gap:26px; align-items:start; margin-top:10px}
+  @media (max-width:1060px){ .grid{grid-template-columns:340px 340px} .notes{grid-column:1/-1} }
+  @media (max-width:760px){ .grid{grid-template-columns:minmax(0,340px)} .phonewrap2{grid-column:1/-1} }
+
+  .frame-title{display:flex; align-items:baseline; gap:10px; margin:14px 2px 8px}
+  .frame-title h2{font-size:14px; font-weight:700; margin:0}
+  .frame-title span{font-family:var(--mono); font-size:10px; color:var(--slate4); letter-spacing:.02em}
+
+  .phone{width:340px; aspect-ratio:9/19; background:#0d1117; border-radius:36px; padding:10px; box-shadow:0 30px 60px -34px rgba(15,23,42,.45), inset 0 0 0 2px rgba(255,255,255,.04); position:relative; overflow:hidden}
+  .screen{position:absolute; inset:10px; border-radius:27px; background:linear-gradient(180deg,#fbfcfe,#f1f5f9); overflow:hidden; display:flex; flex-direction:column}
+  .notch{position:absolute; top:0; left:50%; transform:translateX(-50%); width:96px; height:20px; background:#0d1117; border-radius:0 0 14px 14px; z-index:6}
+  .statusbar{height:34px; flex:none; display:flex; justify-content:space-between; align-items:center; padding:0 18px; font-family:var(--mono); font-size:10px; color:var(--ink)}
+  .scr{position:relative; flex:1; padding:6px 16px 18px; overflow:hidden; display:flex; flex-direction:column}
+
+  /* ---------- left: device tab ---------- */
+  .navline{display:flex; align-items:center; justify-content:space-between; margin:2px 2px 10px}
+  .navline .ttl{font-size:20px; font-weight:800; letter-spacing:-.01em}
+  .pill{font-size:10px; font-family:var(--mono); color:var(--acc); background:var(--accSoft); border:1px solid var(--accLine); padding:3px 8px; border-radius:999px}
+  .cards{flex:1; display:flex; flex-direction:column; gap:12px; overflow-y:auto}
+
+  .idcard{position:relative; border-radius:22px; padding:16px 16px 13px; background:var(--card); border:1px solid var(--line2);
+    box-shadow:0 14px 30px -18px rgba(15,23,42,.35); overflow:hidden}
+  .idcard::before{content:''; position:absolute; left:0; top:0; right:0; height:4px; background:linear-gradient(90deg,var(--acc),var(--acc2))}
+  .idhead{display:flex; justify-content:space-between; align-items:flex-start}
+  .idname{font-size:16px; font-weight:800; color:var(--ink)}
+  .idsub{font-family:var(--mono); font-size:10px; color:var(--slate4); margin-top:3px}
+  .state-chip{font-size:10px; font-family:var(--mono); padding:3px 8px; border-radius:999px; font-weight:600}
+  .state-chip.on{background:var(--okSoft); border:1px solid var(--okLine); color:var(--okInk)}
+  .state-chip.off{background:#f1f5f9; border:1px solid var(--line); color:var(--slate5)}
+  .idface{width:50px;height:50px;border-radius:13px; margin:12px 0; background:radial-gradient(circle at 34% 28%, #fff, #b9bdfb 46%, var(--acc) 100%); box-shadow:0 5px 14px -4px rgba(99,102,241,.6), inset 0 0 0 1.5px rgba(255,255,255,.6)}
+  .idrows{margin-top:4px}
+  .idrow{display:flex; justify-content:space-between; gap:10px; font-size:11px; padding:4px 0; border-top:1px solid var(--line)}
+  .idrow .k{color:var(--slate5)}
+  .idrow .v{font-family:var(--mono); color:var(--ink); white-space:nowrap; overflow:hidden; text-overflow:ellipsis}
+  .fw-inline{margin-top:9px; border-top:1px dashed var(--line2); padding-top:8px; font-size:11px; display:flex; align-items:center; gap:6px}
+
+  .glasspanel{background:var(--card); border:1px solid var(--line2); border-radius:18px; padding:13px; display:flex; flex-direction:column; gap:10px; box-shadow:0 10px 22px -16px rgba(15,23,42,.3)}
+  .topglass{background:#fff; border:1px solid var(--line2); border-radius:16px; padding:11px; margin-bottom:12px; box-shadow:0 8px 18px -16px rgba(15,23,42,.3)}
+
+  .fwtitle{display:flex; align-items:center; gap:10px}
+  .fwtitle .ico{width:34px;height:34px;border-radius:11px; display:grid;place-items:center; font-size:16px; background:linear-gradient(140deg,var(--acc),var(--acc2)); color:#fff; box-shadow:0 6px 12px -6px rgba(79,70,229,.7)}
+  .fwtitle .icotint{background:var(--badSoft); box-shadow:none}
+  .fwtitle b{font-size:13.5px; font-weight:700; color:var(--ink); display:block}
+  .fwtitle .ver{font-family:var(--mono); font-size:10.5px; color:var(--slate5); display:block; margin-top:2px}
+  .fwmeta{font-size:11px; color:var(--slate5); line-height:1.5}
+  .fwbtns{display:flex; gap:8px}
+  .btn{flex:1; border:0; border-radius:12px; padding:9px 0; font-family:var(--sans); font-weight:700; font-size:12.5px; cursor:pointer; transition:transform .05s}
+  .btn:active{transform:scale(.97)}
+  .btn.ghost{background:#fff; border:1px solid var(--line2); color:var(--slate6)}
+  .btn.prim{background:linear-gradient(140deg,var(--acc),var(--acc2)); color:#fff; box-shadow:0 8px 16px -8px rgba(79,70,229,.8)}
+  .btn.red{background:linear-gradient(140deg,#f87171,#ef4444); color:#fff; box-shadow:0 8px 16px -8px rgba(239,68,68,.7)}
+  .btn.sm{padding:6px 10px; font-size:11px; flex:0 0 auto}
+  .prog{height:7px; border-radius:99px; background:#e2e8f0; overflow:hidden}
+  .prog i{display:block; height:100%; width:0%; border-radius:99px; background:linear-gradient(90deg,var(--acc),var(--acc2))}
+  .prog i.shim{background:linear-gradient(90deg,var(--acc),var(--acc2),var(--acc));background-size:200% 100%;animation:shimmer 1.3s linear infinite}
+  .barstat{display:flex; justify-content:space-between; font-size:10.5px; color:var(--slate5)}
+  .barstat b{font-family:var(--mono); color:var(--ink)}
+
+  /* ---------- right: upgrade page ---------- */
+  .upbtn{position:absolute; left:14px; top:6px; width:30px;height:30px; display:grid;place-items:center; color:var(--ink); z-index:3; border-radius:10px; background:#fff; border:1px solid var(--line2); font-size:15px; cursor:pointer}
+  .stepper{display:flex; align-items:flex-start; justify-content:space-between; margin:12px 0 2px; position:relative}
+  .stepper .track{position:absolute; top:11px; left:8%; right:8%; height:2px; background:var(--line); z-index:0}
+  .stepper .track i{display:block; height:100%; width:0; background:linear-gradient(90deg,var(--acc),var(--acc2)); transition:width .6s ease}
+  .step{position:relative; z-index:1; display:flex; flex-direction:column; align-items:center; gap:4px; width:20%}
+  .step .dot{width:22px;height:22px;border-radius:50%; display:grid;place-items:center; font-size:10px;
+    background:#fff; border:1.5px solid var(--line2); color:var(--slate4); font-weight:800; transition:all .3s}
+  .step.done .dot{background:var(--acc); border-color:var(--acc); color:#fff}
+  .step.now .dot{box-shadow:0 0 0 4px var(--accSoft); border-color:var(--acc)}
+  .step.lbl{font-size:8.5px; color:var(--slate4)}
+  .step.done .lbl,.step.now .lbl{color:var(--ink); font-weight:600}
+
+  .stage{flex:1; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:14px; text-align:center; padding:6px 4px}
+  .ring{width:60px;height:60px; border-radius:50%; border:3px solid var(--accSoft); border-top-color:var(--acc); animation:spin 1s linear infinite}
+  @keyframes spin{to{transform:rotate(360deg)}}
+  .pctbig{font-family:var(--mono); font-size:40px; font-weight:700; letter-spacing:-.02em; line-height:1; color:var(--ink)}
+  .pctbar{width:78%}
+  .ph-copy b{font-size:14.5px; font-weight:700; display:block; margin-bottom:5px; color:var(--ink)}
+  .ph-copy span{font-size:11px; color:var(--slate5); line-height:1.6}
+  .ph-copy .big{font-size:17px; font-weight:800}
+  .minilogos{display:flex; align-items:center; gap:10px}
+  .mini{width:28px;height:28px;border-radius:9px; background:linear-gradient(140deg,var(--acc),var(--acc2)); color:#fff; display:grid;place-items:center; font-size:11px; font-weight:800}
+  .chev{color:var(--slate4)}
+  .stage .okmark{width:64px;height:64px;border-radius:50%; background:var(--okSoft); border:1.5px solid var(--okLine); color:var(--ok); display:grid;place-items:center; font-size:30px}
+  .stage .badmark{width:64px;height:64px;border-radius:50%; background:var(--badSoft); border:1.5px solid var(--badLine); color:var(--bad); display:grid;place-items:center; font-size:28px}
+  .stage .warnmark{width:64px;height:64px;border-radius:50%; background:var(--warnSoft); border:1.5px solid var(--warnLine); color:var(--warn); display:grid;place-items:center; font-size:28px}
+  .emph{background:var(--warnSoft); border:1px solid var(--warnLine); color:var(--warnInk); border-radius:12px; padding:9px 12px; font-size:10.5px; line-height:1.55; width:88%}
+  .keepguide{position:relative; z-index:2; margin-top:auto; margin-bottom:6px; display:flex; gap:8px; align-items:flex-start; background:var(--accSoft); border:1px solid var(--accLine); border-radius:12px; padding:9px 11px; font-size:10.5px; color:var(--slate6); line-height:1.5}
+  .keepguide .ico{flex:none; font-size:12px; color:var(--acc)}
+  .ph-copy .err{color:var(--badInk)} .ph-copy .wrk{color:var(--warnInk)}
+
+  /* control rail / notes */
+  .ctrl{display:flex; flex-wrap:wrap; gap:6px; margin:10px 0 2px}
+  .seg{display:inline-flex; border:1px solid var(--line2); border-radius:11px; overflow:hidden; background:#fff}
+  .seg button{border:0; background:transparent; color:var(--slate5); font-family:var(--sans); font-size:11px; font-weight:600; padding:7px 12px; cursor:pointer}
+  .seg button.on{background:linear-gradient(140deg,var(--acc),var(--acc2)); color:#fff}
+  .chip{border:1px solid var(--line2); background:#fff; color:var(--slate5); border-radius:999px; padding:6px 12px; font-size:11px; cursor:pointer; font-family:var(--sans)}
+  .chip.on{background:var(--accSoft); border-color:var(--acc); color:var(--acc)}
+  .chip.danger.on{background:var(--badSoft); border-color:var(--bad); color:var(--badInk)}
+  .notes{background:#fff; border:1px solid var(--line); border-radius:18px; padding:16px 16px 8px}
+  .notes h3{font-size:12px; font-family:var(--mono); letter-spacing:.16em; text-transform:uppercase; color:var(--slate4); margin:0 0 12px}
+  .notes ol{margin:0; padding:0; list-style:none; counter-reset:n; display:flex; flex-direction:column; gap:0}
+  .notes li{counter-increment:n; position:relative; padding:0 0 13px 30px; font-size:12px; line-height:1.6; color:var(--slate6)}
+  .notes li::before{content:counter(n); position:absolute; left:0; top:1px; width:20px;height:20px; border-radius:6px; background:var(--accSoft); color:var(--acc); font-family:var(--mono); font-size:10px; display:grid;place-items:center; font-weight:700}
+  .notes li b{color:var(--ink); font-weight:600}
+  .notes .flag{color:var(--warnInk)}
+  .notegrid{display:grid; grid-template-columns:1fr 1fr; gap:10px; margin-top:4px}
+  @media (max-width:760px){.notegrid{grid-template-columns:1fr}}
+  .card-mini{background:var(--soft); border:1px solid var(--line); border-radius:12px; padding:10px 12px; font-size:11px; color:var(--slate6); line-height:1.55}
+  .card-mini b{display:block; color:var(--ink); font-size:11.5px; margin-bottom:4px}
+  .phbar{display:flex; justify-content:space-between; font-size:10px; color:var(--slate4); font-family:var(--mono)}
+  .rowbtn{display:flex; gap:6px; margin-top:10px; flex-wrap:wrap}
+  .rowbtn .btn{flex:0 0 auto; padding:7px 12px; font-size:11px}
+  .legend{font-family:var(--mono); font-size:10px; color:var(--slate4)}
+  .hide{display:none!important}
+  @media (prefers-reduced-motion:reduce){*{animation-duration:.001s!important; transition-duration:.001s!important}}
+</style>
+
+<div class="wrap">
+  <div class="mast">
+    <p class="eyebrow">Pigugu App · 交互视觉原型</p>
+    <h1>固件升级:入口与过程</h1>
+    <p class="sub">拍板三件事——① 升级入口在设备卡怎么摆(方案 A/B/C);② 设备卡各状态(可用 / 离线预约 / 升级中 / 失败);③ 全屏升级页的五段过程与异常(失败、自动回滚)长什么样。主题色已对齐 App:浅 Slate 底 + indigo <b>#6366F1</b>,语义色单独成组。</p>
+    <div class="tokens">
+      <span class="tk"><i class="dotc grad"></i>主题色 <b>#6366F1 Indigo</b></span>
+      <span class="tk"><i class="dotc" style="background:#0f172a"></i>文字 <b>Slate</b></span>
+      <span class="tk"><i class="dotc" style="background:#10b981"></i>成功 <b>在线/完成</b></span>
+      <span class="tk"><i class="dotc" style="background:#f59e0b"></i>警示 <b>重启/回滚</b></span>
+      <span class="tk"><i class="dotc" style="background:#ef4444"></i>失败</span>
+      <span class="tk"><b>版本/序列号</b> → JetBrains Mono</span>
+    </div>
+  </div>
+
+  <div class="grid">
+
+    <!-- ============ LEFT : device card ============ -->
+    <div>
+      <div class="frame-title"><h2>设备卡 · 升级入口</h2><span>Device tab</span></div>
+      <div class="seg" style="margin-bottom:8px">
+        <button data-place="B" class="on">B 卡下面板</button>
+        <button data-place="A">A 卡内底部</button>
+        <button data-place="C">C 顶部横条</button>
+      </div>
+      <div class="phone">
+        <div class="screen">
+          <div class="notch"></div>
+          <div class="statusbar"><span>21:47</span><span>WiFi ▂▄▆█</span></div>
+          <div class="scr" id="scrL">
+            <div class="cards" id="cardsL"><!-- dynamic --></div>
+            <div style="flex:none; text-align:center; margin-top:12px; font-size:11px; color:var(--slate4)">＋ 添加新核心</div>
+          </div>
+        </div>
+      </div>
+      <div class="ctrl" id="ctrlL">
+        <button class="chip" data-st="avail">可用更新</button>
+        <button class="chip" data-st="latest">已是最新</button>
+        <button class="chip" data-st="offline">离线·预约</button>
+        <button class="chip" data-st="busy">升级中</button>
+        <button class="chip danger" data-st="fail">上次失败</button>
+      </div>
+      <div class="legend" style="margin-top:8px">设备卡状态切换(位置跟随上方 A/B/C)</div>
+    </div>
+
+    <!-- ============ RIGHT : upgrade page ============ -->
+    <div class="phonewrap2">
+      <div class="frame-title"><h2>全屏升级页</h2><span>FirmwareUpgradeScreen</span></div>
+      <div class="phone">
+        <div class="screen">
+          <div class="notch"></div>
+          <div class="statusbar"><span>21:48</span><span>⌁ 96%</span></div>
+          <div class="scr" id="scrR" style="padding-top:4px">
+            <div class="upbtn" id="backBtn" title="返回(不打断升级)">‹</div>
+            <div style="text-align:center; font-size:15px; font-weight:800; margin-top:2px">固件升级</div>
+            <div class="stepper" id="stepper"></div>
+            <div class="stage" id="stage"></div>
+            <div class="keepguide hide" id="keepguide"><span class="ico">ⓘ</span><span>请保持网络通畅 · 即使退出本页,更新也会继续,完成后会通知你</span></div>
+          </div>
+        </div>
+      </div>
+      <div class="ctrl">
+        <button class="chip" data-run="auto">▶ 自动走完</button>
+        <button class="chip" data-run="hold">重启盲窗 hold</button>
+        <button class="chip danger" data-run="failDl">故障:下载失败</button>
+        <button class="chip danger" data-run="rollback">故障:自检回滚</button>
+      </div>
+      <div class="phbar" style="margin-top:8px; align-items:center">
+        <span id="simstate">等待播放</span><span id="clock">phase · --</span>
+      </div>
+    </div>
+
+    <!-- ============ NOTES ============ -->
+    <aside class="notes">
+      <h3>决定点什么</h3>
+      <ol>
+        <li><b>入口摆放</b>:推荐 <b>B</b>(卡下独立面板)——设备卡信息已多,固件放卡内(A)会挤;顶部横条(C)抢设备卡层级。切 A/B/C 看差异。</li>
+        <li><b>设备卡状态</b>:可用更新→高亮横幅([稍后][立即升级]);离线→[预约升级];升级中→细进度条可点回升级页;上次失败→留一行带[重试]。</li>
+        <li><b>升级页五段</b>:连接→下载(10% 档)→重启(不定进度+强调卡)→自检→完成。播放自动流程观察。</li>
+        <li><b>重启盲窗</b>:设备会断网 30~60s,期间 <span class="flag">不判失败</span>,一直转“重启中”。点“重启盲窗 hold”模拟静默。</li>
+        <li><b>引导语</b>:①②段顶部常驻;“即使退出本页也会继续 + 完成通知” 把“勿关 App”改写成承诺。</li>
+        <li><b>异常</b>:失败(红)与自动回滚(琥珀)各有终态+重试;App 不自摆超时,卡死判定在服务端(5 分钟)。</li>
+      </ol>
+      <div class="notegrid">
+        <div class="card-mini"><b>入口与状态(左)</b>切换:可用 / 已最新 / 离线预约 / 升级中 / 失败</div>
+        <div class="card-mini"><b>升级页流程(右)</b>点:自动走完 · 重启盲窗 · 故障注入(下载失败 / 自检回滚)</div>
+      </div>
+      <div class="rowbtn">
+        <span class="legend">定稿后:主题色 tokens(#6366F1 + Slate + 语义色)直接平移进 Flutter · 文案以 PRD §5.4 为准</span>
+      </div>
+    </aside>
+  </div>
+</div>
+
+<script>
+const MONO='JetBrains Mono,ui-monospace,Menlo,monospace';
+const esc=s=>String(s).replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));
+
+const device={name:'Pigugu · 桌面核心', hw:'DC:A6:32:1F:0E:9A', cls:'ESP32-S3 · lichuang-dev', sn:'PIG-4F91', cur:'2.3.1'};
+
+function idcardHTML(offline, extra=''){ return `
+  <div class="idcard">
+    <div class="idhead">
+      <div><div class="idname">${device.name}</div><div class="idsub">${device.hw}</div></div>
+      <span class="state-chip ${offline?'off':'on'}">${offline?'离线':'在线'}</span>
+    </div>
+    <div class="idface"></div>
+    <div class="idrows">
+      <div class="idrow"><span class="k">芯片</span><span class="v">${device.cls}</span></div>
+      <div class="idrow"><span class="k">序列号</span><span class="v">${device.sn}</span></div>
+      <div class="idrow"><span class="k">固件版本</span><span class="v">${device.cur}</span></div>
+    </div>
+    ${extra}
+  </div>`;}
+
+function fwInlineA(state){
+  if(state==='busy') return `<div class="fw-inline" style="flex-direction:column;align-items:stretch;gap:6px"><div class="barstat"><span style="color:var(--ink)">⬆ 正在升级到 V2.3.1</span><b>42%</b></div><div class="prog"><i style="width:42%"></i></div></div>`;
+  if(state==='offline') return `<div class="fw-inline" style="color:var(--slate5)">设备离线 · 联网后自动升级</div>`;
+  if(state==='fail') return `<div class="fw-inline" style="justify-content:space-between;color:var(--badInk)"><span>上次升级失败 · 点按重试</span><span>›</span></div>`;
+  if(state==='avail') return `<div class="fw-inline" style="justify-content:space-between;color:var(--acc)"><span style="font-weight:700">⬆ 固件更新可用 ${device.cur} → 2.3.1</span><span>›</span></div>`;
+  return `<div class="fw-inline" style="justify-content:space-between"><span>固件已是最新 ${device.cur}</span><span style="color:var(--ok)">✓</span></div>`;
+}
+
+function topGlass(inner){ return `<div class="topglass">${inner}</div>`; }
+
+function fwBanner(state, off){
+  const ver = '2.3.0 → 2.3.1';
+  if(state==='avail') return `
+    <div class="glasspanel">
+      <div class="fwtitle">
+        <span class="ico">⬆</span>
+        <span><b>固件更新可用</b><span class="ver">${ver} · 3.1 MB</span></span>
+      </div>
+      <div class="fwmeta">修复播放卡顿 · 稳定性优化 · 更新约 1~2 分钟</div>
+      <div class="fwbtns"><button class="btn ghost">稍后</button><button class="btn prim">立即升级</button></div>
+    </div>`;
+  if(state==='latest') return `
+    <div class="glasspanel" style="flex-direction:row; align-items:center; justify-content:space-between; gap:8px">
+      <span style="font-size:12px; color:var(--slate5)">固件已是最新 <b style="color:var(--ink);font-family:${MONO}">V2.3.1</b></span>
+      <span style="color:var(--ok); font-size:13px">✓</span>
+    </div>`;
+  if(state==='offline') return `
+    <div class="glasspanel">
+      <div class="fwtitle">
+        <span class="ico">⬆</span>
+        <span><b>固件更新可用</b><span class="ver">${ver} · 3.1 MB</span></span>
+      </div>
+      <div class="fwmeta" style="color:var(--warnInk)">设备当前离线 · 预约后下次联网自动升级</div>
+      <div class="fwbtns"><button class="btn ghost">稍后</button><button class="btn prim">预约升级</button></div>
+    </div>`;
+  if(state==='busy') return `
+    <div class="glasspanel" style="cursor:pointer">
+      <div class="barstat"><span style="color:var(--ink)">⬆ 正在升级到 V2.3.1</span><b>42%</b></div>
+      <div class="prog"><i style="width:42%"></i></div>
+      <div class="fwmeta" style="margin-top:-4px">点按回升级页 · 退出不影响更新</div>
+    </div>`;
+  if(state==='fail') return `
+    <div class="glasspanel">
+      <div class="fwtitle">
+        <span class="ico icotint">⚠</span>
+        <span><b style="color:var(--badInk)">上次升级失败 · 已留在 V2.3.0</b><span class="ver">下载中断(网络断开)</span></span>
+      </div>
+      <div class="fwbtns"><button class="btn red">重试</button></div>
+    </div>`;
+  return '';
+}
+
+function fwPlacement(place, state){
+  const off = state==='offline';
+  const card = idcardHTML(off);
+  const banner = fwBanner(state, off);
+  if(place==='A') return idcardHTML(off, fwInlineA(state));
+  if(place==='C') return topGlass(banner) + card;
+  return card + banner;
+}
+
+let place='B', st='avail';
+function renderL(){
+  document.getElementById('cardsL').innerHTML = fwPlacement(place, st);
+  document.querySelectorAll('#ctrlL .chip').forEach(b=>b.classList.toggle('on', b.dataset.st===st));
+  document.querySelectorAll('.seg button').forEach(b=>b.classList.toggle('on', b.dataset.place===place));
+}
+document.querySelectorAll('.seg button').forEach(b=>b.onclick=()=>{place=b.dataset.place; renderL();});
+document.querySelectorAll('#ctrlL .chip').forEach(b=>b.onclick=()=>{st=b.dataset.st; renderL();});
+
+/* ---------- RIGHT: upgrade page simulation ---------- */
+const STEPS=[['连接','1'],['下载','2'],['重启','3'],['自检','4'],['完成','5']];
+let phase='idle', curI=0, pct=0, hold=false, timer=null;
+const els={st:document.querySelector('#stage'),rk:document.querySelector('#keepguide'),up:document.querySelector('#simstate'),clock:document.querySelector('#clock')};
+
+function setPhase(name){
+  phase=name;
+  document.getElementById('backBtn').style.display = (name==='done'||name==='failed'||name==='rolled') ? 'none':'block';
+  els.rk.classList.toggle('hide', !(name==='connecting'||name==='downloading'));
+  const terminal = (name==='done'||name==='failed'||name==='rolled');
+  const seg = {connecting:0, downloading:1, restarting:2, verifying:3}[name] ?? 0;
+  const totalDone = terminal ? 4 : seg;
+  const nowIdx = terminal ? -1 : seg;
+  let stepHTML=`<div class="track"><i style="width:${totalDone/4*100}%"></i></div>`;
+  STEPS.forEach((s,i)=>{
+    const done = i<totalDone;
+    const now = i===nowIdx;
+    stepHTML += `<div class="step ${done?'done':''} ${now?'now':''}"><span class="dot">${done?'✓':s[1]}</span><span class="lbl">${s[0]}</span></div>`;
+  });
+  document.getElementById('stepper').innerHTML=stepHTML;
+  els.clock.textContent = name==='idle' ? 'phase · --' : `phase · ${name}`;
+  renderStage(name);
+}
+
+function renderStage(name){
+  if(name==='idle'){ els.st.innerHTML=`<div style="color:var(--slate4);font-size:12px">点上方 ▶ 走完整流程,或用故障按钮看异常态</div>`; return; }
+  let inner='';
+  if(name==='connecting') inner=`<div class="ring"></div><div class="ph-copy"><b>正在连接设备…</b><span>等待设备空闲后开始</span></div>`;
+  else if(name==='downloading') inner=`
+      <div class="pctbig">${pct}%</div>
+      <div class="pctbar"><div class="prog"><i style="width:${pct}%"></i></div></div>
+      <div class="ph-copy"><b>正在下载更新包 V2.3.1</b><span>3.1 MB · ${pct<100?'下载中,请保持网络通畅':'即将安装'}</span></div>`;
+  else if(name==='restarting') inner=`
+      <div class="minilogos"><span class="mini">PIG</span><span class="chev">→</span><span class="mini">2.3.1</span></div>
+      <div class="emph">设备会重启一次,期间会短暂断网,属正常现象<br>请保持设备通电,不要拔掉电源</div>
+      <div style="width:78%"><div class="prog" style="height:5px"><i class="shim" style="width:100%"></i></div></div>`;
+  else if(name==='verifying') inner=`<div class="ring"></div><div class="ph-copy"><b>设备正在自检,马上就好…</b><span>确认新固件运行正常</span></div>`;
+  else if(name==='done') inner=`<div class="okmark">✓</div><div class="ph-copy"><b class="big">更新完成 · 已是最新</b><span>V2.3.1 · 修复播放卡顿,稳定性优化</span></div><button class="btn prim" style="width:60%">完成</button>`;
+  else if(name==='failed') inner=`<div class="badmark">!</div><div class="ph-copy"><b>升级失败</b><span class="err">下载中断(网络断开)· 已留在原版本,可重试</span></div><div style="display:flex;gap:8px;width:86%"><button class="btn ghost">联系支持</button><button class="btn red" onclick="runAuto(true)">重试</button></div>`;
+  else if(name==='rolled') inner=`<div class="warnmark">↺</div><div class="ph-copy"><b>新版本自检未通过</b><span class="wrk">已自动回滚至 V2.3.0,设备可正常使用</span></div><div style="display:flex;gap:8px;width:86%"><button class="btn ghost">联系支持</button><button class="btn prim" onclick="runAuto(true)">重试</button></div>`;
+  els.st.innerHTML=inner;
+}
+
+function stopSim(){ if(timer) clearInterval(timer); timer=null; }
+
+function runAuto(restart=false){
+  stopSim(); setPhase('connecting'); pct=0; hold=false;
+  let t0=Date.now();
+  timer=setInterval(()=>{
+    if(phase==='failed'||phase==='rolled'){ stopSim(); return; }
+    if(hold) return;
+    const el=(Date.now()-t0)/1000;
+    if(phase==='connecting' && el>1.5){ t0=Date.now(); setPhase('downloading'); }
+    else if(phase==='downloading'){
+      pct=Math.min(100, Math.round((el/3.2)*100)); renderStage('downloading');
+      if(pct>=100){ t0=Date.now(); setPhase('restarting'); }
+    }
+    else if(phase==='restarting' && el>2.6){ t0=Date.now(); setPhase('verifying'); }
+    else if(phase==='verifying' && el>1.5){ setPhase('done'); stopSim(); }
+  },100);
+  els.up.textContent='播放中 · 盲窗用下方按钮插入静默';
+}
+function setHold(on){ hold=on; els.up.textContent= on ? '静默中:设备重启断网(演示)…属正常' : '播放中'; }
+
+document.querySelectorAll('[data-run]').forEach(b=>b.onclick=()=>{
+  const r=b.dataset.run;
+  if(r==='auto') runAuto(true);
+  else if(r==='hold'){ if(phase!=='restarting') runAuto(); setHold(true); setTimeout(()=>setHold(false),6000); }
+  else if(r==='failDl'){ stopSim(); setPhase('failed'); els.up.textContent='故障注入:下载失败'; }
+  else if(r==='rollback'){ stopSim(); setPhase('rolled'); els.up.textContent='故障注入:自检回滚'; }
+});
+
+renderL();
+setPhase('downloading'); pct=42; renderStage('downloading');
+els.up.textContent='静止首屏 · 播放看全流程';
+</script>

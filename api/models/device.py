@@ -30,13 +30,18 @@ class Device(Base):
     livekit_room_name: Mapped[str | None] = mapped_column(String(255))
     certificate_arn: Mapped[str | None] = mapped_column(String(512))
     thing_name: Mapped[str | None] = mapped_column(String(128))
+    # Firmware OTA (updated on each device check / ota.report)
+    current_firmware_version: Mapped[str | None] = mapped_column(String(32))
+    current_firmware_sha: Mapped[str | None] = mapped_column(String(64))
+    last_firmware_report_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False
     )
 
-    # Transient attribute (set by service layer, not persisted)
+    # Transient attributes (set by service layer, not persisted)
     is_online: bool
+    firmware: dict | None = None  # OTA summary attached by get_devices_for_user
 
     user: Mapped["User"] = relationship("User", back_populates="devices")
     conversations: Mapped[list["Conversation"]] = relationship("Conversation", back_populates="device")

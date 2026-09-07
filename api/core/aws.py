@@ -30,6 +30,31 @@ async def publish_mqtt_message(topic: str, payload: dict) -> None:
     await asyncio.to_thread(_publish)
 
 
+# ── S3 (firmware artifact presigning) ──────────────────────────────────────
+
+def _get_s3_client():
+    kwargs = {"region_name": settings.aws_region}
+    if settings.aws_access_key_id:
+        kwargs["aws_access_key_id"] = settings.aws_access_key_id
+    if settings.aws_secret_access_key:
+        kwargs["aws_secret_access_key"] = settings.aws_secret_access_key
+    return boto3.client("s3", **kwargs)
+
+
+def get_s3_presigned_url(object_key: str, expires_in: int | None = None) -> str:
+    """Return a short-lived HTTPS GET URL for an S3 object (SigV4, server-now signed).
+
+    The device only GETs the returned URL; it never re-signs, so its own clock
+    is irrelevant to this signature.
+    """
+    client = _get_s3_client()
+    return client.generate_presigned_url(
+        "get_object",
+        Params={"Bucket": settings.ota_s3_bucket, "Key": object_key},
+        ExpiresIn=expires_in or settings.ota_presign_ttl_seconds,
+    )
+
+
 # ── IoT Control Plane (certificate / thing / policy management) ────────────
 
 def _get_iot_client():

@@ -11,6 +11,7 @@ from core.redis import close_redis
 from models.device_provisioning_session import DeviceProvisioningSession
 from modules.auth.router import router as auth_router
 from modules.device.iot import router as device_iot_router
+from modules.device.ota_versions import router as ota_versions_router
 from modules.device.router import router as device_router
 from modules.game.router import leaderboard_router
 from modules.game.router import router as game_router
@@ -43,12 +44,30 @@ async def _session_cleanup() -> None:
             logger.error("Session cleanup failed: %s", e)
 
 
+async def _ota_timeout_sweep() -> None:
+    """Mark OTA jobs with no progress for OTA_JOB_TIMEOUT_SECS as failed(timeout)."""
+    logger = logging.getLogger(__name__)
+    while True:
+        await asyncio.sleep(30)  # sweep every 30s
+        try:
+            from modules.device.ota import sweep_timed_out_jobs
+
+            async with AsyncSessionLocal() as db:
+                count = await sweep_timed_out_jobs(db)
+                if count:
+                    logger.info("OTA timeout sweep: %d job(s) → failed(timeout)", count)
+        except Exception as e:
+            logger.error("OTA timeout sweep failed: %s", e)
+
+
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
     init_firebase()
     cleanup_task = asyncio.create_task(_session_cleanup())
+    ota_sweep_task = asyncio.create_task(_ota_timeout_sweep())
     yield
     cleanup_task.cancel()
+    ota_sweep_task.cancel()
     await close_redis()
 
 
@@ -57,6 +76,7 @@ app = FastAPI(title="Pigugu Server", version="0.1.0", lifespan=lifespan)
 app.include_router(auth_router, prefix="/v1")
 app.include_router(device_router, prefix="/v1")
 app.include_router(device_iot_router, prefix="/v1")
+app.include_router(ota_versions_router, prefix="/v1")
 app.include_router(news_router, prefix="/v1")
 app.include_router(game_router, prefix="/v1")
 app.include_router(gameplay_router, prefix="/v1")
