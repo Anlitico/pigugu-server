@@ -21,6 +21,7 @@ from core.aws import (
     cleanup_old_certificates,
 )
 from models.device import Device
+from models.device_ota_job import ACTIVE_STATUSES, SUPERSEDED, DeviceOtaJob
 from models.device_provisioning_session import DeviceProvisioningSession
 from modules.device.schemas import (
     DeviceBindRequest,
@@ -313,10 +314,13 @@ async def get_devices_for_user(db: AsyncSession, user_id: uuid.UUID) -> list[Dev
         select(Device).where(Device.user_id == user_id, Device.binding_status == "bound")
     )
     devices = list(result.scalars().all())
-    
+
+    from modules.device.ota import build_firmware_summary
+
     for device in devices:
         device.is_online = await get_device_online_status(device.hardware_id)
-        
+        device.firmware = await build_firmware_summary(db, device)
+
     return devices
 
 
@@ -395,6 +399,14 @@ async def unbind_device(db: AsyncSession, user_id: uuid.UUID, device_id: uuid.UU
         if candidates:
             candidates.sort(key=lambda d: d.created_at or datetime.min, reverse=True)
             candidates[0].active_state = "active"
+
+    # Any in-flight OTA job for this device becomes historical (superseded) so
+    # no orphaned active job keeps pointing at a device the user no longer owns.
+    await db.execute(
+        update(DeviceOtaJob)
+        .where(DeviceOtaJob.device_id == device_id, DeviceOtaJob.status.in_(ACTIVE_STATUSES))
+        .values(status=SUPERSEDED, status_detail="unbound", finished_at=datetime.now(timezone.utc))
+    )
 
 
 async def rename_device(db: AsyncSession, user_id: uuid.UUID, device_id: uuid.UUID, name: str) -> Device:

@@ -33,6 +33,14 @@ class Settings(BaseSettings):
     mqtt_broker_uri: str = "mqtts://agktqmnw53qnj-ats.iot.us-west-1.amazonaws.com:8883"
     aws_iot_policy_name: str = "pigugu_device_policy"
 
+    # ── Firmware OTA ──────────────────────────────────────────────
+    ota_s3_bucket: str = "pigugu-firmware"
+    ota_presign_ttl_seconds: int = 1800
+    ota_job_timeout_secs: int = 300
+    ota_board_target: str = "lichuang-dev"
+    # Internal (release-script / admin) calls to version-management endpoints.
+    ota_internal_secret: str = ""
+
     app_env: str = "development"
     log_level: str = "INFO"
 

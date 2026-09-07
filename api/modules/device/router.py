@@ -1,6 +1,7 @@
 import logging
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from core.config import settings
@@ -8,6 +9,7 @@ from core.database import get_db
 
 logger = logging.getLogger(__name__)
 from core.deps import get_current_user
+from models.device import Device
 from models.user import User
 from modules.device import service
 from modules.device.schemas import (
@@ -21,6 +23,9 @@ from modules.device.schemas import (
     ProvisioningSessionResponse,
     VerifyConnectivityRequest,
     VerifyConnectivityResponse,
+    DeviceFirmwareDetailResponse,
+    FirmwareUpgradeRequest,
+    FirmwareUpgradeResponse,
 )
 
 router = APIRouter(prefix="/device", tags=["device"])
@@ -283,29 +288,154 @@ class FcmTokenRequest(BaseModel):
 # ── OTA / Provisioning (xiaozhi firmware) ─────────────────────────
 
 @router.post("/ota")
-async def get_ota_config(request: Request):
-    """Return provisioning config for xiaozhi firmware.
+async def get_ota_config(request: Request, db: AsyncSession = Depends(get_db)):
+    """Return provisioning config + (OTA-enabled) firmware directive.
 
-    Firmware calls this after WiFi connect to get the WebSocket URL + token.
-    Unauthenticated — identified by Device-Id / Client-Id headers.
+    Firmware calls this after WiFi connect / on ota.check / periodically. It
+    reports its own version (Firmware-Version / Firmware-Git headers), which we
+    persist, then we decide whether an active upgrade job targets this device.
+
+    Unauthenticated — identified by Device-Id / Client-Id headers (status quo).
+    Only OTA-enabled firmware is affected: the websocket block is unchanged and
+    the firmware/server_time blocks are new, additive fields.
     """
-    from core.security import create_access_token
-    from fastapi import Request
+    from datetime import datetime, timezone as _tz
 
-    device_id = request.headers.get("device-id", request.headers.get("Device-Id", ""))
-    client_id = request.headers.get("client-id", request.headers.get("Client-Id", ""))
+    from core.security import create_access_token
+    from sqlalchemy import select
+
+    # Device-Id arrives as the xiaozhi-style colon MAC; devices.hardware_id is
+    # stored colon-less (12 hex). Normalize so the row always matches.
+    device_id = (
+        (request.headers.get("device-id") or request.headers.get("Device-Id", ""))
+        .replace(":", "")
+        .strip()
+        .lower()
+    )
+    client_id = (request.headers.get("client-id") or request.headers.get("Client-Id", "")).strip()
 
     ws_url = getattr(settings, "ws_url", "wss://api.pigugu.net/v1/agent")
     token = create_access_token(subject=client_id or device_id)
 
-    logger.info("OTA config: device=%s client=%s url=%s", device_id, client_id, ws_url)
-    return {
+    payload = {
         "websocket": {
             "url": ws_url,
             "token": token,
             "version": 1,
-        }
+        },
+        "server_time": {
+            "timestamp": int(datetime.now(_tz.utc).timestamp()),
+            "timezone_offset": 0,
+        },
     }
+
+    # Version report + firmware pushdown (OTA-enabled devices only).
+    if device_id:
+        try:
+            from models.device import Device
+            from modules.device.ota import process_check
+
+            result = await db.execute(select(Device).where(Device.hardware_id.ilike(device_id)))
+            device = result.scalar_one_or_none()
+            if device is not None:
+                firmware = await process_check(
+                    db, device,
+                    request.headers.get("Firmware-Version"),
+                    request.headers.get("Firmware-Git"),
+                )
+                if firmware is not None:
+                    payload["firmware"] = firmware
+        except Exception:
+            logger.exception("OTA check processing failed for device=%s", device_id)
+
+    logger.info("OTA config: device=%s client=%s url=%s", device_id, client_id, ws_url)
+    return payload
+
+
+# ── Firmware upgrade (App / internal) ─────────────────────────────
+
+async def _resolve_owned_device(
+    db: AsyncSession, user_id, device_id: str, require_internal: bool = False
+) -> Device:
+    import uuid as _uuid
+
+    try:
+        d_id = _uuid.UUID(device_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid device ID")
+    stmt = select(Device).where(Device.id == d_id)
+    if not require_internal:
+        stmt = stmt.where(Device.user_id == user_id)
+    result = await db.execute(stmt)
+    device = result.scalar_one_or_none()
+    if device is None:
+        raise HTTPException(status_code=404, detail="DEVICE_NOT_FOUND")
+    return device
+
+
+@router.get("/{device_id}/firmware", response_model=DeviceFirmwareDetailResponse)
+async def get_device_firmware(
+    device_id: str,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Upgrade-page detail for the App: current version + whether an update is due."""
+    from modules.device.ota import get_device_firmware_detail
+
+    device = await _resolve_owned_device(db, current_user.id, device_id)
+    return await get_device_firmware_detail(db, device)
+
+
+@router.post("/{device_id}/firmware/upgrade", response_model=FirmwareUpgradeResponse)
+async def trigger_firmware_upgrade(
+    device_id: str,
+    body: FirmwareUpgradeRequest,
+    request: Request,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """App-triggered upgrade (or internal force/draft target with secret header).
+
+    Creates a requested job (works even if the device is offline → reservation),
+    then nudges the device to check immediately via c2d (no-op if offline).
+    """
+    from modules.device.iot import notify_ota_check
+    from modules.device.ota import create_upgrade_job
+
+    # Fails closed: without a configured secret there IS no internal path.
+    internal = bool(settings.ota_internal_secret) and (
+        request.headers.get("x-ota-internal-secret", "") == settings.ota_internal_secret
+    )
+    device = await _resolve_owned_device(db, current_user.id, device_id, require_internal=internal)
+
+    if body.force and not internal:
+        raise HTTPException(status_code=403, detail="FORCE_FORBIDDEN")
+
+    requested_by = f"script:{current_user.email}" if internal else str(current_user.id)
+    try:
+        job = await create_upgrade_job(
+            db, device,
+            firmware_version_id=body.firmware_version_id,
+            force=body.force,
+            requested_by=requested_by,
+        )
+    except ValueError as e:
+        code = str(e)
+        if code == "OTA_JOB_ACTIVE":
+            raise HTTPException(status_code=409, detail=code)
+        raise HTTPException(status_code=404, detail=code)
+
+    # Commit BEFORE nudging the device so a fast check can never race the
+    # uncommitted job (get_db commits again at teardown — harmless no-op).
+    await db.commit()
+    await notify_ota_check(device.hardware_id)
+    return FirmwareUpgradeResponse(
+        job_id=job.id,
+        device_id=device.id,
+        firmware_version_id=job.firmware_version_id,
+        status=job.status,
+        requested_at=job.requested_at,
+    )
 
 
 # ── FCM Push Token ───────────────────────────────────────────────

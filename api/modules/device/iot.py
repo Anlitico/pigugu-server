@@ -157,6 +157,46 @@ async def _wait_for_pong(hw_id: str, request_id: str, session_id: str) -> None:
 
 # ── Message handlers ────────────────────────────────────────
 
+async def notify_ota_check(hw_id: str) -> None:
+    """C2D nudge: ask the device to run an OTA check now (best-effort).
+
+    Reuses the existing control-plane publish; the device may be offline (no
+    ack) — then its next power-on / periodic check picks the job up anyway.
+    """
+    try:
+        from core.aws import publish_mqtt_message
+        await publish_mqtt_message(
+            f"pgg/dev/{hw_id.strip().lower()}/c2d",
+            {"msg_type": "ota.check"},
+        )
+    except Exception as e:
+        logger.warning("notify_ota_check failed for %s: %s", hw_id, e)
+
+
+async def _handle_ota_report(hw_id: str, msg: dict) -> None:
+    """ota.report → advance device_ota_jobs.status/progress + devices version.
+
+    Device sends coarse state (downloading/installing/rebooting/succeeded/
+    failed/rolled_back) with ≥10%-step progress to keep MQTT chatter low.
+    Terminal transitions fire an FCM push to the bound user.
+    """
+    try:
+        from core.database import AsyncSessionLocal
+        from modules.device.ota import apply_ota_report, push_job_terminal
+
+        state = msg.get("state")
+        version = msg.get("version")
+        progress = msg.get("progress")
+        async with AsyncSessionLocal() as db:
+            job = await apply_ota_report(db, hw_id, state, version, progress)
+            push_needed = bool(job is not None and getattr(job, "_push_needed", False))
+            await db.commit()
+        if push_needed and job is not None:
+            await push_job_terminal(job.device_id, job.status, job.status_detail)
+    except Exception as e:
+        logger.exception("_handle_ota_report failed for %s: %s", hw_id, e)
+
+
 async def _handle_online(hw_id: str, msg: dict) -> None:
     """device.online → Redis + WS, then ping-pong to confirm connectivity.
 
@@ -505,5 +545,8 @@ async def aws_iot_webhook(
     elif msg_type == "device.heartbeat":
         await redis_set(f"device:online:hw:{hw_id}", "1", ex=600)
         await redis_set(f"device:last_seen:hw:{hw_id}", str(datetime.now().isoformat()), ex=86400)
+
+    elif msg_type == "ota.report":
+        await _handle_ota_report(hw_id, msg)
 
     return {"status": "ok"}
