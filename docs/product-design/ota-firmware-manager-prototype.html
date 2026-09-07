@@ -1,0 +1,273 @@
+<!doctype html>
+<html lang="zh-Hans">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>固件版本中心 · 交互稿</title>
+<style>
+  :root{
+    --bg:#F8FAFC; --surface:#FFFFFF; --line:#E2E8F0;
+    --ink:#0F172A; --ink2:#475569; --ink3:#94A3B8;
+    --pri:#6366F1; --pri2:#4F46E5; --pri-soft:#EEF2FF;
+    --good:#10B981; --good-soft:#ECFDF5;
+    --warn:#F59E0B; --warn-soft:#FFFBEB;
+    --bad:#EF4444; --bad-soft:#FEF2F2;
+    --shadow:0 10px 30px -12px rgba(15,23,42,.18);
+    --mono:ui-monospace, "SF Mono", "JetBrains Mono", Menlo, Consolas, monospace;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0}
+  body{
+    font:14px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Hiragino Sans GB","Microsoft YaHei",sans-serif;
+    color:var(--ink); background:linear-gradient(180deg,#EEF2FF 0%,var(--bg) 240px); min-height:100vh;
+  }
+  .wrap{max-width:1180px;margin:0 auto;padding:28px 20px 60px}
+  header h1{font-size:22px;margin:0;letter-spacing:.2px}
+  header .sub{color:var(--ink2);margin-top:6px;font-size:13px}
+  .tags{margin-top:10px;display:flex;gap:8px;flex-wrap:wrap}
+  .tag{font-size:11px;color:var(--pri);background:var(--pri-soft);padding:2px 9px;border-radius:99px}
+  .controls{display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin:22px 0 6px}
+  .ctl{display:flex;gap:8px;align-items:center;background:var(--surface);border:1px solid var(--line);border-radius:12px;padding:8px 12px;box-shadow:var(--shadow)}
+  .ctl b{font-size:11px;color:var(--ink3);font-weight:600;letter-spacing:.4px}
+  .seg{display:inline-flex;background:var(--bg);border:1px solid var(--line);border-radius:9px;overflow:hidden}
+  .seg button{border:0;background:transparent;padding:6px 12px;font-size:12px;color:var(--ink2);cursor:pointer}
+  .seg button.on{background:var(--pri);color:#fff}
+  .chips{display:flex;gap:6px;flex-wrap:wrap}
+  .chips button{border:1px solid var(--line);background:var(--surface);border-radius:99px;padding:5px 12px;font-size:12px;color:var(--ink2);cursor:pointer}
+  .chips button.on{border-color:var(--pri);background:var(--pri-soft);color:var(--pri2);font-weight:600}
+  .stage{display:grid;grid-template-columns:1fr 1fr 250px;gap:18px;margin-top:14px;align-items:start}
+  @media(max-width:1000px){.stage{grid-template-columns:1fr}}
+  .phone{aspect-ratio:390/760;width:100%;max-width:390px;margin:0 auto;border-radius:38px;border:9px solid #0B1220;background:#0B1220;box-shadow:var(--shadow);overflow:hidden}
+  .screen{width:100%;height:100%;background:var(--surface);position:relative;display:flex;flex-direction:column;font-size:13px}
+  .appbar{display:flex;align-items:center;gap:10px;padding:14px 16px 10px}
+  .appbar .ttl{font-weight:700;font-size:15px}
+  .appbar .sp{flex:1}
+  .gear,.ic{width:32px;height:32px;border-radius:50%;display:grid;place-items:center;color:#fff;background:var(--pri);cursor:pointer;border:0}
+  .gear.ghost{background:transparent;color:var(--ink2);border:1px solid var(--line)}
+  .body{flex:1;overflow:hidden;padding:0 16px}
+  .menu{position:absolute;z-index:5;background:#fff;border:1px solid var(--line);border-radius:12px;box-shadow:var(--shadow);min-width:168px;padding:6px}
+  .menu .item{display:flex;gap:8px;align-items:center;padding:9px 10px;border-radius:8px;font-size:13px;cursor:pointer;color:var(--ink)}
+  .menu .item:hover{background:var(--bg)}
+  .menu .item.pick{color:var(--pri2);font-weight:600}
+  /* profile page rows */
+  .sec-lbl{font-size:11px;color:var(--ink3);font-weight:700;letter-spacing:.6px;margin:16px 0 6px}
+  .row{display:flex;gap:10px;align-items:center;padding:12px 4px;border-bottom:1px solid #F1F5F9;cursor:pointer}
+  .row:last-child{border-bottom:0}
+  .row .ico{width:30px;height:30px;border-radius:9px;display:grid;place-items:center;color:#fff}
+  .row .tx{flex:1}
+  .row .tx .t{font-size:13.5px}
+  .row .tx .s{font-size:11.5px;color:var(--ink3)}
+  .row .chev{color:#CBD5E1}
+  .avatar{width:56px;height:56px;border-radius:50%;display:grid;place-items:center;background:linear-gradient(135deg,#818CF8,#4F46E5);color:#fff;font-size:20px;font-weight:700}
+  .profile-top{display:flex;gap:12px;align-items:center;padding:6px 4px 10px}
+  .profile-top .n{font-size:17px;font-weight:700}
+  .profile-top .e{font-size:12px;color:var(--ink3)}
+  /* manager rows */
+  .devcard{border:1px solid var(--line);border-radius:16px;padding:14px;margin-top:12px;background:#fff}
+  .devhead{display:flex;align-items:center;gap:10px}
+  .dname{font-weight:700;font-size:14px;flex:1}
+  .dot{width:8px;height:8px;border-radius:50%;background:var(--ink3)}
+  .dot.on{background:var(--good)}
+  .kv{display:flex;justify-content:space-between;margin-top:12px;align-items:center}
+  .k{color:var(--ink3);font-size:12px}
+  .v{font-family:var(--mono);font-size:13px;font-weight:600}
+  .pill{font-size:11px;font-weight:600;border-radius:99px;padding:2px 9px}
+  .pill.ok{color:var(--good);background:var(--good-soft)}
+  .pill.new{color:var(--pri2);background:var(--pri-soft)}
+  .pill.off{color:var(--warn);background:var(--warn-soft)}
+  .pill.up{color:#fff;background:var(--pri)}
+  .pill.bad{color:var(--bad);background:var(--bad-soft)}
+  .notes{margin-top:12px;background:#F8FAFC;border-radius:10px;padding:10px 12px;font-size:12px;color:var(--ink2)}
+  .notes h4{margin:0 0 6px;font-size:11px;color:var(--ink3);letter-spacing:.4px}
+  .notes li{margin:3px 0}
+  .btn{display:inline-flex;align-items:center;gap:6px;border:0;border-radius:11px;padding:9px 14px;font-size:13px;font-weight:700;cursor:pointer}
+  .btn.pri{background:linear-gradient(135deg,var(--pri),var(--pri2));color:#fff}
+  .btn.ghost{background:transparent;border:1px solid var(--line);color:var(--ink2)}
+  .btn.warn{background:var(--warn-soft);color:#B45309}
+  .btn:disabled{opacity:.5;cursor:default}
+  .actions{display:flex;gap:8px;margin-top:12px;flex-wrap:wrap;justify-content:flex-end}
+  .bar{height:7px;border-radius:5px;background:#EEF2FF;overflow:hidden;margin-top:10px}
+  .bar i{display:block;height:100%;background:linear-gradient(90deg,var(--pri),var(--pri2));width:0%;transition:width .3s}
+  .bar i.shim{width:34%;background-size:200% 100%;background-image:linear-gradient(90deg,var(--pri-soft),var(--pri),var(--pri-soft));animation:sh 1.2s linear infinite}
+  @keyframes sh{to{background-position:-200% 0}}
+  .updrow{border:1px solid var(--pri);background:var(--pri-soft);border-radius:12px;padding:10px 12px;margin-top:10px}
+  .updrow .big{font-weight:700;font-size:13px;color:var(--pri2)}
+  .updrow .small{font-size:11.5px;color:var(--ink2);margin-top:2px}
+  .right{background:var(--surface);border:1px solid var(--line);border-radius:16px;padding:14px 16px;box-shadow:var(--shadow)}
+  .right h3{margin:0 0 4px;font-size:13px;color:var(--ink3);letter-spacing:.4px}
+  .right p{margin:4px 0;font-size:12px;color:var(--ink2)}
+  .right code{font-family:var(--mono);background:#F1F5F9;padding:0 4px;border-radius:4px;font-size:11px}
+  .legend{margin-top:8px}
+  .legend .l{display:flex;align-items:center;gap:8px;font-size:12px;color:var(--ink2);margin:5px 0}
+  .sq{width:12px;height:12px;border-radius:4px}
+  .toast{position:absolute;left:50%;bottom:44px;transform:translateX(-50%);background:#0F172A;color:#fff;padding:7px 14px;border-radius:99px;font-size:12px;white-space:nowrap;opacity:0;transition:opacity .25s;pointer-events:none}
+  .toast.show{opacity:1}
+  .hint{color:var(--ink3);font-size:12px;margin-top:18px;text-align:center}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>固件版本中心 · 交互稿</h1>
+    <div class="sub">入口位置 A/B 比选 + 版本中心页(检查更新 / 升级 / 状态) — 配色对齐 pigugu-app(浅 Indigo)</div>
+    <div class="tags"><span class="tag">F7 · PRD §5.6</span><span class="tag">浅色</span><span class="tag">入口 A/B</span></div>
+  </header>
+
+  <div class="controls">
+    <div class="ctl"><b>入口位置</b>
+      <span class="seg" id="entrySeg">
+        <button data-entry="A" class="on">A 设置分组·行</button>
+        <button data-entry="B">B 顶栏齿轮·菜单</button>
+      </span>
+    </div>
+    <div class="ctl"><b>设备场景</b>
+      <span class="chips" id="scenChips">
+        <button data-scen="latest" class="on">已是最新</button>
+        <button data-scen="new">发现新版(在线)</button>
+        <button data-scen="offline">发现新版(离线)</button>
+        <button data-scen="upgrading">升级中</button>
+        <button data-scen="failed">上次失败</button>
+      </span>
+    </div>
+    <div class="ctl"><b>操作演示</b>
+      <button class="seg-btn" id="checkBtn">▶ 检查更新</button>
+    </div>
+  </div>
+
+  <div class="stage">
+    <!-- LEFT: 我的 -->
+    <div class="phone"><div class="screen" id="leftScreen" style="position:relative">
+      <div class="appbar"><div class="ttl">我的</div><div class="sp"></div><div id="gearArea"></div></div>
+      <div class="body" style="overflow-y:auto">
+        <div class="profile-top">
+          <div class="avatar">P</div>
+          <div><div class="n">Pigugu 用户</div><div class="e">pigugu@example.com</div></div>
+        </div>
+        <div class="sec-lbl">成就</div>
+        <div class="row"><div class="ico" style="background:linear-gradient(135deg,#FBBF24,#F59E0B)">🏆</div><div class="tx"><div class="t">成就墙</div><div class="s">已解锁 8 个</div></div><div class="chev">›</div></div>
+        <div class="sec-lbl">设置</div>
+        <div class="row" id="entArow"><div class="ico" style="background:linear-gradient(135deg,#818CF8,#4F46E5)">📦</div><div class="tx"><div class="t">固件版本</div><div class="s">查看 / 检查更新 / 升级</div></div><div class="chev">›</div></div>
+        <div class="row"><div class="ico" style="background:linear-gradient(135deg,#60A5FA,#2563EB)">🛡</div><div class="tx"><div class="t">账号与安全</div><div class="s">邮箱 / 密码 / 登录设备</div></div><div class="chev">›</div></div>
+        <div class="row"><div class="ico" style="background:linear-gradient(135deg,#94A3B8,#64748B)">🔔</div><div class="tx"><div class="t">通知</div><div class="s">设备事件 / 固件完成</div></div><div class="chev">›</div></div>
+        <div class="row"><div class="ico" style="background:linear-gradient(135deg,#F87171,#DC2626)">↪</div><div class="tx"><div class="t">退出登录</div></div></div>
+      </div>
+      <div id="menuB" class="menu" style="display:none;top:54px;right:10px">
+        <div class="item pick" data-nav="B">📦&nbsp; 固件版本</div>
+        <div class="item">🔔&nbsp; 通知</div>
+        <div class="item">🛡&nbsp; 账号与安全</div>
+      </div>
+      <div class="toast" id="toastL"></div>
+    </div></div>
+
+    <!-- RIGHT: 固件版本中心 -->
+    <div class="phone"><div class="screen" style="position:relative">
+      <div class="appbar"><button class="ic ghost" id="backBtn">←</button><div class="ttl">固件版本</div><div class="sp"></div><button class="gear ghost" style="border:0">↻</button></div>
+      <div class="body" id="rightBody" style="overflow-y:auto"></div>
+      <div class="toast" id="toastR"></div>
+    </div></div>
+
+    <div class="right">
+      <h3>设计说明(对照 PRD §5.6)</h3>
+      <p><b>入口 A</b>:在「我的」的设置分组新增一行「固件版本」,与现有列表结构一致,改动最小。</p>
+      <p><b>入口 B</b>:页面右上角设置齿轮 → 下拉菜单「固件版本」。需新增齿轮(全局顶栏 or 我的页),按此比选。</p>
+      <div class="legend">
+        <div class="l"><span class="sq" style="background:var(--good)"></span>已是最新</div>
+        <div class="l"><span class="sq" style="background:var(--pri)"></span>有可用更新(可升级)</div>
+        <div class="l"><span class="sq" style="background:var(--warn)"></span>离线可预约 / 上次已回滚</div>
+        <div class="l"><span class="sq" style="background:var(--bad)"></span>上次失败(可重试)</div>
+        <div class="l"><span class="sq" style="background:var(--pri-soft)"></span>升级中(进度条,可点击进入升级页)</div>
+      </div>
+      <p>「立即升级 / 预约升级」进入的是<b>同一个全屏升级页</b>(PRD §5.4)——与设备卡横幅共用一套状态机,行为不分叉。</p>
+      <p>检查更新 = 重新拉取该设备固件摘要(后端 <code>GET /devices</code> / <code>GET /firmware</code> 已有),短暂转圈。</p>
+      <p>多设备:每台一行,操作只作用于该行。</p>
+    </div>
+  </div>
+  <div class="hint">手机上点左上 ← 返回;场景/操作按钮在顶栏。设备行内 [检查更新] 也可单独点。</div>
+</div>
+
+<script>
+const $=s=>document.querySelector(s);
+const scen={latest:{pill:'ok',pillTxt:'已是最新',v:'V2.2.4',note:'设备运行正常,已是最新版本',act:null},
+ new:{pill:'new',pillTxt:'发现新版',v:'V2.2.4',up:{v:'V2.3.1',txt:'修复唤醒偶发失败 · 通话回声优化 · 交互提示音'}},
+ offline:{pill:'off',pillTxt:'设备离线',v:'V2.2.4',up:{v:'V2.3.1',txt:'设备当前离线,可预约升级,下次联网后自动完成'},off:true},
+ upgrading:{pill:'up',pillTxt:'升级中 · 下载 40%',v:'V2.2.4',pct:40},
+ failed:{pill:'bad',pillTxt:'上次失败',v:'V2.2.4',fail:'下载中断(可重试)'}};
+let ENTRY='A', SCEN='latest', checking=false;
+
+function ph(p){const el=$('#rightBody');el.innerHTML=p;}
+
+function renderCenter(flash){
+  const s=scen[SCEN];
+  const dot='<span class="dot '+(SCEN==='offline'?'':'on')+'"></span>';
+  let body='<div class="devcard"><div class="devhead">'+dot+'<div class="dname">客厅的 Pigugu</div><span class="pill '+s.pill+'">'+s.pillTxt+'</span></div>';
+  body+='<div class="kv"><span class="k">当前固件</span><span class="v">'+s.v+'</span></div>';
+  if(s.pct!==undefined){body+='<div class="bar"><i style="width:'+s.pct+'%"></i></div>';}
+  else if(SCEN==='upgrading'){}
+  if(s.up){body+='<div class="updrow"><div class="big">固件 '+s.up.v+' 可用</div><div class="small">'+s.up.txt+'</div></div>';}
+  if(s.fail){body+='<div class="notes"><b style="color:var(--bad)">'+s.fail+'</b></div>';}
+  body+='<div class="actions">';
+  body+='<button class="btn ghost" onclick="checkNow()">检查更新</button>';
+  if(s.up){ body += SCEN==='offline'
+    ? '<button class="btn warn" onclick="goUp(false)">预约升级</button>'
+    : '<button class="btn pri" onclick="goUp(true)">立即升级</button>'; }
+  if(s.fail){ body+='<button class="btn pri" onclick="goUp(true)">重试</button>'; }
+  body+='</div></div>';
+  // second device line hint when multi
+  body+='<div style="margin-top:8px;text-align:center;font-size:11.5px;color:var(--ink3)">另一台 · 卧室的 Pigugu(可左右滑动切换)</div>';
+  ph(body);
+}
+function checkNow(){
+  if(checking)return; checking=true;
+  toast('#toastR','检查更新中…'); checking=true;
+  // simulate spinner on the check button
+  document.querySelectorAll('#rightBody .btn.ghost')[0].textContent='检查中…';
+  setTimeout(()=>{ checking=false;
+    const s=scen[SCEN];
+    if(SCEN==='latest'){toast('#toastR','已是最新');}
+    else if(SCEN==='new'||SCEN==='offline'){toast('#toastR','发现新版本 V2.3.1');}
+    else if(SCEN==='upgrading'){toast('#toastR','正在升级(延续当前进度)');}
+    else if(SCEN==='failed'){toast('#toastR','仍未成功,可重试');}
+    renderCenter();
+  },900);
+}
+function goUp(online){ toast('#toastR', online?'进入全屏升级页(PRD §5.4 五段动画)…':'已预约:设备下次联网后自动升级,完成通知你'); }
+function toast(sel,t){const el=$(sel);el.textContent=t;el.classList.add('show');setTimeout(()=>el.classList.remove('show'),1800);}
+
+// entry A/B
+function applyEntry(e){
+  ENTRY=e;
+  document.querySelectorAll('#entrySeg button').forEach(b=>b.classList.toggle('on',b.dataset.entry===e));
+  const menu=$('#menuB'), gear=$('#gearB');
+  if(e==='A'){
+    // show row highlight; hide gear
+    $('#gearArea').innerHTML='';
+    $('#entArow').style.background='#EEF2FF';
+    $('#entArow').style.outline='1px solid #6366F1'; $('#entArow').style.borderRadius='10px';
+    menu.style.display='none';
+  } else {
+    $('#entArow').style.background=''; $('#entArow').style.outline=''; $('#entArow').style.borderRadius='';
+    $('#gearArea').innerHTML='<button class="gear ghost" id="gearB">⚙</button>';
+    $('#gearB').onclick=()=>{menu.style.display= menu.style.display==='block'?'none':'block';};
+    // clicking menu item navigates
+    menu.querySelectorAll('.item').forEach(it=>it.onclick=()=>{menu.style.display='none'; if(it.dataset.nav){toast('#toastL','进入固件版本');}});
+    // outside click close
+    document.querySelector('#leftScreen').onclick=(ev)=>{ if(ev.target.closest('.menu')||ev.target.closest('#gearB'))return; menu.style.display='none'; };
+  }
+}
+document.querySelectorAll('#entrySeg button').forEach(b=>b.onclick=()=>applyEntry(b.dataset.entry));
+
+// scenario
+document.querySelectorAll('#scenChips button').forEach(b=>b.onclick=()=>{SCEN=b.dataset.scen;
+  document.querySelectorAll('#scenChips button').forEach(x=>x.classList.toggle('on',x===b));
+  renderCenter();
+});
+$('#backBtn').onclick=()=>{ SCEN='latest'; applyEntry(ENTRY);
+  document.querySelector('#scenChips button[data-scen="latest"]').classList.add('on');
+  document.querySelectorAll('#scenChips button').forEach(x=>x.classList.toggle('on',x.dataset.scen==='latest'));
+  renderCenter(); toast('#toastR','回到设备入口'); };
+$('#checkBtn').onclick=checkNow;
+
+applyEntry('A'); renderCenter();
+</script>
+</body>
+</html>
