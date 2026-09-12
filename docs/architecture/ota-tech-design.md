@@ -88,8 +88,8 @@ App 端行为映射与文案详见 PRD §5.4(状态机/五段升级页/重启盲
 ### 2.5 构建/发布产物与版本注入
 
 - **App 镜像(OTA 用)** = esp-idf 产出的 app 分区镜像(如 `build/xiaozhi.bin`),**非** USB 烧录的合并包(合并包只用于本节"一次性引导"的线下刷机)。
-- **版本注入**:CMakeLists 支持环境变量 `PIGUGU_RELEASE_VERSION` 覆盖 `PROJECT_VER`;发布脚本以发布语义版(首版 **2.3.0**,须 > 现存 2.2.4)构建,同时记录 git sha。
-- **发布脚本**(固件仓 `scripts/release_ota.py`,参照既有 release.py):板型参数化构建 → 计算 sha256 → 私钥 ECDSA-P256 签名(openssl,私钥只存构建机/CI,不入库)→ 上传 S3 `fw/{board}/{version}/{git}.bin` → 调 api 建 `firmware_versions`(visibility=draft)→ 定向 force 测试 → 置 released。
+- **版本注入**:根 `CMakeLists.txt` 支持 `-DPIGUGU_RELEASE_VERSION=<semver>`(也接受同名环境变量)覆盖 `PROJECT_VER`;**必须用 `-D`**——只有缓存项变化才会触发 CMake 重配置,纯环境变量改动不会,复用的 `build/` 会沿用上一次的版本号。发布脚本以发布语义版(首版 **2.3.0**,须 > 现存 2.2.4)构建,同时记录 git sha。
+- **发布脚本**(固件仓 `scripts/release_ota.py`,参照既有 release.py):板型参数化构建 → 计算 sha256 → 私钥 ECDSA-P256 签名(openssl,私钥只存构建机/CI,不入库)并**用固件内置公钥回验** → 仅只读预检版本注册表(同版本异字节/比已发布版本更旧则拒绝)→ 上传 S3 `fw/{board}/{version}/{git}.bin`(已有同 key 且字节不同的对象则拒绝覆盖;字节相同则跳过,幂等)→ 调 api 建 `firmware_versions`(visibility=draft)→ 定向 force 测试 → 置 released。
 - **一次性引导**:OTA 使能版(2.3.0)以 USB 5 分区布局刷入存量设备一次(现有 flash SOP);此后升级全走 OTA。
 
 ### 2.6 App(Flutter)
