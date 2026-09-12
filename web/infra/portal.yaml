@@ -107,6 +107,25 @@ Resources:
           };
         }
 
+  CacheHeaders:
+    Type: AWS::CloudFront::ResponseHeadersPolicy
+    Properties:
+      ResponseHeadersPolicyConfig:
+        Name: pigugu-portal-cache
+        Comment: Sends Cache-Control on the portal HTML
+        CustomHeadersConfig:
+          Items:
+            # The managed CachingOptimized cache policy sets the edge TTL but
+            # emits no Cache-Control, so browsers fall back to heuristic caching
+            # and revalidate on every visit (a 304 round trip, since S3 does
+            # honour ETag). A positive max-age removes that round trip.
+            # CloudFront invalidation does not reach browser caches, so keep
+            # this short while the page is still being iterated on; raise it
+            # once the content settles.
+            - Header: Cache-Control
+              Value: public, max-age=300
+              Override: true
+
   Certificate:
     Type: AWS::CertificateManager::Certificate
     Properties:
@@ -142,6 +161,7 @@ Resources:
           ViewerProtocolPolicy: redirect-to-https
           Compress: true
           CachePolicyId: 658327ea-f89d-4fab-a63d-7e88639e58f6
+          ResponseHeadersPolicyId: !Ref CacheHeaders
           FunctionAssociations:
             - EventType: viewer-request
               # FunctionMetadata.FunctionARN is the form AWS documents for
