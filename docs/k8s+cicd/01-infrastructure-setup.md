@@ -65,3 +65,61 @@ Currently, Redis is disabled to simplify initial deployment. For future scaling:
 Store these in **GitHub Secrets**:
 - `AWS_ACCESS_KEY_ID`
 - `AWS_SECRET_ACCESS_KEY`
+
+## 7. Portal Website (S3 + CloudFront)
+The product portal is a static site served from `www.pigugu.net`, deployed from
+`web/site/` in this repository. Source content and infrastructure are kept in
+separate directories so that `aws s3 sync web/site/` never publishes the
+template itself.
+
+### Deploy the stack
+One stack in **us-east-1** creates the private S3 origin, the CloudFront
+distribution, the ACM certificate and the Route53 records:
+
+```bash
+aws cloudformation deploy \
+  --stack-name pigugu-portal \
+  --template-file web/infra/portal.yaml \
+  --region us-east-1
+```
+
+us-east-1 is required: CloudFront only accepts viewer certificates from that
+region. The S3 bucket is created alongside it, which is harmless — CloudFront
+reads the bucket over its regional endpoint.
+
+`pigugu.net` (apex) is an alias of the same distribution and a CloudFront
+Function issues a `301` to `www.pigugu.net`, so the bare domain works too.
+TLS is a single certificate covering both names.
+
+### Publishing content
+Publishing is its own manually-dispatched workflow,
+`.github/workflows/deploy-portal.yml`, which syncs `web/site/` and invalidates
+the cache. It is intentionally not part of `deploy.yml`: the portal is content,
+so a copy change should not require running DB migrations and rolling the
+api/agent pods, and a backend failure should not block the publish.
+
+To publish manually, either dispatch **Deploy Portal** from the Actions tab, or
+run the same steps locally:
+
+```bash
+aws s3 sync web/site/ s3://pigugu-web/ --delete --region us-east-1
+
+DISTRIBUTION_ID=$(aws cloudformation describe-stacks \
+  --stack-name pigugu-portal --region us-east-1 \
+  --query "Stacks[0].Outputs[?OutputKey=='DistributionId'].OutputValue" \
+  --output text)
+aws cloudfront create-invalidation \
+  --distribution-id "$DISTRIBUTION_ID" --paths "/" "/index.html" --region us-east-1
+```
+
+Pass `--region us-east-1` explicitly when running these by hand. `deploy.yml`
+defaults its environment to us-west-1, and S3 answers a cross-region request
+with a `301` redirect that `aws s3 sync` reports as a failure. The workflow
+itself sets `AWS_REGION: us-east-1`, so it needs no per-command flags.
+
+### IAM permissions
+The CI user needs, in addition to the EKS/ECR permissions above:
+
+- `s3:ListBucket`, `s3:PutObject`, `s3:DeleteObject` on `pigugu-web`
+- `cloudfront:CreateInvalidation` on the portal distribution
+- `cloudformation:DescribeStacks` on `pigugu-portal`

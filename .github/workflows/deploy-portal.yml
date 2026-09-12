@@ -1,0 +1,59 @@
+name: Deploy Portal
+
+# Publishes the static marketing portal to S3 + CloudFront.
+#
+# Deliberately separate from deploy.yml: the portal is content, not a service,
+# and coupling it to the backend release meant a copy change required running
+# DB migrations and rolling the api/agent pods — while any backend failure
+# aborted the publish. This workflow touches nothing in the cluster.
+
+on:
+  workflow_dispatch:
+
+env:
+  # The stack, bucket and certificate all live in us-east-1: CloudFront only
+  # accepts viewer certificates from that region. Setting it workflow-wide
+  # keeps every aws call in the right region without per-command flags.
+  AWS_REGION: us-east-1
+  PORTAL_STACK_NAME: pigugu-portal
+  PORTAL_BUCKET: pigugu-web
+  # Matches deploy.yml so both workflows run JavaScript actions the same way.
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+jobs:
+  publish:
+    name: Publish portal
+    runs-on: ubuntu-latest
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v4
+
+    - name: Configure AWS credentials
+      uses: aws-actions/configure-aws-credentials@v4
+      with:
+        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        aws-region: ${{ env.AWS_REGION }}
+
+    - name: Sync site content and invalidate cache
+      # web/site/ is the deployable artifact; web/infra/ holds the template and
+      # must never be published. Keeping them in sibling directories means the
+      # sync needs no exclude rules.
+      run: |
+        DISTRIBUTION_ID=$(aws cloudformation describe-stacks \
+          --stack-name "$PORTAL_STACK_NAME" \
+          --query "Stacks[0].Outputs[?OutputKey=='DistributionId'].OutputValue" \
+          --output text)
+        if [ -z "$DISTRIBUTION_ID" ] || [ "$DISTRIBUTION_ID" = "None" ]; then
+          echo "Could not read DistributionId from stack $PORTAL_STACK_NAME" >&2
+          exit 1
+        fi
+
+        aws s3 sync web/site/ "s3://$PORTAL_BUCKET/" --delete
+        # The bucket holds only index.html, served at / and /index.html, so
+        # these two paths cover every cached entry.
+        aws cloudfront create-invalidation \
+          --distribution-id "$DISTRIBUTION_ID" \
+          --paths "/" "/index.html"
+
+        echo "Published to https://www.pigugu.net (distribution $DISTRIBUTION_ID)"

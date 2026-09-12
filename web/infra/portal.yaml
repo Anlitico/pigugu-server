@@ -1,0 +1,203 @@
+# Portal hosting: private S3 origin + CloudFront + ACM certificate + Route53.
+#
+# Deployed as a single stack in us-east-1 because CloudFront requires its
+# viewer certificate to live there. The S3 origin is created in the same
+# region; CloudFront reads it over the regional endpoint, so the bucket's
+# region has no bearing on serving latency.
+#
+#   aws cloudformation deploy \
+#     --stack-name pigugu-portal \
+#     --template-file web/infra/portal.yaml \
+#     --region us-east-1
+#
+# Site content is published separately by .github/workflows/deploy.yml:
+# `aws s3 sync web/site/` then a CloudFront invalidation.
+
+AWSTemplateFormatVersion: "2010-09-09"
+Description: Pigugu portal - S3 origin, CloudFront distribution, TLS certificate and DNS
+
+Parameters:
+  DomainName:
+    Type: String
+    Default: www.pigugu.net
+    Description: Canonical host serving the portal.
+  ApexDomainName:
+    Type: String
+    Default: pigugu.net
+    Description: Bare domain, 301-redirected to DomainName by a CloudFront Function.
+  HostedZoneId:
+    Type: String
+    Default: Z03801812HYEZ1S5OMKM9
+    Description: Route53 hosted zone for pigugu.net (holds the ACM validation and alias records).
+  BucketName:
+    Type: String
+    Default: pigugu-web
+    Description: S3 bucket holding the site. Must match the deploy workflow.
+
+Resources:
+  SiteBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Ref BucketName
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+
+  SiteBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref SiteBucket
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: AllowCloudFrontReadOnly
+            Effect: Allow
+            Principal:
+              Service: cloudfront.amazonaws.com
+            Action: s3:GetObject
+            Resource: !Sub "${SiteBucket.Arn}/*"
+            Condition:
+              StringEquals:
+                AWS:SourceArn: !Sub "arn:${AWS::Partition}:cloudfront::${AWS::AccountId}:distribution/${Distribution}"
+
+  OriginAccessControl:
+    Type: AWS::CloudFront::OriginAccessControl
+    Properties:
+      OriginAccessControlConfig:
+        Name: pigugu-web-oac
+        OriginAccessControlOriginType: s3
+        SigningBehavior: always
+        SigningProtocol: sigv4
+
+  ApexRedirect:
+    Type: AWS::CloudFront::Function
+    Properties:
+      Name: pigugu-apex-to-www
+      AutoPublish: true
+      FunctionConfig:
+        Comment: 301 the bare domain to the canonical host
+        Runtime: cloudfront-js-2.0
+      FunctionCode: !Sub |
+        function handler(event) {
+          var request = event.request;
+          // Host is case-insensitive per RFC 3986; browsers lowercase it, other
+          // clients are not obliged to.
+          if (request.headers.host.value.toLowerCase() !== "${ApexDomainName}") {
+            return request;
+          }
+          // `value` holds the first occurrence of each key. The querystring
+          // entries carry no usable `multiValue` in this runtime — dereferencing
+          // it throws and CloudFront answers 503 — so duplicate keys collapse
+          // to the first value. Acceptable: this is a landing-page redirect.
+          var query = Object.keys(request.querystring).map(function (key) {
+            return key + "=" + request.querystring[key].value;
+          }).join("&");
+          return {
+            statusCode: 301,
+            statusDescription: "Moved Permanently",
+            headers: {
+              location: { value: "https://${DomainName}" + request.uri + (query ? "?" + query : "") }
+            }
+          };
+        }
+
+  Certificate:
+    Type: AWS::CertificateManager::Certificate
+    Properties:
+      DomainName: !Ref DomainName
+      SubjectAlternativeNames:
+        - !Ref ApexDomainName
+      ValidationMethod: DNS
+      DomainValidationOptions:
+        - DomainName: !Ref DomainName
+          HostedZoneId: !Ref HostedZoneId
+        - DomainName: !Ref ApexDomainName
+          HostedZoneId: !Ref HostedZoneId
+
+  Distribution:
+    Type: AWS::CloudFront::Distribution
+    Properties:
+      DistributionConfig:
+        Enabled: true
+        HttpVersion: http2and3
+        IPV6Enabled: true
+        Aliases:
+          - !Ref DomainName
+          - !Ref ApexDomainName
+        DefaultRootObject: index.html
+        Origins:
+          - Id: s3-site
+            DomainName: !GetAtt SiteBucket.RegionalDomainName
+            OriginAccessControlId: !GetAtt OriginAccessControl.Id
+            S3OriginConfig:
+              OriginAccessIdentity: ""
+        DefaultCacheBehavior:
+          TargetOriginId: s3-site
+          ViewerProtocolPolicy: redirect-to-https
+          Compress: true
+          CachePolicyId: 658327ea-f89d-4fab-a63d-7e88639e58f6
+          FunctionAssociations:
+            - EventType: viewer-request
+              # FunctionMetadata.FunctionARN is the form AWS documents for
+              # associations; the bare FunctionARN attribute is not reliably
+              # the published (LIVE) stage ARN.
+              FunctionARN: !GetAtt ApexRedirect.FunctionMetadata.FunctionARN
+        # The bucket is private, so a missing key surfaces as 403 rather than
+        # 404. Both are rewritten to the landing page instead of leaking S3's
+        # XML error body to the browser.
+        CustomErrorResponses:
+          - ErrorCode: 403
+            ResponseCode: 200
+            ResponsePagePath: /index.html
+          - ErrorCode: 404
+            ResponseCode: 200
+            ResponsePagePath: /index.html
+        ViewerCertificate:
+          AcmCertificateArn: !Ref Certificate
+          SslSupportMethod: sni-only
+          MinimumProtocolVersion: TLSv1.2_2021
+
+  DnsRecords:
+    Type: AWS::Route53::RecordSetGroup
+    Properties:
+      HostedZoneId: !Ref HostedZoneId
+      # Z2FDTNDATAQYW2 is CloudFront's fixed alias hosted zone ID, identical for
+      # every distribution worldwide (China regions use Z3RFFRIM2A3IF5).
+      # AWS::CloudFront::Distribution exposes only DomainName and Id, so the
+      # alias target's zone cannot be read off the resource.
+      RecordSets:
+        - Name: !Ref DomainName
+          Type: A
+          AliasTarget:
+            DNSName: !GetAtt Distribution.DomainName
+            HostedZoneId: Z2FDTNDATAQYW2
+        - Name: !Ref DomainName
+          Type: AAAA
+          AliasTarget:
+            DNSName: !GetAtt Distribution.DomainName
+            HostedZoneId: Z2FDTNDATAQYW2
+        - Name: !Ref ApexDomainName
+          Type: A
+          AliasTarget:
+            DNSName: !GetAtt Distribution.DomainName
+            HostedZoneId: Z2FDTNDATAQYW2
+        - Name: !Ref ApexDomainName
+          Type: AAAA
+          AliasTarget:
+            DNSName: !GetAtt Distribution.DomainName
+            HostedZoneId: Z2FDTNDATAQYW2
+
+Outputs:
+  DistributionId:
+    Description: Read by the deploy workflow to invalidate the cache.
+    Value: !Ref Distribution
+  SiteBucketName:
+    Value: !Ref SiteBucket
+  PortalUrl:
+    Value: !Sub "https://${DomainName}"
