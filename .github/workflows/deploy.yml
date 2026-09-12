@@ -233,6 +233,7 @@ jobs:
         CLICKHOUSE_PASSWORD: ${{ secrets.CLICKHOUSE_PASSWORD }}
         ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
         XAI_API_KEY: ${{ secrets.XAI_API_KEY }}
+        OTA_INTERNAL_SECRET: ${{ secrets.OTA_INTERNAL_SECRET }}
       run: |
         # Inject secrets into secrets.yaml
         python - <<'PY'
@@ -263,6 +264,7 @@ jobs:
             "XAI_API_KEY",
             "AWS_IOT_WEBHOOK_SECRET",
             "MQTT_BROKER_URI",
+            "OTA_INTERNAL_SECRET",
         ):
             text = text.replace(f"__{key}__", os.environ.get(key, ""))
 
