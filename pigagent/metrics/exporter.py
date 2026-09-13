@@ -217,6 +217,11 @@ def enqueue(scope) -> bool:
     if line:
         logger.info(line)
     if not exporter._enabled:
+        # Nothing will be submitted, so the scope is done with: mark it handed
+        # off or a scope with several possible flushers (the bare-wake ack's)
+        # re-logs its line on every flush. Kept out of the enabled path so a
+        # render failure there can still be retried by a later flush.
+        scope.enqueued = True
         return False
     try:
         row = scope.ch_row()

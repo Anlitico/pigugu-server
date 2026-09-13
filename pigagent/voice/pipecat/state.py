@@ -49,9 +49,9 @@ class PiguguTurnState:
         # it to "wake_word" on listen/detect; reset after the turn).
         self.turn_type: str = "follow_up"
         # The wake word the device detected (from listen/detect "text"), used
-        # to strip it from the first turn's transcript before it reaches the
-        # LLM (the firmware streams the wake-word audio to the STT, so the
-        # transcript starts with e.g. "Alexa? ...").
+        # to PREPEND it to the wake turn's text. The firmware does not stream
+        # the wake-word audio (CONFIG_SEND_WAKE_WORD_DATA is off), so the
+        # transcript never contains it — see PiguguAgentGateway.
         self.wake_word: str = ""
         # The live TelemetryCollector turn dict for the current turn. Pipecat
         # runs each FrameProcessor in its own asyncio task with an isolated

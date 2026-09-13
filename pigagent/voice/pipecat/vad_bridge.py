@@ -83,11 +83,12 @@ class PiguguVadBridge(FrameProcessor):
             # turn-stop watchdog (see _on_audio comment).
             pass
         elif state == "detect":
-            # Wake word: classify the following turn (the gateway strips the
-            # wake word from its transcript) and reset VAD voice state.
+            # Wake word: classify the following turn (the gateway PREPENDS the
+            # wake word to that turn's text) and reset VAD voice state.
             self._state.turn_type = "wake_word"
-            # The firmware sends the wake-word text here; the gateway strips
-            # it from the first turn's transcript so the LLM does not see it.
+            # The firmware sends the wake-word text here; the gateway puts it
+            # back at the head of the turn's text, since the firmware never
+            # streamed that audio (CONFIG_SEND_WAKE_WORD_DATA is off).
             self._state.wake_word = str(msg.get("text", "") or "")
             self.client_have_voice = False
             self.client_voice_stop = False

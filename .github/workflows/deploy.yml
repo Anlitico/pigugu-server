@@ -213,6 +213,8 @@ jobs:
         IMAGE_TAG: ${{ github.event.inputs.image_tag }}
         VOICE_IDLE_SILENCE_SECS: ${{ vars.VOICE_IDLE_SILENCE_SECS }}
         VOICE_LOST_TIMEOUT_SECS: ${{ vars.VOICE_LOST_TIMEOUT_SECS }}
+        VOICE_BARE_WAKE_IDLE_SECS: ${{ vars.VOICE_BARE_WAKE_IDLE_SECS }}
+        VOICE_WAKE_ACK_WAIT_SECS: ${{ vars.VOICE_WAKE_ACK_WAIT_SECS }}
         DATABASE_URL: postgresql+asyncpg://pigugu:${{ secrets.DB_PASSWORD }}@pigugu-db.c1esma68egsk.us-west-1.rds.amazonaws.com:5432/pigugu
         REDIS_URL: redis://pigugu-redis.feoudk.ng.0001.usw1.cache.amazonaws.com:6379/0
         LIVEKIT_URL: ${{ secrets.LIVEKIT_URL }}
@@ -289,6 +291,8 @@ jobs:
         # unset — fall back here so the pod never gets an empty value).
         sed -e "s|__VOICE_IDLE_SILENCE_SECS__|${VOICE_IDLE_SILENCE_SECS:-30}|g" \
             -e "s|__VOICE_LOST_TIMEOUT_SECS__|${VOICE_LOST_TIMEOUT_SECS:-30}|g" \
+            -e "s|__VOICE_BARE_WAKE_IDLE_SECS__|${VOICE_BARE_WAKE_IDLE_SECS:-5}|g" \
+            -e "s|__VOICE_WAKE_ACK_WAIT_SECS__|${VOICE_WAKE_ACK_WAIT_SECS:-2}|g" \
             k8s/agent.yaml | kubectl apply -f -
         kubectl apply -f k8s/fluent-bit.yaml
         kubectl apply -f crawler/deploy/cronjob.yaml

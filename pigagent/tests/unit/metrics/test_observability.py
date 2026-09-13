@@ -208,6 +208,25 @@ def test_registry_drops_phantom_turn(monkeypatch):
     assert s.finished
 
 
+def test_enqueue_logs_once_when_export_is_disabled(monkeypatch):
+    """With export off nothing is submitted, but the scope is still done with:
+    a scope that several owners may flush (the bare-wake ack's opens in the
+    gateway's task and is reachable from three flush paths) must not re-log its
+    [METRIC] line on every flush."""
+    logged: list[str] = []
+
+    class FakeScope(TurnScope):
+        def log_line(self):
+            logged.append("line")
+            return "line"
+
+    s = FakeScope(user_id="u1", persona_id=1)
+    monkeypatch.setattr(exporter_mod.exporter, "_enabled", False)
+    assert exporter_mod.enqueue(s) is False
+    assert exporter_mod.enqueue(s) is True  # already handed off — no second log
+    assert logged == ["line"]
+
+
 def test_enqueue_never_double_submits(monkeypatch):
     """A scope already handed to the exporter is ignored on a second flush
     (racing owner tasks must not duplicate the CH row)."""

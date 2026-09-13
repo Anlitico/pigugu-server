@@ -170,11 +170,12 @@ async def test_stt_bridge_utterance_end_pushes_turn_stop():
 
 
 @pytest.mark.asyncio
-async def test_gateway_strips_wake_word_from_first_turn():
-    """The wake-word turn's transcript must not reach the LLM with the wake
-    word prefixed (e.g. 'Alexa? nice to meet you') — the LLM (Pigugu, not
-    Alexa) reads that as the user addressing another assistant, which is what
-    produced 'Say that again — I drifted off for a second.' in prod."""
+async def test_gateway_prepends_wake_word_to_wake_turn():
+    """The wake turn carries the wake word in its user text. The firmware does
+    NOT stream the wake-word audio (CONFIG_SEND_WAKE_WORD_DATA is off), so the
+    transcript alone is just "how are you today?"; the turn must read as the
+    utterance the user actually made — "hey pigugu how are you today?" — so the
+    LLM sees the user addressing Pigugu, not a stray question."""
     from pipecat.frames.frames import TranscriptionFrame, UserStoppedSpeakingFrame
 
     from voice.pipecat.agent_gateway import PiguguAgentGateway
@@ -182,7 +183,7 @@ async def test_gateway_strips_wake_word_from_first_turn():
 
     state = PiguguTurnState()
     state.turn_type = "wake_word"
-    state.wake_word = "alexa"
+    state.wake_word = "heypigugu"
     gateway = PiguguAgentGateway(state=state)
     turns: list[str] = []
 
@@ -196,26 +197,347 @@ async def test_gateway_strips_wake_word_from_first_turn():
 
     gateway.push_frame = noop
 
-    # A single is_final chunk with the wake word prefixed.
     await gateway.process_frame(
-        TranscriptionFrame(
-            text="Alexa, nice to meet you. How are you today?", user_id="", timestamp=""
-        ),
-        None,
+        TranscriptionFrame(text="how are you today?", user_id="", timestamp=""), None
     )
     await gateway.process_frame(UserStoppedSpeakingFrame(), None)
-    assert turns == ["nice to meet you. How are you today?"]
+    assert turns == ["hey pigugu how are you today?"]
 
-    # Follow-up turn: no stripping.
+    # Follow-up turn: no wake-word prefix.
     state.turn_type = "follow_up"
     await gateway.process_frame(
         TranscriptionFrame(text="Can you hear me now?", user_id="", timestamp=""), None
     )
     await gateway.process_frame(UserStoppedSpeakingFrame(), None)
     assert turns == [
-        "nice to meet you. How are you today?",
+        "hey pigugu how are you today?",
         "Can you hear me now?",
     ]
+
+
+def test_wake_turn_text_and_normalization():
+    """WakeNet names arrive glued, so they are made readable first; a bare wake
+    word (user stopped at the wake word) yields the wake word alone — that is
+    the text the session's wake-ack path hands to the agent."""
+    from voice.pipecat.agent_gateway import normalize_wake_word, wake_turn_text
+
+    assert normalize_wake_word("heypigugu") == "hey pigugu"
+    assert normalize_wake_word("hey pigugu") == "hey pigugu"
+    assert normalize_wake_word("  hey   pigugu ") == "hey pigugu"
+    # Unrecognised / non-latin wake words pass through untouched.
+    assert normalize_wake_word("xiaozhixiaozhi") == "xiaozhixiaozhi"
+    assert normalize_wake_word("hey") == "hey"
+    assert normalize_wake_word("") == ""
+
+    assert wake_turn_text("", "heypigugu") == "hey pigugu"
+    assert wake_turn_text("how are you", "heypigugu") == "hey pigugu how are you"
+    assert wake_turn_text("  how are you  ", "heypigugu") == "hey pigugu how are you"
+    # No wake word (old firmware that sends no listen/detect text): the
+    # transcript is left alone rather than getting a dangling prefix.
+    assert wake_turn_text("how are you", "") == "how are you"
+
+
+def _bare_gateway(**kwargs):
+    """Gateway whose pushed frames are recorded instead of sent."""
+    from voice.pipecat.agent_gateway import PiguguAgentGateway
+    from voice.pipecat.state import PiguguTurnState
+
+    gateway = PiguguAgentGateway(state=PiguguTurnState(), **kwargs)
+    turns: list[str] = []
+    pushed: list[tuple] = []
+
+    async def on_turn(text):
+        turns.append(text)
+
+    async def record(frame, direction=None):
+        pushed.append((frame, direction))
+
+    gateway._on_turn = on_turn
+    gateway.push_frame = record
+    return gateway, turns, pushed
+
+
+async def _detect(gateway, text="heypigugu"):
+    """Drive the wake path the way the chain does: the VAD bridge (upstream)
+    classifies the turn from listen/detect, then the gateway sees the frame."""
+    from voice.pipecat.pigugu_serializer import PiguguMessageFrame
+
+    gateway._state.turn_type = "wake_word"
+    gateway._state.wake_word = text
+    await gateway.process_frame(
+        PiguguMessageFrame(message={"type": "listen", "state": "detect", "text": text}),
+        None,
+    )
+
+
+@pytest.mark.asyncio
+async def test_wake_ack_answers_a_bare_wake():
+    """listen/detect with no speech after it is answered with the wake word
+    itself — the persona reply a user who stopped at "Hey pigugu" gets."""
+    import asyncio
+
+    gateway, turns, _ = _bare_gateway(wake_ack_wait_secs=0.05)
+    await _detect(gateway)
+    # Not answered immediately: the user may still be about to speak.
+    assert turns == []
+    await asyncio.sleep(0.2)
+    assert turns == ["hey pigugu"]
+
+
+@pytest.mark.asyncio
+async def test_detect_without_a_wake_word_still_ends_the_wake_turn():
+    """listen/detect with no wake word: no ack is sent, but the classification
+    must still be cleared — otherwise the user's next utterance is recorded as a
+    wake-word turn (and counted as a bare wake by the metrics)."""
+    from voice.pipecat.agent_gateway import PiguguAgentGateway
+    from voice.pipecat.state import PiguguTurnState
+
+    gateway = PiguguAgentGateway(state=PiguguTurnState(), wake_ack_wait_secs=0.05)
+    turns: list[str] = []
+
+    async def on_turn(text):
+        turns.append(text)
+
+    gateway._on_turn = on_turn
+    await _detect(gateway, text="")
+    assert gateway._state.turn_type == "wake_word"  # the vad bridge classified it
+    await asyncio.sleep(0.2)
+    assert turns == []
+    assert gateway._state.turn_type == "follow_up"
+    assert gateway._state.wake_word == ""
+
+
+def test_wake_word_prefix_is_not_duplicated_after_punctuation():
+    """A build that streams the wake-word audio (CONFIG_SEND_WAKE_WORD_DATA=y)
+    produces a transcript that already starts with the wake word. Detecting that
+    must survive the punctuation the STT adds, or the turn reads "hey pigugu Hey
+    Pigugu, how are you"."""
+    from voice.pipecat.agent_gateway import normalize_wake_word, wake_turn_text
+
+    assert wake_turn_text("Hey Pigugu, how are you", "heypigugu") == "Hey Pigugu, how are you"
+    assert wake_turn_text("hey pigugu. what's up", "heypigugu") == "hey pigugu. what's up"
+    assert wake_turn_text("heypigugu", "heypigugu") == "heypigugu"
+    # Punctuation the STT put INSIDE the wake word, and full-width marks.
+    assert wake_turn_text("hey. pigugu, hello", "heypigugu") == "hey. pigugu, hello"
+    assert wake_turn_text("hey.pigugu hello", "heypigugu") == "hey.pigugu hello"
+    assert wake_turn_text("hey  pigugu hello", "heypigugu") == "hey  pigugu hello"
+    assert wake_turn_text("heypigugu，你好", "heypigugu") == "heypigugu，你好"
+    # Still not a match: a different word that merely starts with the same
+    # letters must get the prefix.
+    assert wake_turn_text("hiking trails", "hi") == "hi hiking trails"
+    assert wake_turn_text("how are you", "heypigugu") == "hey pigugu how are you"
+    # Longest greeting first, or "okay" would be split as "ok" + "ay".
+    assert normalize_wake_word("okaypigugu") == "okay pigugu"
+
+
+@pytest.mark.asyncio
+async def test_bare_wake_opens_its_own_turn_for_storage(monkeypatch):
+    """The ack is a turn, so the gateway opens one on the observer before it
+    dispatches — the audio path never does (a bare wake has no utterance to
+    stop), leaving the row and its latency telemetry without a scope."""
+    import asyncio
+
+    from metrics import registry
+
+    flushed: list[object] = []
+    scope = object()
+
+    class _Observer:
+        def begin_bare_wake_turn(self):
+            return scope
+
+    monkeypatch.setattr(registry, "flush", flushed.append)
+
+    gateway, turns, _ = _bare_gateway(wake_ack_wait_secs=0.05, turn_observer=_Observer())
+    await _detect(gateway)
+    # Still undecided: the user may speak on, which would make this a real turn
+    # opened by the observer's own stop path.
+    assert flushed == []
+    await asyncio.sleep(0.2)
+    assert turns == ["hey pigugu"]
+    # The gateway opened the scope in its own task, so it also flushes it: a
+    # scope nobody flushes yields no latency row.
+    await gateway.cleanup()
+    assert flushed == [scope]
+
+
+@pytest.mark.asyncio
+async def test_transcript_turn_does_not_open_a_bare_wake_turn():
+    """Guard: only the bare-wake ack opens the turn itself — a real turn already
+    has an observer-opened scope, and opening a second one would drop its row."""
+    from pipecat.frames.frames import TranscriptionFrame, UserStoppedSpeakingFrame
+
+    opened: list[str] = []
+
+    class _Observer:
+        def begin_bare_wake_turn(self):
+            opened.append("turn")
+
+    gateway, turns, _ = _bare_gateway(wake_ack_wait_secs=0.05, turn_observer=_Observer())
+    await _detect(gateway)
+    await gateway.process_frame(
+        TranscriptionFrame(text="how are you", user_id="", timestamp=""), None
+    )
+    await gateway.process_frame(UserStoppedSpeakingFrame(), None)
+    assert turns == ["hey pigugu how are you"]
+    assert opened == []
+
+
+@pytest.mark.asyncio
+async def test_wake_ack_cancelled_when_the_user_speaks():
+    """Speaking after the wake word cancels the ack: the transcript-driven turn
+    answers instead, and it is still answered exactly once."""
+    import asyncio
+
+    from pipecat.frames.frames import TranscriptionFrame, UserStoppedSpeakingFrame
+
+    gateway, turns, _ = _bare_gateway(wake_ack_wait_secs=0.05)
+    await _detect(gateway, text="heypigugu")
+    await gateway.process_frame(
+        TranscriptionFrame(text="how are you", user_id="", timestamp=""), None
+    )
+    await gateway.process_frame(UserStoppedSpeakingFrame(), None)
+    assert turns == ["hey pigugu how are you"]
+    await asyncio.sleep(0.2)
+    # The armed ack did not fire a second turn.
+    assert turns == ["hey pigugu how are you"]
+
+
+@pytest.mark.asyncio
+async def test_wake_ack_disabled_without_a_wait():
+    """A chain that passes no wait (tests, the M2 no-TTS chain) never answers a
+    bare wake on its own."""
+    import asyncio
+
+    gateway, turns, _ = _bare_gateway()
+    await _detect(gateway)
+    await asyncio.sleep(0.05)
+    assert turns == []
+
+
+@pytest.mark.asyncio
+async def test_wake_ack_cancelled_by_an_interim_transcript():
+    """Interims are a SEPARATE frame class from finals, so cancelling only on
+    TranscriptionFrame would let a long one-breath utterance (no final inside
+    the wait) get answered over."""
+    import asyncio
+
+    from pipecat.frames.frames import InterimTranscriptionFrame
+
+    gateway, turns, _ = _bare_gateway(wake_ack_wait_secs=0.05)
+    await _detect(gateway)
+    await gateway.process_frame(
+        InterimTranscriptionFrame(text="can you tell me", user_id="", timestamp=""), None
+    )
+    await asyncio.sleep(0.2)
+    assert turns == []
+
+
+@pytest.mark.asyncio
+async def test_wake_ack_cancelled_by_user_started_speaking():
+    """Third net: some STT paths announce the turn before any transcript frame."""
+    import asyncio
+
+    from pipecat.frames.frames import UserStartedSpeakingFrame
+
+    gateway, turns, _ = _bare_gateway(wake_ack_wait_secs=0.05)
+    await _detect(gateway)
+    await gateway.process_frame(UserStartedSpeakingFrame(), None)
+    await asyncio.sleep(0.2)
+    assert turns == []
+
+
+@pytest.mark.asyncio
+async def test_wake_ack_does_not_taint_the_next_turn():
+    """The wake classification is spent once the ack is answered: the user's
+    next utterance must not get a fabricated wake-word prefix."""
+    import asyncio
+
+    from pipecat.frames.frames import TranscriptionFrame, UserStoppedSpeakingFrame
+
+    gateway, turns, _ = _bare_gateway(wake_ack_wait_secs=0.05)
+    await _detect(gateway)
+    await asyncio.sleep(0.2)
+    assert turns == ["hey pigugu"]
+
+    await gateway.process_frame(
+        TranscriptionFrame(text="what is the weather in Tokyo", user_id="", timestamp=""), None
+    )
+    await gateway.process_frame(UserStoppedSpeakingFrame(), None)
+    assert turns == ["hey pigugu", "what is the weather in Tokyo"]
+
+
+@pytest.mark.asyncio
+async def test_no_idle_window_when_the_follow_up_window_is_disabled():
+    """VOICE_IDLE_SILENCE_SECS=0 means "do not manage the idle window"; arming
+    W1 there would leave the short window stuck on every later turn."""
+    from pipecat.frames.frames import BotStartedSpeakingFrame, UserIdleTimeoutUpdateFrame
+
+    gateway, _, pushed = _bare_gateway(follow_up_idle_secs=0.0, bare_wake_idle_secs=5.0)
+    await gateway.process_frame(BotStartedSpeakingFrame(), None)
+    assert not any(isinstance(f, UserIdleTimeoutUpdateFrame) for f, _ in pushed)
+
+
+@pytest.mark.asyncio
+async def test_idle_window_per_turn_kind():
+    """A normal turn restores the follow-up window (W2); a bare-wake ack sets
+    the much shorter one (W1). Installed when the reply starts speaking, pushed
+    UPSTREAM — the UserIdleController sits before the gateway in the chain."""
+    import asyncio
+
+    from pipecat.frames.frames import (
+        BotStartedSpeakingFrame,
+        TranscriptionFrame,
+        UserIdleTimeoutUpdateFrame,
+        UserStoppedSpeakingFrame,
+    )
+    from pipecat.processors.frame_processor import FrameDirection
+
+    def windows(pushed):
+        return [(f.timeout, d) for f, d in pushed if isinstance(f, UserIdleTimeoutUpdateFrame)]
+
+    gateway, _, pushed = _bare_gateway(
+        follow_up_idle_secs=30.0, bare_wake_idle_secs=5.0, wake_ack_wait_secs=0.05
+    )
+    await _detect(gateway)
+    await asyncio.sleep(0.2)
+    # Dispatched, but not installed yet: nothing has spoken.
+    assert windows(pushed) == []
+    await gateway.process_frame(BotStartedSpeakingFrame(), None)
+    assert windows(pushed) == [(5.0, FrameDirection.UPSTREAM)]
+
+    gateway, _, pushed = _bare_gateway(follow_up_idle_secs=30.0, bare_wake_idle_secs=5.0)
+    await gateway.process_frame(
+        TranscriptionFrame(text="hello there", user_id="", timestamp=""), None
+    )
+    await gateway.process_frame(UserStoppedSpeakingFrame(), None)
+    assert windows(pushed) == []
+    await gateway.process_frame(BotStartedSpeakingFrame(), None)
+    assert windows(pushed) == [(30.0, FrameDirection.UPSTREAM)]
+
+
+@pytest.mark.asyncio
+async def test_ack_window_is_not_installed_before_the_reply_speaks():
+    """Regression: installing W1 at dispatch time restarts the controller's
+    running follow-up timer — a bare wake emits no user-speech signal, so that
+    timer is always running — and the ack's own LLM/TTS generation then has only
+    W1 to finish in, closing the session before the user hears the reply."""
+    import asyncio
+
+    from pipecat.frames.frames import BotStartedSpeakingFrame, UserIdleTimeoutUpdateFrame
+
+    gateway, turns, pushed = _bare_gateway(
+        follow_up_idle_secs=30.0, bare_wake_idle_secs=5.0, wake_ack_wait_secs=0.05
+    )
+    await _detect(gateway)
+    await asyncio.sleep(0.2)
+    assert turns == ["hey pigugu"]
+    assert not any(isinstance(f, UserIdleTimeoutUpdateFrame) for f, _ in pushed), (
+        "the ack's window must not be installed while its reply is still generating"
+    )
+    # The reply speaks: now the window applies, to the turn that follows it.
+    await gateway.process_frame(BotStartedSpeakingFrame(), None)
+    assert [f.timeout for f, _ in pushed if isinstance(f, UserIdleTimeoutUpdateFrame)] == [5.0]
 
 
 class FakeVAD:
@@ -463,6 +785,85 @@ async def test_reply_silence_triggers_server_idle_close(monkeypatch):
                 except ConnectionClosed:
                     closed.append("closed")
                 assert closed, "server did not idle-close after reply silence"
+    finally:
+        server.logger.remove(sink_id)
+
+    assert any("idle_no_speech" in r for r in records), records
+
+
+@pytest.mark.asyncio
+async def test_bare_wake_is_answered_and_uses_the_short_idle_window(monkeypatch):
+    """The device sends listen/detect and then says nothing: the server answers
+    the wake word itself (a persona reply, not silence), and the follow-up
+    window after that reply is the short W1 — proving the window frame the
+    gateway pushes UPSTREAM actually reaches the UserIdleController."""
+    monkeypatch.setattr(server, "_get_shared_vad", lambda: FakeVAD())
+    monkeypatch.setattr(server, "_get_shared_stt", lambda: FakeSTT())
+    monkeypatch.setattr(server, "_get_shared_tts", lambda: FakeTTS())
+
+    async def _fake_ensure_pig(self):  # noqa: ARG001
+        return FakeAgent()
+
+    monkeypatch.setattr(PiguguTtsBridge, "_ensure_pig", _fake_ensure_pig)
+
+    import voice.pipecat.session as session_mod
+
+    monkeypatch.setattr(session_mod, "VOICE_WAKE_ACK_WAIT_SECS", 0.3)
+    # Short enough to observe; far from the 30s follow-up default, so a missing
+    # frame means the drain below times out instead of passing by accident.
+    monkeypatch.setattr(session_mod, "VOICE_BARE_WAKE_IDLE_SECS", 0.8)
+
+    records: list[str] = []
+    sink_id = server.logger.add(records.append, level="INFO")
+
+    async def on_connect(ws):
+        await server._on_connect(ws)
+
+    from websockets.exceptions import ConnectionClosed
+
+    try:
+        async with serve(on_connect, "127.0.0.1", 0) as wss:
+            port = wss.sockets[0].getsockname()[1]
+            async with websockets.connect(
+                f"ws://127.0.0.1:{port}", additional_headers={"client-id": "bare-wake"}
+            ) as ws:
+                await ws.send(
+                    json.dumps(
+                        {
+                            "type": "hello",
+                            "version": 1,
+                            "transport": "websocket",
+                            "persona_id": 3,
+                            "hw_id": "hw-42",
+                            "audio_params": {
+                                "format": "opus",
+                                "sample_rate": 16000,
+                                "channels": 1,
+                                "frame_duration": 60,
+                            },
+                        }
+                    )
+                )
+                await asyncio.wait_for(ws.recv(), 5)  # hello reply
+                # Wake word only — no audio follows.
+                await ws.send(
+                    json.dumps({"type": "listen", "state": "detect", "text": "heypigugu"})
+                )
+                seen: list[tuple[str, object]] = []
+                await _read_until_stop(ws, seen)
+                stt_texts = [
+                    p["text"] for k, p in seen if k == "msg" and p.get("type") == "stt"
+                ]
+                assert stt_texts == ["hey pigugu"], seen
+
+                # The short W1 window must close the session on its own.
+                closed: list[str] = []
+                try:
+                    while True:
+                        await asyncio.wait_for(ws.recv(), timeout=5)
+                except ConnectionClosed:
+                    closed.append("closed")
+                assert closed, "session did not idle-close on the bare-wake window"
     finally:
         server.logger.remove(sink_id)
 

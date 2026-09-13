@@ -74,6 +74,12 @@ def _env_float(name: str, default: float) -> float:
 
 VOICE_IDLE_SILENCE_SECS = _env_float("VOICE_IDLE_SILENCE_SECS", 30.0)
 VOICE_LOST_TIMEOUT_SECS = _env_float("VOICE_LOST_TIMEOUT_SECS", 30.0)
+# W1: after the bare-wake ack the user has just been answered, so the wait for
+# them to speak is short — not the reply follow-up window above.
+VOICE_BARE_WAKE_IDLE_SECS = _env_float("VOICE_BARE_WAKE_IDLE_SECS", 5.0)
+# How long listen/detect waits for the user to speak before the server answers
+# the wake word itself (the bare-wake ack).
+VOICE_WAKE_ACK_WAIT_SECS = _env_float("VOICE_WAKE_ACK_WAIT_SECS", 2.0)
 
 
 def _stop_strategies(stt):
@@ -187,7 +193,15 @@ def _default_processors(
         stt_bridge,
         turn_processor,
         observer,
-        PiguguAgentGateway(state=state),
+        PiguguAgentGateway(
+            state=state,
+            follow_up_idle_secs=VOICE_IDLE_SILENCE_SECS,
+            bare_wake_idle_secs=VOICE_BARE_WAKE_IDLE_SECS,
+            wake_ack_wait_secs=VOICE_WAKE_ACK_WAIT_SECS,
+            # A bare-wake ack has no user utterance, so the observer's own
+            # turn-stop path never opens a turn for it — the gateway opens one.
+            turn_observer=observer,
+        ),
         tts_bridge,
     ]
     return chain, state, tts_bridge, observer, turn_processor
