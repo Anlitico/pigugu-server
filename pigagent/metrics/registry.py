@@ -54,6 +54,15 @@ def _flush(scope: Scope) -> None:
     enqueue(scope)
 
 
+def flush(scope: Scope) -> None:
+    """Freeze + hand ONE scope to the exporter (phantom-drop rules apply).
+
+    For a scope opened outside this task's own ``open``/``flush_current`` chain
+    — the bare-wake ack opens its scope in the gateway's task, which owns it and
+    must therefore flush it explicitly."""
+    _flush(scope)
+
+
 def bind(scope: Scope) -> None:
     """Point this task's contextvar at an existing scope (cross-task handoff)."""
     _current.set(scope)

@@ -93,6 +93,11 @@ class PiguguTurnStorageObserver(FrameProcessor):
         # no-tts). A next user turn (sweep) or ``finalize_session`` commit a
         # storage only when it was never finalized.
         self._open_storage: TurnStorage | None = None
+        # The telemetry scope this processor opened for the current turn (see
+        # _on_user_started). A normal turn's scope is flushed lazily by the next
+        # registry.open() in this task; a bare wake opens its scope in the ack's
+        # own task instead, so this one would never be flushed there.
+        self._open_scope = None
         # Audio routing: non-reply mic audio accumulates in ``_turn_buf`` and
         # becomes the next turn's input.wav; reply-period mic audio (echo) in
         # ``_gap_buf`` becomes the current turn's listen.wav. Routed by
@@ -261,8 +266,98 @@ class PiguguTurnStorageObserver(FrameProcessor):
         from metrics.turn import _current_var as _turn_var
 
         self._state.active_turn = _turn_var.get()
+        # This processor's own scope, tracked so it can be flushed explicitly
+        # when a turn opens outside this task (see _flush_open_scope).
+        self._open_scope = self._state.active_turn
         TelemetryCollector.set_meta("turn_phase", self._state.turn_type)
         TelemetryCollector.mark("vad_start")
+
+    def _sweep_open_storage(self) -> None:
+        """Commit the still-open storage of a previous turn, if any.
+
+        Called at every boundary that opens a new turn: the storage slot holds
+        exactly one turn, so whoever opens the next turn must first release the
+        previous one — otherwise its ``_commit_on_finalize`` waiter backs off
+        (``_open_storage is not storage``) and the row is lost. A turn whose
+        reply finalized was already committed by its own waiter, so this is
+        normally None.
+
+        The listen PCM is set from the CURRENT gap buffer (whatever reply echo
+        has accumulated so far) — the same approximation the boundary sweep
+        always used.
+        """
+        if self._open_storage is None:
+            return
+        storage_to_close = self._open_storage
+        self._open_storage = None
+        storage_to_close.set_listen_pcm(bytes(self._gap_buf))
+        asyncio.ensure_future(self._close_storage(storage_to_close))
+
+    def _flush_open_scope(self) -> None:
+        """Hand this task's turn scope to the exporter and stop tracking it."""
+        scope, self._open_scope = self._open_scope, None
+        if scope is not None:
+            from metrics import registry
+
+            registry.flush(scope)
+
+    def begin_bare_wake_turn(self) -> Any:
+        """Open the turn scope for a bare-wake ack; returns it to its owner.
+
+        A bare wake has no user utterance, so its stop hits the no-text early
+        return in ``_on_user_stopped`` and no turn is ever opened for the ack —
+        without this it would have no ``voice.turns`` row and no latency
+        telemetry. The gateway calls this right before it dispatches the ack,
+        and because that runs in the ack timer's task (not this processor's) the
+        scope is opened here rather than left to ``_on_user_started`` — the
+        caller owns it and flushes it.
+
+        The ack's turn carries no user audio: ``user_pcm`` stays empty and the
+        ``listen.wav`` is the reply echo, set at finalize like any other turn.
+        """
+        # The lazy flush registry.open() performs in the caller's task, done
+        # here for THIS task: a bare wake starts no turn on the observer's side,
+        # so without it the previous turn's scope keeps its marks unexported —
+        # and session teardown cannot pick it up either, because state.active_turn
+        # has moved to the ack.
+        self._flush_open_scope()
+        TelemetryCollector.start_turn(
+            user_id=self._user_id,
+            persona_id=self._persona_id,
+        )
+        # Share the turn dict across processors (see _on_user_started).
+        from metrics.turn import _current_var as _turn_var
+
+        self._state.active_turn = _turn_var.get()
+        TelemetryCollector.set_meta("turn_phase", "wake_word")
+        scope = self._state.active_turn
+        # The wake detection IS this turn's input boundary — the ack's latency
+        # is measured from here, since a bare wake produces no transcript.
+        TelemetryCollector.mark("stt_final")
+        if not self._enabled:
+            return scope
+        # A turn still in flight (the user woke the device mid-reply) must be
+        # released before this ack takes the slot, or it would be orphaned.
+        self._sweep_open_storage()
+        # _make_storage stamps the row's turn_type from the shared state, which
+        # the gateway has already restored to follow_up (so the NEXT utterance
+        # cannot inherit the wake classification). Set it for the build and put
+        # it straight back — the ack IS the wake-word turn.
+        state_turn_type = self._state.turn_type
+        self._state.turn_type = "wake_word"
+        try:
+            storage = self._make_storage()
+        finally:
+            self._state.turn_type = state_turn_type
+        if storage is None:
+            return scope
+        storage.set_user_pcm(b"")
+        # Publish the storage BEFORE the gateway's PiguguUserTurnFrame reaches
+        # the TTS bridge — that frame is what makes the bridge read it.
+        self._state.turn_storage = storage
+        self._open_storage = storage
+        self._arm_commit_on_finalize(storage)
+        return scope
 
     async def _on_user_stopped(self):
         # Server-side turn-end anchor: when THIS processor confirmed the turn
@@ -286,16 +381,9 @@ class PiguguTurnStorageObserver(FrameProcessor):
                 TelemetryCollector.set_mark("vad_end", self._state.vad_end_mark)
             self._state.server_received_vad_at = None
             self._state.vad_end_mark = None
-        # Backstop sweep: a previous turn's storage that was NEVER finalized
-        # (e.g. a wake-word transcript the gateway stripped to empty, so no
-        # reply task ever ran) is committed here, at the next user boundary.
-        # Finalized turns were already committed by their own waiter
-        # (``_commit_on_finalize``), so ``_open_storage`` is normally None here.
-        if self._open_storage is not None:
-            storage_to_close = self._open_storage
-            self._open_storage = None
-            storage_to_close.set_listen_pcm(bytes(self._gap_buf))
-            asyncio.ensure_future(self._close_storage(storage_to_close))
+        # A previous turn's storage that was NEVER finalized is committed here,
+        # at the next user boundary.
+        self._sweep_open_storage()
         if not self._saw_text:
             # No transcript → no real user turn. The wake-word burst (or a
             # noise blip) drives a full VAD start→stop before Deepgram emits an
@@ -306,11 +394,9 @@ class PiguguTurnStorageObserver(FrameProcessor):
             # tts_status=empty) that split the user's first sentence and
             # abandoned its interims — the device went silent on their first
             # question. turn_type is deliberately left untouched (not reset to
-            # follow_up): with legacy firmware that still sends the detect
-            # control, the following real turn stays classified wake_word so
-            # the gateway strips the wake word from it; current firmware sends
-            # no detect, so turn_type is follow_up and the transcript has no
-            # wake word to strip either way.
+            # follow_up): the wake turn is still in progress — no turn has been
+            # dispatched yet. The following real turn IS that wake turn, and
+            # the gateway prepends the wake word to its text.
             self._gap_buf = bytearray()
             # The turn ended (no transcript) — clear the active flag too. The
             # _append_turn guard keys the input window off _user_turn_active,

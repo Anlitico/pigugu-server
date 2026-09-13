@@ -28,7 +28,9 @@ from voice.pipecat.turn_storage_observer import PiguguTurnStorageObserver
 from voice.storage import TurnStorage
 
 SPLIT_FINALS = ["alexa good", "evening", "how are you"]
-EXPECTED_MERGED = "alexa good evening how are you"
+# The wake turn carries the wake word prepended: the firmware does not stream
+# the wake-word audio, so the gateway puts it back (see PiguguAgentGateway).
+EXPECTED_MERGED = "pigugu alexa good evening how are you"
 REPLY_CHUNKS = ["hi there, ", "this is pigugu!"]
 FRAMES_PER_BATCH = 6
 
@@ -403,8 +405,8 @@ async def test_observer_next_user_stop_sweeps_never_finalized_storage(
     monkeypatch,
 ):
     """The next user boundary stays a backstop for a storage that was never
-    finalized (e.g. a wake-word transcript the gateway stripped to empty): it
-    is committed there, not left dangling until disconnect."""
+    finalized (e.g. a turn whose reply never concluded): it is committed there,
+    not left dangling until disconnect."""
     monkeypatch.setattr(
         "voice.pipecat.turn_storage_observer._FINALIZE_TIMEOUT_SECS", 0.02
     )
@@ -429,6 +431,155 @@ async def test_observer_next_user_stop_sweeps_never_finalized_storage(
     assert len(made) == 2
     assert committed == [storage1]
     assert storage1.listen_pcm_bytes == b""  # no reply ever played
+
+
+@pytest.mark.asyncio
+async def test_bare_wake_turn_opens_storage_without_an_utterance(monkeypatch):
+    """A bare wake has no utterance, so no turn-stop with text ever runs and the
+    observer would open nothing — the ack's row and its latency telemetry would
+    not exist. begin_bare_wake_turn opens the turn instead: a fresh scope whose
+    input boundary is the wake detection, and a storage the TTS bridge fills."""
+    monkeypatch.setenv("AUDIO_S3_BUCKET", "test-bucket")
+    monkeypatch.setenv("AUDIO_S3_PREFIX", "voice-turns")
+    monkeypatch.setenv("CLICKHOUSE_HOST", "ch")
+    monkeypatch.setenv("CLICKHOUSE_PASSWORD", "secret")
+
+    made: list[TurnStorage] = []
+
+    def fake_make_storage():
+        s = _make_observer_turn(session_id="s1", turn_idx=len(made) + 1)
+        # Faithful to the real _make_storage: the row's turn_type comes from the
+        # shared state at build time.
+        s.turn_type = state.turn_type
+        made.append(s)
+        return s
+
+    state = PiguguTurnState()
+    observer = PiguguTurnStorageObserver(
+        None, state, session_id="s1", client_id="d1", user_id="u1"
+    )
+    monkeypatch.setattr(observer, "_make_storage", fake_make_storage)
+
+    # The gateway restores the classification before dispatching, so the ack
+    # must not rely on the state still saying wake_word — it stamps the row.
+    state.turn_type = "follow_up"
+    # Nothing was opened by the wake burst itself.
+    assert observer._open_storage is None
+    scope = observer.begin_bare_wake_turn()
+
+    assert len(made) == 1
+    storage = made[0]
+    # Published for the TTS bridge, which fills in the ack's text and marks.
+    assert state.turn_storage is storage
+    assert observer._open_storage is storage
+    # The ack carries no user audio — the row is still real (the reply is).
+    assert storage.user_pcm_bytes == b""
+    # The row IS a wake-word turn: the product metric keys off turn_type, so a
+    # follow_up stamp here would silently undercount bare-wake coverage.
+    assert storage.turn_type == "wake_word"
+    # ...and the state is left restored for the next utterance, or the wake word
+    # would be prepended to it.
+    assert state.turn_type == "follow_up"
+    # The wake detection is this turn's input boundary: without it the ack's
+    # E2E latency has no start and the metric would be empty.
+    # Returned to the caller, which opened it and therefore owns the flush.
+    assert scope is state.active_turn
+    assert scope.has_mark("stt_final")
+    assert scope.meta.get("turn_phase") == "wake_word"
+
+    # The TTS bridge's finalize is what commits the row.
+    storage.mark_stt_final("hey pigugu")
+    assert storage.stt_text == "hey pigugu"
+    assert storage.stt_status == "final"
+
+
+@pytest.mark.asyncio
+async def test_bare_wake_flushes_the_previous_turns_scope(monkeypatch):
+    """A normal turn's telemetry scope is flushed lazily by the next
+    registry.open() in the observer's task. A bare wake starts no turn there, so
+    the preceding turn's scope would never be exported — session teardown cannot
+    pick it up either, because state.active_turn has moved to the ack's scope.
+    Opening the ack must flush it."""
+    import metrics.registry as registry
+    from metrics.turn import _current_var
+
+    state = PiguguTurnState()
+    observer = PiguguTurnStorageObserver(
+        None, state, session_id="s1", client_id="d1", user_id="u1"
+    )
+
+    flushed: list[object] = []
+    monkeypatch.setattr(registry, "flush", flushed.append)
+
+    observer._on_user_started()  # a normal turn opens its scope here
+    previous = observer._open_scope
+    assert previous is not None
+
+    async def _open_in_gateway_task():
+        # The gateway's task predates every turn, so its contextvar never held
+        # the observer's scope — that is exactly why the lazy flush in
+        # registry.open() cannot rescue it.
+        _current_var.set(None)
+        observer.begin_bare_wake_turn()
+
+    await asyncio.create_task(_open_in_gateway_task())
+
+    assert flushed == [previous], "the previous turn's scope must still be exported"
+    # Tracking is dropped so this scope cannot be flushed a second time.
+    assert observer._open_scope is None
+
+
+@pytest.mark.asyncio
+async def test_bare_wake_sweeps_a_turn_still_in_flight(monkeypatch):
+    """The user wakes the device mid-reply: the speaking turn's storage is still
+    open (its reply has not finalized). The ack's storage must not silently take
+    the slot — the previous turn's waiter backs off once it is displaced, so
+    without the sweep that row is never committed."""
+    monkeypatch.setenv("AUDIO_S3_BUCKET", "test-bucket")
+    monkeypatch.setenv("AUDIO_S3_PREFIX", "voice-turns")
+    monkeypatch.setenv("CLICKHOUSE_HOST", "ch")
+    monkeypatch.setenv("CLICKHOUSE_PASSWORD", "secret")
+
+    made: list[TurnStorage] = []
+
+    def fake_make_storage():
+        s = _make_observer_turn(session_id="s1", turn_idx=len(made) + 1)
+        s.turn_type = state.turn_type
+        made.append(s)
+        return s
+
+    state = PiguguTurnState()
+    observer = PiguguTurnStorageObserver(
+        None, state, session_id="s1", client_id="d1", user_id="u1"
+    )
+    monkeypatch.setattr(observer, "_make_storage", fake_make_storage)
+
+    closed: list[TurnStorage] = []
+
+    async def fake_close_storage(storage):
+        closed.append(storage)
+
+    monkeypatch.setattr(observer, "_close_storage", fake_close_storage)
+
+    # A real turn is mid-reply: its storage is open and NOT finalized.
+    # (_saw_text is set after the audio: the first byte of a new window resets
+    # the transcript flags.)
+    observer._route_audio(b"U" * 320)
+    observer._saw_text = True
+    await observer._on_user_stopped()
+    assert len(made) == 1
+    in_flight = made[0]
+    assert observer._open_storage is in_flight
+    assert not in_flight.finalized
+
+    # The user says the wake word and stops: the ack opens its own turn.
+    observer.begin_bare_wake_turn()
+    await asyncio.sleep(0)  # the close path is scheduled, not run inline
+
+    assert len(made) == 2
+    assert observer._open_storage is made[1]
+    # The in-flight turn was handed to the close path, so it still commits.
+    assert closed == [in_flight]
 
 
 @pytest.mark.asyncio
