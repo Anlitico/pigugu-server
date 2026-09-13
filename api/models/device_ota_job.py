@@ -11,7 +11,9 @@ from core.database import Base
 # Branching terminal / cancelled paths:
 #   downloading/installing/rebooting → failed (device reported, or server OTA_JOB_TIMEOUT_SECS elapsed)
 #   any active state + device self-rollback       → rolled_back
-#   superseded by newer target / unbind / on-target shortcut → superseded (historical, not a user-facing failure)
+#   superseded by newer target / unbind / on-target shortcut (job never started) → superseded
+#     (historical, not a user-facing failure; an on-target device whose job had
+#      already been handed to it is instead closed as succeeded — see process_check)
 REQUESTED = "requested"
 NOTIFIED = "notified"
 DOWNLOADING = "downloading"
