@@ -54,7 +54,7 @@
 
 保持现有无鉴权头识别 + `websocket` 返回不变(兼容旧固件)。新增:
 1. **版本上报**:解析新头 `Firmware-Version`(语义版)与 `Firmware-Git`(git sha,可选)——固件 `SetupHttp` 增发 → 写 `devices.current_firmware_version/sha/last_firmware_report_at`。旧固件无此头 → 列保持空。
-2. **firmware 下发**(判定只认"有 active job",不做与设备端重复的双重比较):查该设备是否存在**待推进态** active job;存在则用**本次请求上报的 current**(非 DB 过期列)快速短路:job.force 为真,或上报 current < job 目标版本 → 返回 `firmware:{version, url:<S3 presigned 30min>, sha256, signature, force}` 并置 `job.status='notified'`;若上报 current 已 ≥ 目标且非 force → **不下发**并置 `superseded(already_on_target)`,避免空转等超时;无 job → 不含 firmware 段(设备行为退化为今日)。真实"装不装"仍以设备端 `IsNewVersionAvailable` 为准,服务端只做同一次请求内的快速短路。
+2. **firmware 下发**(判定只认"有 active job",不做与设备端重复的双重比较):查该设备是否存在**待推进态** active job;存在则用**本次请求上报的 current**(非 DB 过期列)快速短路:job.force 为真,或上报 current < job 目标版本 → 返回 `firmware:{version, url:<S3 presigned 30min>, sha256, signature, force}` 并置 `job.status='notified'`;若上报 current 已 ≥ 目标且非 force → **不下发**:该 job 已被设备执行过(notified 及之后状态)则置 `succeeded(confirmed_by_check)`(设备的 d2c `succeeded` 上报走 MQTT→webhook,通常慢于本次直连 HTTP,已输掉竞态),否则(仍 `requested`,从未开始)置 `superseded(already_on_target)`;无 job → 不含 firmware 段(设备行为退化为今日)。真实"装不装"仍以设备端 `IsNewVersionAvailable` 为准,服务端只做同一次请求内的快速短路。
 3. **server_time**:顺带返回 `server_time{timestamp,timezone_offset}` 供设备校到墙钟(TLS 证书日期窗口用;**S3 presigned GET 不依赖设备时钟**——SigV4 的日期/签名由服务端现签内嵌在 URL,设备只 GET 不重签,见 §5)。
 
 签名 URL:api 服务角色需 `s3:GetObject` 于新桶(现有 `pigugu-s3-sa` 权限模型扩展),按请求现签,短时有效。
@@ -108,7 +108,7 @@ App 端行为映射与文案详见 PRD §5.4(状态机/五段升级页/重启盲
 
 **服务端(api 仓,pytest,stub boto3/S3)**
 - 上报:check 带/不带 `Firmware-Version` → `devices.current_firmware_version` 更新/留空。
-- 下发判定:存在待推进 active job 且(force,或**本次请求上报 current < 目标**)→ 返回 firmware{url:presigned,sha,sig} 且 job→notified;无 job → 无 firmware 段;上报 current ≥ 目标且非 force → 不下发并置 `superseded(already_on_target)`。
+- 下发判定:存在待推进 active job 且(force,或**本次请求上报 current < 目标**)→ 返回 firmware{url:presigned,sha,sig} 且 job→notified;无 job → 无 firmware 段;上报 current ≥ 目标且非 force → 不下发,已下发给设备的 job 置 `succeeded(confirmed_by_check)`,未开始(仍 requested)的置 `superseded(already_on_target)`。
 - 任务幂等:active 未终态再触发 → 409。
 - webhook `ota.report` 全状态迁移合法化(乱序/重复不炸);succeeded/rolled_back → 同步 devices 版本。
 - 归属校验:非本人设备 upgrade 拒绝;内部 upgrade 允许 draft target + force。

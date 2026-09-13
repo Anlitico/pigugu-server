@@ -7,8 +7,11 @@ Single source of truth for:
 
 The device's own semver decision (IsNewVersionAvailable) is authoritative for
 "should I write the OTA image"; the server only short-circuits a request where
-the reported current version already satisfies the job target (→ superseded),
-so an on-target device is not re-sent the package on every check.
+the reported current version already satisfies the job target, so an on-target
+device is not re-sent the package on every check. That short-circuit closes the
+job as succeeded when it had already reached the device (its slower d2c
+"succeeded" report lost the race to the direct HTTP check), and superseded only
+when it never started.
 """
 import logging
 import re
@@ -100,11 +103,15 @@ async def process_check(
     device: Device,
     reported_version: str | None,
     reported_git: str | None,
-) -> dict | None:
+) -> tuple[dict | None, DeviceOtaJob | None]:
     """Record the device's reported version, then decide the firmware block.
 
-    Returns the ``firmware`` response dict (version/url/sha256/signature/force)
-    when there is an actionable active job, otherwise None.
+    Returns ``(firmware, push_job)``:
+    - ``firmware`` is the response dict (version/url/sha256/signature/force)
+      when there is an actionable active job, otherwise None.
+    - ``push_job`` is a job whose active→terminal transition happened on this
+      request and therefore needs an FCM push from the caller (mirrors the
+      webhook path, which the direct HTTP check routinely beats in a race).
     """
     now = datetime.now(timezone.utc)
     if reported_version or reported_git:
@@ -114,25 +121,33 @@ async def process_check(
 
     job = await find_active_job(db, device.id)
     if job is None:
-        return None
+        return None, None
 
     fw = await get_firmware_version(db, job.firmware_version_id)
     if fw is None:
         # target disappeared (deleted) — nothing actionable left to push
         await _terminate(db, job, SUPERSEDED, "firmware_version_missing")
-        return None
+        return None, None
 
     current = reported_version or device.current_firmware_version
     # Short-circuit on the version reported by THIS request (not a stale DB col).
     if not job.force and current is not None and not version_lt(current, fw.version):
+        # The device is at/above the target. If the job had been handed to it,
+        # that means the upgrade finished: the device's d2c "succeeded" report
+        # travels MQTT→IoT→webhook and routinely loses this race to the direct
+        # HTTP check the device fires right after rebooting into the new image.
+        # Only a job that never reached the device is genuinely superseded.
+        if job.status in DEVICE_AWARE_STATUSES:
+            await _terminate(db, job, SUCCEEDED, "confirmed_by_check")
+            return None, job
         await _terminate(db, job, SUPERSEDED, "already_on_target")
-        return None
+        return None, None
 
     try:
         url = get_s3_presigned_url(fw.file_key)
     except Exception:
         logger.exception("Failed to presign firmware %s for device %s", fw.id, device.id)
-        return None
+        return None, None
 
     job.status = NOTIFIED
     await db.flush()
@@ -142,7 +157,7 @@ async def process_check(
         "sha256": fw.sha256,
         "signature": fw.signature,
         "force": job.force,
-    }
+    }, None
 
 
 # ── job creation / upgrade trigger ───────────────────────────────────────
@@ -267,10 +282,11 @@ async def _terminate(db: AsyncSession, job: DeviceOtaJob, status: str, detail: s
 
 # ── timeout sweep (server-side watchdog, no device involvement) ──────────
 
-# Only jobs the device has already been told about (notified onward) can be
-# considered stuck. A never-notified `requested` job is a reservation for an
-# offline device — it must survive until the next power-on/check.
-SWEEPABLE_STATUSES = (NOTIFIED, DOWNLOADING, INSTALLING, REBOOTING)
+# Jobs the device has already been told about (notified onward). Only these can
+# be considered stuck — a never-notified `requested` job is a reservation for an
+# offline device and must survive until the next power-on/check. They are also
+# the evidence that an upgrade actually started (see process_check).
+DEVICE_AWARE_STATUSES = (NOTIFIED, DOWNLOADING, INSTALLING, REBOOTING)
 
 
 async def sweep_timed_out_jobs(db: AsyncSession) -> int:
@@ -278,7 +294,7 @@ async def sweep_timed_out_jobs(db: AsyncSession) -> int:
     cutoff = datetime.now(timezone.utc) - timedelta(seconds=settings.ota_job_timeout_secs)
     result = await db.execute(
         select(DeviceOtaJob)
-        .where(DeviceOtaJob.status.in_(SWEEPABLE_STATUSES), DeviceOtaJob.updated_at < cutoff)
+        .where(DeviceOtaJob.status.in_(DEVICE_AWARE_STATUSES), DeviceOtaJob.updated_at < cutoff)
     )
     jobs = list(result.scalars().all())
     for job in jobs:

@@ -72,8 +72,9 @@ async def test_process_check_delivers_and_notifies_when_target_higher():
     ):
         m_job.return_value = job
         m_fw.return_value = fw
-        result = await ota.process_check(db, device, "2.3.0", None)
+        result, push_job = await ota.process_check(db, device, "2.3.0", None)
 
+    assert push_job is None
     assert result["version"] == "2.3.1"
     assert result["url"].startswith("https://s3/")
     assert result["sha256"] == "a" * 64
@@ -99,12 +100,45 @@ async def test_process_check_supersedes_when_reported_already_on_target():
     ):
         m_job.return_value = job
         m_fw.return_value = fw
-        result = await ota.process_check(db, device, "2.3.1", None)
+        result, push_job = await ota.process_check(db, device, "2.3.1", None)
 
     assert result is None
+    assert push_job is None
     assert job.status == "superseded"
     assert job.status_detail == "already_on_target"
     m_presign.assert_not_called()  # no wasteful download on an up-to-date device
+
+
+@pytest.mark.asyncio
+async def test_process_check_marks_succeeded_when_notified_job_reaches_target():
+    """A job the device was already working on, now reporting the target, succeeded.
+
+    The device's own d2c "succeeded" report goes MQTT→IoT→webhook and loses the
+    race to the direct HTTP check it fires right after rebooting into the new
+    image; without this the job would close as superseded and drop out of any
+    success counting.
+    """
+    from modules.device import ota
+    db = AsyncMock()
+    device = _device()
+    job = _job(device)
+    job.status = "rebooting"
+    fw = _fw_version("2.3.1")
+
+    with (
+        patch("modules.device.ota.find_active_job", new_callable=AsyncMock) as m_job,
+        patch("modules.device.ota.get_firmware_version", new_callable=AsyncMock) as m_fw,
+        patch("modules.device.ota.get_s3_presigned_url", return_value="https://s3/x") as m_presign,
+    ):
+        m_job.return_value = job
+        m_fw.return_value = fw
+        result, push_job = await ota.process_check(db, device, "2.3.1", None)
+
+    assert result is None
+    assert job.status == "succeeded"
+    assert job.status_detail == "confirmed_by_check"
+    assert push_job is job  # the caller must push on this active→terminal transition
+    m_presign.assert_not_called()  # still no re-download for an up-to-date device
 
 
 @pytest.mark.asyncio
@@ -115,9 +149,10 @@ async def test_process_check_no_active_job_returns_none():
 
     with patch("modules.device.ota.find_active_job", new_callable=AsyncMock) as m_job:
         m_job.return_value = None
-        result = await ota.process_check(db, device, "2.3.0", None)
+        result, push_job = await ota.process_check(db, device, "2.3.0", None)
 
     assert result is None
+    assert push_job is None
 
 
 # ── apply_ota_report (d2c ota.report) ────────────────────────────────

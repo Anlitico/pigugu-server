@@ -333,18 +333,23 @@ async def get_ota_config(request: Request, db: AsyncSession = Depends(get_db)):
     if device_id:
         try:
             from models.device import Device
-            from modules.device.ota import process_check
+            from modules.device.ota import process_check, push_job_terminal
 
             result = await db.execute(select(Device).where(Device.hardware_id.ilike(device_id)))
             device = result.scalar_one_or_none()
             if device is not None:
-                firmware = await process_check(
+                firmware, push_job = await process_check(
                     db, device,
                     request.headers.get("Firmware-Version"),
                     request.headers.get("Firmware-Git"),
                 )
                 if firmware is not None:
                     payload["firmware"] = firmware
+                if push_job is not None:
+                    # Commit the terminal transition before the push so a slow
+                    # webhook path can't beat us and also push (or vice versa).
+                    await db.commit()
+                    await push_job_terminal(push_job.device_id, push_job.status, push_job.status_detail)
         except Exception:
             logger.exception("OTA check processing failed for device=%s", device_id)
 
