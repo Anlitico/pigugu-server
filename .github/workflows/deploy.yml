@@ -291,7 +291,7 @@ jobs:
         # unset — fall back here so the pod never gets an empty value).
         sed -e "s|__VOICE_IDLE_SILENCE_SECS__|${VOICE_IDLE_SILENCE_SECS:-30}|g" \
             -e "s|__VOICE_LOST_TIMEOUT_SECS__|${VOICE_LOST_TIMEOUT_SECS:-30}|g" \
-            -e "s|__VOICE_BARE_WAKE_IDLE_SECS__|${VOICE_BARE_WAKE_IDLE_SECS:-5}|g" \
+            -e "s|__VOICE_BARE_WAKE_IDLE_SECS__|${VOICE_BARE_WAKE_IDLE_SECS:-30}|g" \
             -e "s|__VOICE_WAKE_ACK_WAIT_SECS__|${VOICE_WAKE_ACK_WAIT_SECS:-2}|g" \
             k8s/agent.yaml | kubectl apply -f -
         kubectl apply -f k8s/fluent-bit.yaml
