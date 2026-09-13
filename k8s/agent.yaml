@@ -37,10 +37,10 @@ data:
   VOICE_IDLE_SILENCE_SECS: "__VOICE_IDLE_SILENCE_SECS__"
   VOICE_LOST_TIMEOUT_SECS: "__VOICE_LOST_TIMEOUT_SECS__"
   # Wake-word interaction (placeholders injected by deploy.yml; code defaults
-  # are 5 and 2). W1: the follow-up window after a bare-wake ack — the user was
-  # just greeted, so a much shorter window than the normal W2 applies.
-  # WAKE_ACK_WAIT: how long a bare wake waits for the user to speak on before
-  # the ack answers the wake word itself.
+  # are 30 and 2). W1: the follow-up window after a bare-wake ack — set to the
+  # normal W2 so an ack does not cut the user off sooner than a conversation
+  # turn would. WAKE_ACK_WAIT: how long a bare wake waits for the user to speak
+  # on before the ack answers the wake word itself.
   VOICE_BARE_WAKE_IDLE_SECS: "__VOICE_BARE_WAKE_IDLE_SECS__"
   VOICE_WAKE_ACK_WAIT_SECS: "__VOICE_WAKE_ACK_WAIT_SECS__"
 ---

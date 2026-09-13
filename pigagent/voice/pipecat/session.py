@@ -74,9 +74,11 @@ def _env_float(name: str, default: float) -> float:
 
 VOICE_IDLE_SILENCE_SECS = _env_float("VOICE_IDLE_SILENCE_SECS", 30.0)
 VOICE_LOST_TIMEOUT_SECS = _env_float("VOICE_LOST_TIMEOUT_SECS", 30.0)
-# W1: after the bare-wake ack the user has just been answered, so the wait for
-# them to speak is short — not the reply follow-up window above.
-VOICE_BARE_WAKE_IDLE_SECS = _env_float("VOICE_BARE_WAKE_IDLE_SECS", 5.0)
+# W1: the wait after a bare-wake ack. Kept at the follow-up window's value: a
+# 5s window felt too short in use (the user is still deciding what to say next),
+# so the mechanism stays but both windows are 30. Lower this to shorten only
+# the window that follows an ack.
+VOICE_BARE_WAKE_IDLE_SECS = _env_float("VOICE_BARE_WAKE_IDLE_SECS", 30.0)
 # How long listen/detect waits for the user to speak before the server answers
 # the wake word itself (the bare-wake ack).
 VOICE_WAKE_ACK_WAIT_SECS = _env_float("VOICE_WAKE_ACK_WAIT_SECS", 2.0)
