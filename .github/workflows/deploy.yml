@@ -47,8 +47,17 @@ jobs:
               - 'alembic/**'
               - 'alembic.ini'
               - '.cicd/Dockerfile.api'
+            # The agent writes raw SQL into the tables alembic defines
+            # (context/storage/pg.py, roast/*), so a schema change must not
+            # leave the agent behind. Listing alembic here makes a schema commit
+            # publish an agent image under that same tag, so dispatching the tag
+            # moves both deployments together. The agent image itself is
+            # unaffected — Dockerfile.agent copies neither alembic/ nor
+            # alembic.ini, so the build is a cache hit.
             agent:
               - 'pigagent/**'
+              - 'alembic/**'
+              - 'alembic.ini'
               - '.cicd/Dockerfile.agent'
             crawler:
               - 'crawler/**'
@@ -160,13 +169,120 @@ jobs:
     - name: Update kubeconfig
       run: aws eks update-kubeconfig --name ${{ env.EKS_CLUSTER_NAME }} --region ${{ env.AWS_REGION }}
 
-    - name: Run database migrations
+    - name: Resolve image tags
       env:
         ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
         IMAGE_TAG: ${{ github.event.inputs.image_tag }}
       run: |
+        # Images are built per package (see the changes job), so a tag exists
+        # only in the repositories whose sources changed: one commit publishes
+        # an agent image and no api image, the next the reverse. Resolve each
+        # deployment to the requested tag where it was published, and otherwise
+        # to that repository's :latest — never to a tag nobody published, which
+        # only yields ImagePullBackOff.
+        if kubectl get deployment/pigugu-api >/dev/null 2>&1; then
+          api_current=$(kubectl get deployment/pigugu-api -o jsonpath='{.spec.template.spec.containers[0].image}')
+        else
+          api_current=   # no deployment yet: first deploy on an empty cluster
+        fi
+        if kubectl get deployment/pigugu-agent >/dev/null 2>&1; then
+          agent_current=$(kubectl get deployment/pigugu-agent -o jsonpath='{.spec.template.spec.containers[0].image}')
+        else
+          agent_current=
+        fi
+        # batch-get-image answers a never-published tag with an empty result and
+        # exit 0 — unlike describe-images, where "no such tag" and "expired
+        # credentials / throttled" are both just a non-zero exit. That
+        # difference carries the weight here: a credential failure misread as
+        # "not published" would quietly deploy :latest for that service instead
+        # of the requested commit, and still report success.
+        api_found=$(aws ecr batch-get-image --repository-name $ECR_REPOSITORY_API \
+                      --image-ids imageTag=$IMAGE_TAG --query 'length(images)' --output text)
+        agent_found=$(aws ecr batch-get-image --repository-name $ECR_REPOSITORY_AGENT \
+                        --image-ids imageTag=$IMAGE_TAG --query 'length(images)' --output text)
+
+        api_published=false
+        agent_published=false
+        api_image=$api_current
+        agent_image=$agent_current
+        case "$api_found" in
+          ''|None)
+            echo "ECR returned no usable answer for $ECR_REPOSITORY_API:$IMAGE_TAG — refusing to guess." >&2
+            exit 1 ;;
+          0)
+            # This commit published no api image, so the api is not part of it.
+            # Point it at the repository's newest build rather than leaving it:
+            # the api's entrypoint runs `alembic upgrade heads` on start and
+            # exits if the database knows a revision its image does not, and any
+            # alembic change republishes this repository — so :latest is the api
+            # that goes with this commit, and the schema and the running api
+            # image stay in step.
+            api_latest=$(aws ecr batch-get-image --repository-name $ECR_REPOSITORY_API \
+                           --image-ids imageTag=latest --query 'length(images)' --output text)
+            # Guarded exactly like the lookup above: read as a plain "no
+            # :latest" a credentials failure would silently under-deploy the
+            # api instead of aborting.
+            case "$api_latest" in
+              ''|None)
+                echo "ECR returned no usable answer for $ECR_REPOSITORY_API:latest — refusing to guess." >&2
+                exit 1 ;;
+              1)
+                api_image=$ECR_REGISTRY/$ECR_REPOSITORY_API:latest
+                echo "No $ECR_REPOSITORY_API:$IMAGE_TAG image — api takes $api_image instead." ;;
+              *)
+                echo "No $ECR_REPOSITORY_API:$IMAGE_TAG image and no :latest either — api stays on ${api_current:-nothing}." >&2 ;;
+            esac ;;
+          *)
+            api_image=$ECR_REGISTRY/$ECR_REPOSITORY_API:$IMAGE_TAG
+            api_published=true ;;
+        esac
+        case "$agent_found" in
+          ''|None)
+            echo "ECR returned no usable answer for $ECR_REPOSITORY_AGENT:$IMAGE_TAG — refusing to guess." >&2
+            exit 1 ;;
+          0)
+            agent_latest=$(aws ecr batch-get-image --repository-name $ECR_REPOSITORY_AGENT \
+                             --image-ids imageTag=latest --query 'length(images)' --output text)
+            case "$agent_latest" in
+              ''|None)
+                echo "ECR returned no usable answer for $ECR_REPOSITORY_AGENT:latest — refusing to guess." >&2
+                exit 1 ;;
+              1)
+                agent_image=$ECR_REGISTRY/$ECR_REPOSITORY_AGENT:latest
+                echo "No $ECR_REPOSITORY_AGENT:$IMAGE_TAG image — agent takes $agent_image instead." ;;
+              *)
+                echo "No $ECR_REPOSITORY_AGENT:$IMAGE_TAG image and no :latest either — agent stays on ${agent_current:-nothing}." >&2 ;;
+            esac ;;
+          *)
+            agent_image=$ECR_REGISTRY/$ECR_REPOSITORY_AGENT:$IMAGE_TAG
+            agent_published=true ;;
+        esac
+        # Re-dispatching a tag the deployments already run is an ordinary retry,
+        # so this asks what ECR published rather than whether the resolved image
+        # differs from the running one.
+        if [ "$api_published" = false ] && [ "$agent_published" = false ]; then
+          echo "Tag $IMAGE_TAG has no image in any repository — nothing to deploy." >&2
+          exit 1
+        fi
+        if [ -z "$api_image" ] || [ -z "$agent_image" ]; then
+          echo "No image to run for api or agent — refusing to deploy." >&2
+          exit 1
+        fi
+
+        echo "API_IMAGE=$api_image" >> "$GITHUB_ENV"
+        echo "AGENT_IMAGE=$agent_image" >> "$GITHUB_ENV"
+
+    - name: Run database migrations
+      run: |
+        # Drop any leftover job first: a previous attempt that could not pull
+        # its image would otherwise linger in ImagePullBackOff forever.
         kubectl delete job pigugu-db-migration --ignore-not-found
-        sed "s|__IMAGE__|$ECR_REGISTRY/$ECR_REPOSITORY_API:$IMAGE_TAG|g" k8s/migration-job.yaml | kubectl apply -f -
+        # Migrate with the image the api deployment is about to run — never a
+        # different one. `alembic upgrade heads` resolves heads in the image it
+        # runs, so migrating ahead of that image would leave the new api pod
+        # starting against a revision it does not contain: its own entrypoint
+        # runs `alembic upgrade heads` and exits, and the pod crashloops.
+        sed "s|__IMAGE__|$API_IMAGE|g" k8s/migration-job.yaml | kubectl apply -f -
         if ! kubectl wait --for=condition=complete --timeout=120s job/pigugu-db-migration; then
           echo "=== Migration job logs ==="
           kubectl logs job/pigugu-db-migration
@@ -209,8 +325,6 @@ jobs:
 
     - name: Deploy to EKS
       env:
-        ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
-        IMAGE_TAG: ${{ github.event.inputs.image_tag }}
         VOICE_IDLE_SILENCE_SECS: ${{ vars.VOICE_IDLE_SILENCE_SECS }}
         VOICE_LOST_TIMEOUT_SECS: ${{ vars.VOICE_LOST_TIMEOUT_SECS }}
         VOICE_BARE_WAKE_IDLE_SECS: ${{ vars.VOICE_BARE_WAKE_IDLE_SECS }}
@@ -283,13 +397,17 @@ jobs:
         path.write_text(text)
         PY
         
-        # Apply K8s manifests.
+        # Apply K8s manifests, with the images resolved in their own step above:
+        # a service this commit published nothing for keeps the image it is
+        # already running rather than floating to the :latest these manifests
+        # used to hardcode.
         kubectl apply -f k8s/secrets.yaml
-        kubectl apply -f k8s/api.yaml
+        sed "s|__IMAGE__|$API_IMAGE|g" k8s/api.yaml | kubectl apply -f -
         # agent.yaml's configMap carries the device-idle timers as placeholders
         # injected from Actions variables (code defaults to 30 if a variable is
         # unset — fall back here so the pod never gets an empty value).
-        sed -e "s|__VOICE_IDLE_SILENCE_SECS__|${VOICE_IDLE_SILENCE_SECS:-30}|g" \
+        sed -e "s|__IMAGE__|$AGENT_IMAGE|g" \
+            -e "s|__VOICE_IDLE_SILENCE_SECS__|${VOICE_IDLE_SILENCE_SECS:-30}|g" \
             -e "s|__VOICE_LOST_TIMEOUT_SECS__|${VOICE_LOST_TIMEOUT_SECS:-30}|g" \
             -e "s|__VOICE_BARE_WAKE_IDLE_SECS__|${VOICE_BARE_WAKE_IDLE_SECS:-30}|g" \
             -e "s|__VOICE_WAKE_ACK_WAIT_SECS__|${VOICE_WAKE_ACK_WAIT_SECS:-2}|g" \
@@ -298,12 +416,13 @@ jobs:
         kubectl apply -f crawler/deploy/cronjob.yaml
         # Remove old trump-crawler if it still exists
         kubectl delete cronjob trump-crawler --ignore-not-found
-        
-        # Update image
-        kubectl set image deployment/pigugu-api api=$ECR_REGISTRY/$ECR_REPOSITORY_API:$IMAGE_TAG
-        kubectl set image deployment/pigugu-agent agent=$ECR_REGISTRY/$ECR_REPOSITORY_AGENT:$IMAGE_TAG
-        
-        # Force a restart to ensure fresh image is pulled (especially if tag is 'latest')
+
+        # Force a restart to ensure fresh image is pulled (especially if tag is
+        # 'latest'). Both services unconditionally: a deployment whose pod
+        # template is otherwise unchanged still needs the restart to pick up a
+        # moved floating tag, a changed ConfigMap (envFrom is read at container
+        # start) or a changed Secret. Making this conditional on the image
+        # string would silently skip all three.
         kubectl rollout restart deployment/pigugu-api
         kubectl rollout restart deployment/pigugu-agent
 

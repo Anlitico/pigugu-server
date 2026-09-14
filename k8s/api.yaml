@@ -15,7 +15,9 @@ spec:
       serviceAccountName: pigugu-server-sa
       containers:
       - name: api
-        image: 537557168531.dkr.ecr.us-west-1.amazonaws.com/pigugu-api:latest
+        # Injected at apply time: the tag depends on whether this commit
+        # published an api image (see the deploy workflow's changes job).
+        image: __IMAGE__
         imagePullPolicy: Always
         ports:
         - containerPort: 8000

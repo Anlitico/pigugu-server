@@ -10,7 +10,7 @@ Follow this checklist for a successful deployment to the current EKS environment
 ## Phase 2: Manual Trigger
 1. Go to GitHub Actions and manually run the **"Deploy to Amazon EKS"** workflow.
 2. Use the `latest` tag for the initial deployment.
-3. Observe the logs to see the `__DATABASE_URL__` injection and `kubectl set image` execution.
+3. Observe the logs: the `__DATABASE_URL__` injection, and the per-service image resolution — a package this commit did not build logs `No pigugu-api:<tag> image — api takes …:latest instead`, or `… — api stays on <current image>` when that repository has no `:latest` either.
 
 ## Phase 3: Verification in EKS
 1. **Check Pods**: `kubectl get pods`. Look for `Running` status.

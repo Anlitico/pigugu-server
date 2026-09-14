@@ -53,7 +53,7 @@ Merging code does **not** update the server. You must trigger the final release:
 2. **Select**: Click **"Deploy to Amazon EKS"** on the left sidebar.
 3. **Trigger**: Click the **"Run workflow"** button on the right.
 4. **Input**:
-   - `image_tag`: Keep `latest` for the newest code.
+   - `image_tag`: the commit SHA you want live, or `latest` for each repository's newest build. Images are built per package, so `latest` can pair an api build and an agent build from different commits; pass a SHA to deploy that exact commit (a service the SHA published no image for falls back to that repository's `:latest`).
 5. **Monitor Logs**: 
    - Click on the running job to see the live console output.
    - You will see `kubectl apply` and `kubectl rollout status`.

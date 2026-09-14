@@ -64,7 +64,9 @@ spec:
       serviceAccountName: pigugu-s3-sa
       containers:
       - name: agent
-        image: 537557168531.dkr.ecr.us-west-1.amazonaws.com/pigugu-agent:latest
+        # Injected at apply time: the tag depends on whether this commit
+        # published an agent image (see the deploy workflow's changes job).
+        image: __IMAGE__
         envFrom:
         - configMapRef:
             name: pigugu-agent-config
