@@ -90,6 +90,12 @@ class TestVolumeToolDefinition:
         assert "action" in params["required"]
         assert "set" in params["properties"]["action"]["enum"]
 
+    def test_filler_text_is_required_like_every_other_tool(self):
+        """global.j2 promises the model that every tool takes filler_text, and
+        the runner speaks it while the tool runs. A tool that omits it gets
+        skipped instead of called — measured on qwen-flash: 2/9 vs 6/9."""
+        assert "filler_text" in volume_tool.parameters.get("required", [])
+
     def test_spec_is_tool_spec(self):
         spec = volume_tool.spec
         assert isinstance(spec, ToolSpec)
