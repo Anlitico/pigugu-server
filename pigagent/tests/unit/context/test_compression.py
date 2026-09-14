@@ -104,7 +104,19 @@ class TestCompressionMetrics:
         assert segs["llm"] > 0
         assert segs["profile"] > 0
         assert segs["total"] > 0
-        assert segs["total"] >= segs["check"] + segs["llm"] + segs["profile"]
+        # The invariant is that the phases tile [start, end]. Each phase is
+        # rounded to 2dp for display independently of the total, so a phase
+        # landing on a rounding boundary can lift the rounded parts past the
+        # rounded whole by up to 0.005 each — on a loaded machine (where the
+        # 10ms sleeps overshoot unevenly) that is exactly what happens. Allow
+        # that error bound and no more, or this asserts a property the rounding
+        # does not guarantee.
+        assert segs["total"] >= segs["check"] + segs["llm"] + segs["profile"] - 0.02
+        # The same tiling on the unrounded marks, so the rounding allowance above
+        # cannot grow into a real loss unnoticed: marks are only ever taken in
+        # order, so the raw phases can never exceed the raw total.
+        marks = m._scope.marks
+        assert marks["start"] <= marks["check_done"] <= marks["llm_done"] <= marks["profile_done"] <= marks["end"]
 
     def test_set_and_get_meta(self):
         from metrics.compression import CompressionMetrics
