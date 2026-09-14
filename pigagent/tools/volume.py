@@ -232,6 +232,13 @@ volume_tool = Tool(
     parameters={
         "type": "object",
         "properties": {
+            "filler_text": {
+                "type": "string",
+                "description": (
+                    "A brief spoken sentence to fill silence while the volume changes. "
+                    "Already spoken — do NOT repeat in your response."
+                ),
+            },
             "action": {
                 "type": "string",
                 "enum": ["set", "increase", "decrease", "mute", "unmute"],
@@ -253,7 +260,7 @@ volume_tool = Tool(
                 ),
             },
         },
-        "required": ["action"],
+        "required": ["filler_text", "action"],
     },
     execute=_volume_handler,
 )
