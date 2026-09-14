@@ -1,9 +1,17 @@
-"""Volume Control Tool  -  adjust audio volume via voice commands.
+"""Volume control tool — adjusts the device's speaker volume by voice.
 
-Supports setting absolute volume, incremental adjustments, mute and unmute.
-When a hardware device is active (via _current_hw_id contextvar), publishes
-device.volume C2D messages via MQTT. Falls back to local mock state when no
-hardware is connected.
+The device is the authority on its own volume. This tool asks it what the
+current level is (over the session's MCP channel), computes the target for
+relative actions from that real value, then sets it and reports the level the
+device echoes back. It never reports success the device did not confirm — the
+earlier implementation published an MQTT command and returned success
+regardless, so the assistant would announce a change that never happened.
+
+The one deliberate exception is a write that lands on zero. This device has no
+screen and no LED, so the assistant's spoken confirmation is the only feedback
+the user gets — and going silent takes that down with it. Those writes are
+handed to the bridge to dispatch once the reply has played (see
+``PiguguMcpBridge.defer``); the tool reports the target it has committed to.
 """
 
 from __future__ import annotations
@@ -11,127 +19,204 @@ from __future__ import annotations
 import contextvars
 from typing import Any
 
-from core.agent.tool import Tool
-from core.aws_mqtt import publish_mqtt_message as _publish_mqtt
 from loguru import logger
+
+from core.agent.tool import Tool
 
 MIN_VOLUME = 0
 MAX_VOLUME = 100
+DEFAULT_STEP = 5
+# Level unmute restores to. The device has no notion of "muted" and the server
+# keeps no memory of the level we muted from — a contextvar cannot outlive the
+# turn it was set in, and "mute now, unmute later" crosses turns. So unmute
+# brings the audio back at the device's own power-on default, and says which
+# level it used.
+UNMUTE_LEVEL = 70
 
-# Hardware ID of the currently connected device — set by session.py
-_current_hw_id = contextvars.ContextVar("current_hw_id", default="")
+NO_DEVICE = "No device is connected to this session, so the volume cannot be changed."
+DEVICE_SILENT = "The device did not respond, so the volume was not changed."
 
-# Per-session simulated volume state (fallback when no hardware connected).
-# ContextVars isolate state across concurrent sessions — each session gets
-# its own volume and mute state.
-_current_volume = contextvars.ContextVar("current_volume", default=50)
-_muted = contextvars.ContextVar("muted", default=False)
+# The session's MCP channel to the device, set per turn by the agent. None
+# outside a voice session (e.g. the text-only roast path), where there is no
+# device to control. ContextVars isolate concurrent sessions in one process.
+_current_mcp = contextvars.ContextVar("current_mcp", default=None)
+
+
+def _clamp(value: int) -> int:
+    return max(MIN_VOLUME, min(MAX_VOLUME, value))
+
+
+def _step(value: Any) -> int:
+    """A relative step is always a positive amount.
+
+    The schema describes 5/10/15, but the model can send anything: a negative
+    step would turn "increase" into a decrease and push the target out of
+    0-100, which the device's own tool property rejects — so the user just
+    hears a refusal for a command they never gave.
+    """
+    if not value:
+        return DEFAULT_STEP
+    return max(1, min(int(value), MAX_VOLUME))
+
+
+def _failed(action: Any, message: str, level: int | None = None) -> dict[str, Any]:
+    result: dict[str, Any] = {"success": False, "action": action, "message": message}
+    if level is not None:
+        result["level"] = level
+    return result
+
+
+async def _read_device_volume(bridge) -> int:
+    """The level the device actually holds right now."""
+    status = await bridge.call_tool("self.get_device_status", {})
+    return int(status["audio_speaker"]["volume"])
+
+
+async def _apply(bridge, target: int) -> int:
+    """Set the level and return what the device says it now holds."""
+    result = await bridge.call_tool("self.audio_speaker.set_volume", {"volume": target})
+    level = result.get("volume") if isinstance(result, dict) else None
+    if isinstance(level, int) and not isinstance(level, bool):
+        return level
+    # Firmware from before the level-echo change answers with a bare success and
+    # no level. The write still landed, so read it back rather than reporting a
+    # failure the device never had — otherwise a fleet mid-rollout hears "the
+    # volume was not changed" while the volume audibly changes.
+    logger.warning("[volume] set_volume returned no level ({!r}), reading it back", result)
+    # Imported here rather than at module scope: the voice stack is heavy, and
+    # this path is only reached on a device that predates the level echo.
+    from voice.pipecat.mcp_bridge import McpToolError, McpToolTimeout
+
+    try:
+        return await _read_device_volume(bridge)
+    except (McpToolError, McpToolTimeout, KeyError, TypeError, ValueError) as exc:
+        # The write landed but the level is unreadable. Report the level that was
+        # asked for; claiming the change failed would be the same false negative
+        # this fallback exists to remove.
+        logger.warning("[volume] could not read the level back after a bare success: {!r}", exc)
+        return target
 
 
 async def _volume_handler(args: dict) -> dict[str, Any]:
-    """Execute a volume control action and return the result.
-
-    If _current_hw_id is set, publishes device.volume via MQTT to the
-    hardware. Otherwise uses local mock state.
-
-    Args:
-        args: Must contain "action" key. Optional "value" key for set/increase/decrease.
-
-    Returns:
-        Dict with success, action, level, and a human-readable message.
-    """
+    """Execute a volume control action against the connected device."""
     action = args.get("action", "set")
     value = args.get("value")
 
-    hw_id = _current_hw_id.get("")
-    current_vol = _current_volume.get()
+    # Imported lazily: the voice stack is heavy and this module is also
+    # imported by paths that never touch a device (the text-only roast path).
+    from voice.pipecat.mcp_bridge import McpToolError, McpToolTimeout
 
-    # Determine the target volume for the response message
-    if action == "set":
-        if value is None:
-            return {"success": False, "message": "Volume 'set' requires a value."}
-        raw = int(value)
-        target = max(MIN_VOLUME, min(MAX_VOLUME, raw))
-        _current_volume.set(target)
-        _muted.set(False)
-        msg = f"Volume set to {target}."
-        if raw < MIN_VOLUME:
-            msg = f"Volume cannot go below {MIN_VOLUME}, set to {MIN_VOLUME}."
-        elif raw > MAX_VOLUME:
-            msg = f"Volume cannot go above {MAX_VOLUME}, set to {MAX_VOLUME}."
+    bridge = _current_mcp.get(None)
+    if bridge is None:
+        return _failed(action, NO_DEVICE)
 
-    elif action == "increase":
-        if current_vol >= MAX_VOLUME:
-            return {
-                "success": False, "action": action,
-                "level": current_vol,
-                "message": f"Volume is already at maximum ({MAX_VOLUME}), cannot increase.",
-            }
-        step = int(value) if value else 5
-        target = min(current_vol + step, MAX_VOLUME)
-        _current_volume.set(target)
-        _muted.set(False)
-        msg = (
-            f"Volume increased to maximum ({MAX_VOLUME})."
-            if target == MAX_VOLUME
-            else f"Volume increased by {step}, now at {target}."
-        )
+    try:
+        if action == "set":
+            if value is None:
+                return _failed(action, "Volume 'set' requires a value.")
+            raw = int(value)
+            target = _clamp(raw)
+            msg = (
+                f"Volume set to {target}."
+                if raw == target
+                else f"Volume must stay between {MIN_VOLUME} and {MAX_VOLUME}, set to {target}."
+            )
 
-    elif action == "decrease":
-        if current_vol <= MIN_VOLUME:
-            return {
-                "success": False, "action": action,
-                "level": current_vol,
-                "message": f"Volume is already at minimum ({MIN_VOLUME}), cannot decrease.",
-            }
-        step = int(value) if value else 5
-        target = max(current_vol - step, MIN_VOLUME)
-        _current_volume.set(target)
-        msg = (
-            f"Volume decreased to minimum ({MIN_VOLUME})."
-            if target == MIN_VOLUME
-            else f"Volume decreased by {step}, now at {target}."
-        )
+        elif action == "increase":
+            current = await _read_device_volume(bridge)
+            if current >= MAX_VOLUME:
+                return _failed(
+                    action,
+                    f"Volume is already at maximum ({MAX_VOLUME}).",
+                    level=current,
+                )
+            step = _step(value)
+            target = min(current + step, MAX_VOLUME)
+            msg = (
+                f"Volume increased to maximum ({MAX_VOLUME})."
+                if target == MAX_VOLUME
+                else f"Volume increased by {step}."
+            )
 
-    elif action == "mute":
-        _muted.set(True)
-        target = MIN_VOLUME
-        msg = "Volume muted."
+        elif action == "decrease":
+            current = await _read_device_volume(bridge)
+            if current <= MIN_VOLUME:
+                return _failed(
+                    action,
+                    f"Volume is already at minimum ({MIN_VOLUME}).",
+                    level=current,
+                )
+            step = _step(value)
+            target = max(current - step, MIN_VOLUME)
+            msg = (
+                f"Volume decreased to minimum ({MIN_VOLUME})."
+                if target == MIN_VOLUME
+                else f"Volume decreased by {step}."
+            )
 
-    elif action == "unmute":
-        _muted.set(False)
-        target = current_vol
-        msg = f"Volume unmuted, restored to {current_vol}."
+        elif action == "mute":
+            target = MIN_VOLUME
+            msg = "Volume muted."
 
-    else:
-        return {"success": False, "message": f"Unknown volume action: {action}"}
-
-    # Publish MQTT message if hardware is connected
-    hw_reachable = True
-    if hw_id:
-        try:
-            await _publish_mqtt(
-                f"pgg/dev/{hw_id}/c2d",
-                {
-                    "msg_type": "device.volume",
+        elif action == "unmute":
+            current = await _read_device_volume(bridge)
+            if current > MIN_VOLUME:
+                # Already audible — do not change it, just say so. Still a
+                # statement of intent, so it supersedes any mute still waiting
+                # to be dispatched.
+                bridge.note_write()
+                return {
+                    "success": True,
                     "action": action,
-                    "value": target,
-                },
-            )
-        except Exception:
-            logger.exception(
-                "Volume MQTT publish failed: action={} target={} hw={}",
-                action, target, hw_id,
-            )
-            hw_reachable = False
+                    "level": current,
+                    "message": f"Volume is already at {current}.",
+                }
+            target = UNMUTE_LEVEL
+            msg = f"Volume unmuted, now at {UNMUTE_LEVEL}."
 
-    if hw_id and not hw_reachable:
-        msg += " (warning: device may not have received this command)"
+        else:
+            return _failed(action, f"Unknown volume action: {action}")
+
+        if target == MIN_VOLUME:
+            # Not just 'mute': "音量调到 0" (set) and "小点声" bottoming out
+            # (decrease) land on the same write, and it has the same problem —
+            # this device has no screen and no LED, so the spoken confirmation
+            # is the only feedback the user gets, and going silent now would
+            # take that down with it. The bridge dispatches it once the reply
+            # has finished playing.
+            #
+            # The write generation is claimed here rather than on entry: only a
+            # command that actually commits device state may supersede a
+            # deferred one. A command that failed or changed nothing leaves the
+            # user's earlier "静音" standing.
+            bridge.defer(lambda: _apply(bridge, target), seq=bridge.note_write())
+            return {
+                "success": True,
+                "action": action,
+                "level": target,
+                "message": msg,
+            }
+
+        # This one reaches the device, so it supersedes any write still waiting.
+        bridge.note_write()
+        applied = await _apply(bridge, target)
+
+    except McpToolTimeout:
+        logger.warning("[volume] device did not answer action={}", action)
+        return _failed(action, DEVICE_SILENT)
+    except McpToolError as exc:
+        logger.warning("[volume] device refused action={}: {}", action, exc)
+        return _failed(action, f"The device refused the change: {exc}")
+    except (KeyError, TypeError, ValueError) as exc:
+        # The device answered in a shape we cannot read. Report a failure
+        # rather than a guessed level.
+        logger.warning("[volume] unreadable device answer for action={}: {}", action, exc)
+        return _failed(action, DEVICE_SILENT)
 
     return {
         "success": True,
         "action": action,
-        "level": target,
+        "level": applied,
         "message": msg,
     }
 
@@ -142,7 +227,7 @@ volume_tool = Tool(
         "Adjust the audio volume. "
         "Use 'set' to go to a specific level (0-100). "
         "Use 'increase' or 'decrease' to adjust by a step (5, 10, or 15). "
-        "Use 'mute' to silence the audio, and 'unmute' to restore the previous level."
+        "Use 'mute' to silence the audio, and 'unmute' to make it audible again."
     ),
     parameters={
         "type": "object",

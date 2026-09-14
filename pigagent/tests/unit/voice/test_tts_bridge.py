@@ -252,13 +252,14 @@ class _FullPlayTTS:
             yield [b"opus-frame"] * self.FRAMES_PER_CHUNK
 
 
-def _make_bridge(pig=None, tts=None, state=None, task_manager=None):
+def _make_bridge(pig=None, tts=None, state=None, task_manager=None, mcp=None):
     return PiguguTtsBridge(
         pig if pig is not None else _FakePig(),
         tts if tts is not None else _BargeInTTS(PiguguTurnState()),
         state=state if state is not None else PiguguTurnState(),
         session_id="test-session",
         task_manager=task_manager,
+        mcp=mcp,
     )
 
 
@@ -665,3 +666,73 @@ async def test_cancel_during_drain_still_persists_interrupted():
     await asyncio.sleep(0.01)
     assistant = [(c, p) for r, c, p in pig.ctx.turns if r == "assistant"]
     assert assistant and assistant[0][1] is True
+
+
+# ── Deferred device calls (the mute) ─────────────────────────────────
+#
+# A tool can queue a device call for after the reply has been heard —
+# PiguguMcpBridge.defer. The mute needs it: the device has no screen and no
+# LED, so the spoken confirmation is the only feedback, and muting during it
+# would silence the explanation along with everything else.
+
+
+@pytest.mark.asyncio
+async def test_deferred_device_calls_are_dispatched_once_the_reply_has_played():
+    state = PiguguTurnState()
+    state.turn_storage = _make_storage()
+    flushed = []
+
+    class _Mcp:
+        has_deferred = True
+
+        async def flush_deferred(self):
+            flushed.append(True)
+
+    bridge = _make_bridge(
+        pig=_FakePig(),
+        tts=_FullPlayTTS(state),
+        state=state,
+        task_manager=TaskManager(),
+        mcp=_Mcp(),
+    )
+
+    async def _noop_push(frame, direction=FrameDirection.DOWNSTREAM):
+        pass
+
+    bridge.push_frame = _noop_push
+
+    await bridge._run_tts("hello there")
+
+    assert bridge._flush_tasks, "the turn must hand the deferred calls off"
+    await asyncio.gather(*bridge._flush_tasks)
+    assert flushed == [True]
+
+
+@pytest.mark.asyncio
+async def test_no_flush_is_scheduled_when_nothing_was_deferred():
+    """A plain reply must not spawn a task per turn."""
+    state = PiguguTurnState()
+    state.turn_storage = _make_storage()
+
+    class _Mcp:
+        has_deferred = False
+
+        async def flush_deferred(self):  # pragma: no cover - must not be called
+            raise AssertionError("nothing was deferred")
+
+    bridge = _make_bridge(
+        pig=_FakePig(),
+        tts=_FullPlayTTS(state),
+        state=state,
+        task_manager=TaskManager(),
+        mcp=_Mcp(),
+    )
+
+    async def _noop_push(frame, direction=FrameDirection.DOWNSTREAM):
+        pass
+
+    bridge.push_frame = _noop_push
+
+    await bridge._run_tts("hello there")
+
+    assert not bridge._flush_tasks

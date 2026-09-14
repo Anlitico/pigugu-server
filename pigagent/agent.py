@@ -35,7 +35,7 @@ from roast.constants import GAME_EVENT_PREFIX, FREE_CHAT_MODE_PREFIX
 from roast.types import Phase
 from roast.state import RoastState
 from tools.roast import _current_user_id, _current_persona_id
-from tools.volume import _current_hw_id
+from tools.volume import _current_mcp
 
 
 class PigAgent:
@@ -58,9 +58,13 @@ class PigAgent:
         max_iterations: int = 5,
         tool_timeout: float = 60.0,
         hw_id: str = "",
+        mcp: Any = None,
     ):
         self.user_id = user_id
         self.hw_id = hw_id
+        # Session channel to the device; device-control tools read it from
+        # the _current_mcp contextvar during a turn.
+        self.mcp = mcp
         self.ctx = ctx
         self._redis = redis
         self._pg_pool = pg_pool
@@ -230,7 +234,7 @@ class PigAgent:
         # Make user/device context available to tool handlers via contextvars
         token_user = _current_user_id.set(self.user_id)
         token_persona = _current_persona_id.set(persona_id)
-        token_hw = _current_hw_id.set(self.hw_id)
+        token_mcp = _current_mcp.set(self.mcp)
         try:
             if roast_state and game_mode:
                 async for text in self._stream_roast(
@@ -259,7 +263,7 @@ class PigAgent:
         finally:
             _current_user_id.reset(token_user)
             _current_persona_id.reset(token_persona)
-            _current_hw_id.reset(token_hw)
+            _current_mcp.reset(token_mcp)
 
         TelemetryCollector.mark("llm_end")
         logger.info(
@@ -459,7 +463,7 @@ class PigAgent:
         """
         token_user = _current_user_id.set(roast_state.user_id)
         token_persona = _current_persona_id.set(roast_state.persona_id)
-        token_hw = _current_hw_id.set(self.hw_id)
+        token_mcp = _current_mcp.set(self.mcp)
 
         # 1. Consume pending trigger prompt
         try:
@@ -480,7 +484,7 @@ class PigAgent:
         finally:
             _current_user_id.reset(token_user)
             _current_persona_id.reset(token_persona)
-            _current_hw_id.reset(token_hw)
+            _current_mcp.reset(token_mcp)
 
     async def _tick_roast(
         self, roast_state, game_mode, wc, current_msg,

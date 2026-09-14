@@ -25,9 +25,14 @@ from models.device_ota_job import ACTIVE_STATUSES, SUPERSEDED, DeviceOtaJob
 from models.device_provisioning_session import DeviceProvisioningSession
 from modules.device.schemas import (
     DeviceBindRequest,
+    DeviceVolumeResponse,
     MqttCredentialResponse,
     VerifyConnectivityResponse,
 )
+
+
+class DeviceUnreachable(Exception):
+    """The device did not confirm a command in time."""
 
 
 async def issue_mqtt_credentials(
@@ -224,6 +229,114 @@ async def connectivity_check(
     if pong:
         return VerifyConnectivityResponse(verified=True, rtt_ms=pong.get("rtt_ms"))
     return VerifyConnectivityResponse(verified=False, error_code="DEVICE_UNREACHABLE")
+
+
+async def _remembered_volume(hw_id: str) -> DeviceVolumeResponse:
+    """The last level this device reported, if one was ever remembered."""
+    from modules.device.iot import volume_key
+
+    raw = await redis_get(volume_key(hw_id))
+    if not raw:
+        return DeviceVolumeResponse(volume=None, stale=True, synced_at=None)
+    try:
+        cached = json.loads(raw)
+    except (TypeError, ValueError):
+        logger.warning("unreadable cached volume for %s: %r", hw_id, raw)
+        return DeviceVolumeResponse(volume=None, stale=True, synced_at=None)
+    volume = cached.get("volume")
+    return DeviceVolumeResponse(
+        volume=volume if isinstance(volume, int) else None,
+        stale=True,
+        synced_at=cached.get("ts"),
+    )
+
+
+async def get_device_volume(device: Device) -> DeviceVolumeResponse:
+    """The speaker level: ask the device, fall back to the last known value.
+
+    Never invents a number. When the device cannot be reached and nothing has
+    been remembered, ``volume`` stays None so the App shows "unknown" rather
+    than a level that would read as real.
+    """
+    from modules.device.iot import (
+        VOLUME_ROUND_TRIP_TIMEOUT_S,
+        ping_pong,
+        status_key,
+        volume_from_status,
+    )
+
+    hw_id = device.hardware_id.strip().lower()
+    request_id = str(uuid.uuid4())
+
+    reply = await ping_pong(
+        hw_id,
+        {
+            "msg_type": "device.status.query",
+            "request_id": request_id,
+            "ts": int(datetime.now().timestamp()),
+        },
+        status_key(hw_id, request_id),
+        timeout_s=VOLUME_ROUND_TRIP_TIMEOUT_S,
+    )
+    if reply:
+        volume = volume_from_status(reply.get("status"))
+        if volume is not None:
+            return DeviceVolumeResponse(
+                volume=volume, stale=False, synced_at=reply.get("ts")
+            )
+        logger.warning("device.status for %s carried no speaker level: %s", hw_id, reply)
+
+    return await _remembered_volume(hw_id)
+
+
+async def set_device_volume(device: Device, volume: int) -> DeviceVolumeResponse:
+    """Set the level and wait for the device to confirm it.
+
+    Raises :class:`DeviceUnreachable` when no confirmation arrives — the App
+    must surface that as a failure rather than assume the change landed.
+    """
+    from modules.device.iot import (
+        VOLUME_ROUND_TRIP_TIMEOUT_S,
+        ping_pong,
+        volume_ack_key,
+    )
+
+    hw_id = device.hardware_id.strip().lower()
+    request_id = str(uuid.uuid4())
+
+    reply = await ping_pong(
+        hw_id,
+        {
+            "msg_type": "device.volume",
+            "value": volume,
+            "request_id": request_id,
+            "ts": int(datetime.now().timestamp()),
+        },
+        volume_ack_key(hw_id, request_id),
+        timeout_s=VOLUME_ROUND_TRIP_TIMEOUT_S,
+    )
+    if not reply:
+        logger.warning("device.volume %s was not confirmed by %s", volume, hw_id)
+        raise DeviceUnreachable(hw_id)
+
+    applied = reply.get("value")
+    if not isinstance(applied, int):
+        # The firmware echoes the level it holds; a value-less ack means that
+        # contract broke. Warn rather than pass the requested value off as the
+        # device's own. Still report it: the ack does prove the command landed,
+        # and blanking a confirmed change would be the worse lie.
+        logger.warning(
+            "device.volume ack for %s carried no numeric value (%r); reporting the requested %s",
+            hw_id,
+            applied,
+            volume,
+        )
+        applied = volume
+    return DeviceVolumeResponse(
+        volume=applied,
+        stale=False,
+        synced_at=reply.get("ts"),
+    )
 
 
 async def bind_device(db: AsyncSession, user_id: uuid.UUID, body: DeviceBindRequest) -> Device:
