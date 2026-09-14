@@ -32,10 +32,15 @@ PR Merge → CI (auto) → User Confirmation → CD (manual)
 
 **What it does**:
 1. Checkout → AWS login → ECR login
-2. Build `pigugu-api` Docker image → push to ECR
-3. Build `pigugu-agent` Docker image → push to ECR
-4. Build `pigugu-tools` Docker image → push to ECR (ops scripts:
-   `analyze_latency.py`, `migrate_metrics_format.py`)
+2. Detect changed paths, then build **only** the affected images — each has its
+   own path filter, and most commits touch one package:
+   - `pigugu-api` ← `api/**`, `alembic/**`, `alembic.ini`, `.cicd/Dockerfile.api`
+   - `pigugu-agent` ← `pigagent/**`, `alembic/**`, `alembic.ini`, `.cicd/Dockerfile.agent`
+   - `pigugu-tools` ← `scripts/**`, `.cicd/Dockerfile.tools` (ops scripts:
+     `analyze_latency.py`, `migrate_metrics_format.py`)
+   - `pigugu-crawler` ← `crawler/**`, `crawler/Dockerfile`
+3. Push each built image as both `:<commit-sha>` and `:latest` — so a tag
+   exists per package, not per commit (the deploy step accounts for that)
 
 **How to check**:
 ```bash
@@ -67,23 +72,37 @@ done
 **Trigger**: Manual only via `workflow_dispatch`.
 
 **What it does**:
-1. **Run database migrations** (K8s Job):
+1. **Resolve image tags**:
+   - Images are built per package, so a tag exists only in the repositories
+     whose paths changed. Each deployment resolves to the requested tag where
+     ECR published it, and otherwise to that repository's `:latest` — pointing
+     one at a tag nobody published only yields ImagePullBackOff
+   - A tag that neither repository published fails the run
+   - The ECR lookup separates "no such tag" from a credentials/throttling
+     failure (via `ecr batch-get-image`), so the latter aborts the run instead
+     of being misread as "nothing to do"
+2. **Run database migrations** (K8s Job):
    - Delete old `pigugu-db-migration` job
-   - Build migration job from `k8s/migration-job.yaml` with current ECR image
+   - Build migration job from `k8s/migration-job.yaml` using the **same image
+     the api deployment is about to run** — never a different one. The api
+     entrypoint runs `alembic upgrade heads` on start, so migrating ahead of
+     that image leaves the new api pod starting against a revision its image
+     does not know, and it crashloops (`Can't locate revision`)
    - `kubectl apply -f` → `kubectl wait --for=condition=complete --timeout=120s`
    - On success: print logs, delete job
    - **On failure**: print logs, delete job, **exit 1 — old pods keep running (safe)**
-2. **Deploy to EKS**:
-   - `kubectl apply -f` for secrets, api, agent, crawler-cronjob
-   - `kubectl set image` for both deployments
-   - `kubectl rollout restart` + `kubectl rollout status`
+3. **Deploy to EKS**:
+   - `kubectl apply -f` for secrets, api, agent, crawler-cronjob (`api.yaml`
+     and `agent.yaml` take the resolved image through `__IMAGE__`)
+   - `kubectl rollout restart` + `kubectl rollout status` on both
 
 **How to deploy**:
 ```bash
 export HTTP_PROXY=http://127.0.0.1:7897 HTTPS_PROXY=http://127.0.0.1:7897
 
-# 1. Trigger deploy
-gh workflow run "Deploy to Amazon EKS" --repo Anlitico/pigugu-server --ref main
+# 1. Trigger deploy — pass the commit sha, or `latest` for each repository's
+#    newest build (which may be different commits for api and agent)
+gh workflow run "Deploy to Amazon EKS" --repo Anlitico/pigugu-server --ref main -f image_tag=<sha|latest>
 sleep 5
 
 # 2. Poll until complete

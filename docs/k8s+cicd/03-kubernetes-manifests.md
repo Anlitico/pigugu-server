@@ -31,7 +31,7 @@ spec:
     spec:
       containers:
       - name: api
-        image: <aws-account-id>.dkr.ecr.us-west-1.amazonaws.com/pigugu-api:latest
+        image: __IMAGE__   # injected by the deploy workflow (per-package tag)
         env:
         - name: DATABASE_URL
           valueFrom:

@@ -39,7 +39,11 @@ kubectl logs deployment/pigugu-agent --tail=20 -f
 ## Deploy
 
 ```bash
-# Build triggers automatically on push to main
-# Deploy is manual:
-gh workflow run ".github/workflows/deploy.yml" --repo Anlitico/pigugu-server -f image_tag=latest
+# Build triggers automatically on push to main — but only for the packages
+# whose paths changed, so a tag exists per package, not per commit.
+# Deploy is manual; pass the commit sha to deploy that commit's build, or
+# `latest` to take each repository's newest build (which may be different
+# commits for api and agent). Both are handled: a service the tag was not
+# published for falls back to its own repository's `:latest`.
+gh workflow run ".github/workflows/deploy.yml" --repo Anlitico/pigugu-server -f image_tag=<sha|latest>
 ```
