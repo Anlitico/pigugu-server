@@ -61,6 +61,7 @@ class PiguguTtsBridge(FrameProcessor):
         user_id: str = "",
         persona_id: int = 1,
         on_start: Any = None,
+        mcp: Any = None,
         **kwargs,
     ):
         super().__init__(**kwargs)
@@ -71,7 +72,13 @@ class PiguguTtsBridge(FrameProcessor):
         self._user_id = user_id or session_id
         self._persona_id = persona_id
         self._on_start = on_start
+        # Channel the agent's device-control tools call the device through.
+        self._mcp = mcp
         self._tts_task: asyncio.Task | None = None
+        # Holds the deferred-device-call flushes so they cannot be garbage
+        # collected mid-flight (see the finally in _run_tts). A set, not a
+        # slot: a slow flush can overlap the next turn's.
+        self._flush_tasks: set[asyncio.Task] = set()
         self._tts_started = False
         self._audio_marked = False
         self._play_position = 0.0
@@ -81,6 +88,21 @@ class PiguguTtsBridge(FrameProcessor):
         # each reply completes — wired by the session builder to the STT
         # bridge's push_context (context-aware STT, e.g. agent_context).
         self._stt_context_cb = None
+
+    async def flush_deferred_device_calls(self) -> None:
+        """Dispatch anything still queued, for teardown.
+
+        A deferred write is normally handed off at the end of its turn, but a
+        cancel landing on the last await before that hand-off can strand one —
+        and unlike a stranded turn, a session ending never gets another chance
+        to flush it. The user was already told the change landed, so this is
+        the last opportunity to make that true.
+        """
+        if self._mcp is not None:
+            # Bounded, and no re-queue: teardown is usually reached after the
+            # socket is gone, so an unbounded attempt would only stall cleanup,
+            # and there is no later flush to hand a failure to.
+            await self._mcp.flush_deferred(timeout=1.0, requeue=False)
 
     def set_stt_context_cb(self, cb) -> None:
         """Wire the STT context sink (e.g. stt_bridge.push_context).
@@ -386,6 +408,15 @@ class PiguguTtsBridge(FrameProcessor):
                     truncated_reason = truncated_reason or "drain_timeout"
             elif not cancelled:
                 truncated_reason = truncated_reason or "barge_in"
+            # Device calls the tools deferred until the reply had been heard —
+            # the mute, which would otherwise silence its own confirmation. A
+            # task rather than an await: this finally must survive a teardown
+            # cancel to reach the storage writes below, and the flush already
+            # logs its own failures.
+            if self._mcp is not None and self._mcp.has_deferred:
+                task = asyncio.create_task(self._mcp.flush_deferred())
+                self._flush_tasks.add(task)
+                task.add_done_callback(self._flush_tasks.discard)
             # The reply text actually spoken. A completed reply is the full
             # generated text; an interrupted reply is only the portion whose
             # audio reached the device — the full text must never be recorded
@@ -523,7 +554,9 @@ class PiguguTtsBridge(FrameProcessor):
         from bootstrap.factory import create_pig_agent
 
         try:
-            pig = await create_pig_agent(self._user_id, hw_id=self._state.hw_id)
+            pig = await create_pig_agent(
+                self._user_id, hw_id=self._state.hw_id, mcp=self._mcp
+            )
             # The storage telemetry snapshot reads llm_model from the turn meta
             # (old connection.py set it right after creating the agent).
             TelemetryCollector.set_meta("llm_model", pig.model)

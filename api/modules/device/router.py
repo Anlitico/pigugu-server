@@ -17,6 +17,8 @@ from modules.device.schemas import (
     DeviceRenameRequest,
     DeviceResponse,
     DeviceStateRequest,
+    DeviceVolumeResponse,
+    DeviceVolumeSetRequest,
     AgentConfigResponse,
     MqttCredentialRequest,
     MqttCredentialResponse,
@@ -376,6 +378,40 @@ async def _resolve_owned_device(
     if device is None:
         raise HTTPException(status_code=404, detail="DEVICE_NOT_FOUND")
     return device
+
+
+@router.get("/{device_id}/volume", response_model=DeviceVolumeResponse)
+async def get_device_volume(
+    device_id: str,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """The device's speaker level, as a percentage.
+
+    ``stale`` marks a remembered value: the device could not be reached, so
+    this is what it last reported, not what it is now.
+    """
+    device = await _resolve_owned_device(db, current_user.id, device_id)
+    return await service.get_device_volume(device)
+
+
+@router.put("/{device_id}/volume", response_model=DeviceVolumeResponse)
+async def set_device_volume(
+    device_id: str,
+    body: DeviceVolumeSetRequest,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Set the speaker level, confirmed by the device.
+
+    Returns 503 when the device does not confirm — the App must show a failure
+    rather than a level that was never applied.
+    """
+    device = await _resolve_owned_device(db, current_user.id, device_id)
+    try:
+        return await service.set_device_volume(device, body.volume)
+    except service.DeviceUnreachable:
+        raise HTTPException(status_code=503, detail="DEVICE_UNREACHABLE")
 
 
 @router.get("/{device_id}/firmware", response_model=DeviceFirmwareDetailResponse)

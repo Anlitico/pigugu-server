@@ -31,6 +31,7 @@ from pipecat.workers.base_worker import WorkerParams
 
 from voice.pipecat.agent_gateway import PiguguAgentGateway
 from voice.pipecat.echo_processor import PiguguEchoProcessor
+from voice.pipecat.mcp_bridge import PiguguMcpBridge
 from voice.pipecat.pigugu_serializer import SAMPLE_RATE, PiguguFrameSerializer
 from voice.pipecat.state import PiguguTurnState
 from voice.pipecat.stt_bridge import PiguguSttBridge
@@ -157,6 +158,10 @@ def _default_processors(
     # per-turn TurnStorage built by the observer and committed by the TTS bridge.
     # ``pig`` may be None: the TTS bridge creates it lazily on the first turn
     # (needs the user id + hw_id from the device hello).
+    # The device's MCP tools ride the same socket as the audio. Built here so
+    # the agent's device-control tools (volume) can reach it, and kept first
+    # in the chain so MCP replies never reach the other processors.
+    mcp_bridge = PiguguMcpBridge()
     tts_bridge = PiguguTtsBridge(
         pig,
         tts,
@@ -164,6 +169,7 @@ def _default_processors(
         session_id=session_id,
         user_id=user_id,
         persona_id=persona_id,
+        mcp=mcp_bridge,
     )
     vad_bridge = PiguguVadBridge(vad, state=state)
     # The observer needs the VAD BRIDGE (not the provider): silero's is_vad
@@ -191,6 +197,7 @@ def _default_processors(
         user_idle_timeout=user_idle_timeout,
     )
     chain = [
+        mcp_bridge,
         vad_bridge,
         stt_bridge,
         turn_processor,
@@ -446,3 +453,11 @@ class PiguguSession:
                 await pig.ctx.flush()
             except Exception:
                 logger.debug(f"[PiguguSession] {self.session_id} ctx flush failed")
+        if self._tts_bridge is not None:
+            # A deferred device write is normally handed off at the end of its
+            # turn; a cancel landing on the last await before that hand-off can
+            # strand one, and a session ending never gets another chance.
+            try:
+                await self._tts_bridge.flush_deferred_device_calls()
+            except Exception:
+                logger.debug(f"[PiguguSession] {self.session_id} deferred device flush failed")

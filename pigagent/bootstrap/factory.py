@@ -15,6 +15,7 @@ STT and TTS are called directly via Deepgram HTTP API and Cartesia SSE API
 """
 
 import os
+from typing import Any
 
 from loguru import logger
 
@@ -80,14 +81,16 @@ async def get_pg_pool():
     return await _ensure_pg_pool()
 
 
-async def create_pig_agent(user_id: str, config=None, *, hw_id: str = "") -> PigAgent:
+async def create_pig_agent(
+    user_id: str, config=None, *, hw_id: str = "", mcp: Any = None
+) -> PigAgent:
     """Create a new PigAgent instance for a specific user/session.
 
     Each call creates a fresh PigAgent + ContextManager + PromptStore.
     Shared resources (Redis, PG pool, game modes, model config) are reused.
 
-    hw_id is the hardware_id of the connected device, used by tools
-    (e.g. volume_control) to send C2D MQTT messages.
+    hw_id is the hardware_id of the connected device. mcp is the session's
+    channel to that device, used by device-control tools (volume_control).
     """
     if config is None:
         config = get_config()
@@ -117,6 +120,7 @@ async def create_pig_agent(user_id: str, config=None, *, hw_id: str = "") -> Pig
         max_tokens=config.LLM_MAX_TOKENS,
         max_iterations=config.AGENT_MAX_STEPS,
         hw_id=hw_id,
+        mcp=mcp,
     )
     logger.info("[Factory] PigAgent created for user=%s hw_id=%s model=%s", user_id, hw_id, model)
     return pig_agent

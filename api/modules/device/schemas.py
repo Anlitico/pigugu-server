@@ -3,7 +3,7 @@ from __future__ import annotations
 import uuid
 from datetime import datetime
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 class DeviceBindRequest(BaseModel):
@@ -63,6 +63,24 @@ class AgentConfigResponse(BaseModel):
 class DeviceStateRequest(BaseModel):
     device_id: str
     state: str  # listening | thinking | speaking | idle
+
+
+class DeviceVolumeSetRequest(BaseModel):
+    volume: int = Field(ge=0, le=100)
+
+
+class DeviceVolumeResponse(BaseModel):
+    """The device's speaker level as the App should render it.
+
+    ``volume`` is None when the device has never reported one — the App must
+    show "unknown" rather than 0, which would read as muted.
+    ``stale`` is True when this is a remembered value rather than a fresh
+    answer from the device, so the App can say how old it is instead of
+    implying it is live.
+    """
+    volume: int | None = None
+    stale: bool = True
+    synced_at: int | None = None
 
 
 class MqttCredentialRequest(BaseModel):

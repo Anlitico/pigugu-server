@@ -97,6 +97,93 @@ async def _push_ws_by_hw(hw_id: str, event: dict) -> None:
         logger.warning("_push_ws_by_hw failed for %s: %s", hw_id, e)
 
 
+# ── Speaker volume (device status + change notifications) ─────────
+
+# Last known level per device. Long TTL: it is a fallback for the App when the
+# device cannot be reached, not a cache with a freshness contract.
+VOLUME_KEY_TTL_SECS = 86400
+# How long a request/reply round trip over MQTT may take. The device may be in
+# WiFi power save, where a c2d message waits for the next beacon window (~1s).
+VOLUME_ROUND_TRIP_TIMEOUT_S = 3.0
+
+
+def volume_key(hw_id: str) -> str:
+    return f"device:volume:hw:{hw_id}"
+
+
+def volume_ack_key(hw_id: str, request_id: str) -> str:
+    return f"device:volume:ack:hw:{hw_id}:{request_id}"
+
+
+def status_key(hw_id: str, request_id: str) -> str:
+    return f"device:status:hw:{hw_id}:{request_id}"
+
+
+def volume_from_status(status) -> int | None:
+    """The speaker level inside a device status document, if present."""
+    if not isinstance(status, dict):
+        return None
+    speaker = status.get("audio_speaker")
+    if not isinstance(speaker, dict):
+        return None
+    volume = speaker.get("volume")
+    return volume if isinstance(volume, int) else None
+
+
+async def _remember_volume(hw_id: str, volume: int, ts) -> None:
+    await redis_set(
+        volume_key(hw_id),
+        json.dumps({"volume": volume, "ts": ts}),
+        ex=VOLUME_KEY_TTL_SECS,
+    )
+
+
+async def _handle_volume_changed(hw_id: str, msg: dict) -> None:
+    """device.volume.changed → last known level + push to the owner's App.
+
+    Fires on any real change whatever made it (voice over MCP, a c2d command,
+    or a local control). This is what keeps an open App in step without
+    polling the device.
+    """
+    volume = msg.get("value")
+    if not isinstance(volume, int):
+        logger.warning("device.volume.changed from %s without a numeric value: %s", hw_id, msg)
+        return
+    await _remember_volume(hw_id, volume, msg.get("ts"))
+    await _push_ws_by_hw(hw_id, {
+        "type": "device_volume",
+        "hardware_id": hw_id,
+        "volume": volume,
+    })
+
+
+async def _handle_volume_ack(hw_id: str, msg: dict) -> None:
+    """device.volume.ack → the correlated reply to a c2d device.volume."""
+    request_id = msg.get("request_id")
+    if not request_id:
+        logger.warning("device.volume.ack from %s without a request_id, dropped", hw_id)
+        return
+    await redis_set(volume_ack_key(hw_id, request_id), json.dumps(msg), ex=300)
+    volume = msg.get("value")
+    if isinstance(volume, int):
+        await _remember_volume(hw_id, volume, msg.get("ts"))
+
+
+async def _handle_device_status(hw_id: str, msg: dict) -> None:
+    """device.status → reply to a c2d device.status.query, and a level source."""
+    request_id = msg.get("request_id")
+    if request_id:
+        await redis_set(status_key(hw_id, request_id), json.dumps(msg), ex=300)
+    volume = volume_from_status(msg.get("status"))
+    if isinstance(volume, int):
+        await _remember_volume(hw_id, volume, msg.get("ts"))
+        await _push_ws_by_hw(hw_id, {
+            "type": "device_volume",
+            "hardware_id": hw_id,
+            "volume": volume,
+        })
+
+
 # ── Ping-pong (pure function — reusable by provisioning & reboot) ─
 
 async def ping_pong(hw_id: str, ping: dict, pong_key: str,
@@ -548,5 +635,14 @@ async def aws_iot_webhook(
 
     elif msg_type == "ota.report":
         await _handle_ota_report(hw_id, msg)
+
+    elif msg_type == "device.status":
+        await _handle_device_status(hw_id, msg)
+
+    elif msg_type == "device.volume.changed":
+        await _handle_volume_changed(hw_id, msg)
+
+    elif msg_type == "device.volume.ack":
+        await _handle_volume_ack(hw_id, msg)
 
     return {"status": "ok"}
