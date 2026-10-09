@@ -43,6 +43,15 @@ data:
   # on before the ack answers the wake word itself.
   VOICE_BARE_WAKE_IDLE_SECS: "__VOICE_BARE_WAKE_IDLE_SECS__"
   VOICE_WAKE_ACK_WAIT_SECS: "__VOICE_WAKE_ACK_WAIT_SECS__"
+  # Echo gate (STT bridge). While the assistant is speaking, a transcript that
+  # arrives with no server-VAD user voice is dropped: residual echo leaking
+  # back through the on-device AEC would otherwise start a turn and barge-in on
+  # the reply being played. "0" reverts to ungated barge-in. Code default: on.
+  VOICE_ECHO_GATE: "1"
+  # The VAD energy floor is LOAD-BEARING for barge-in now (it is what separates
+  # echo from speech), so it is pinned here instead of resting on the code
+  # default -- too high and a genuine barge-in is suppressed.
+  VAD_MIN_VOLUME: "0.10"
 ---
 apiVersion: apps/v1
 kind: Deployment

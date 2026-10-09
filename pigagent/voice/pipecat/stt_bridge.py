@@ -13,6 +13,8 @@ turn boundary. Interim speech while the assistant is speaking triggers a barge-i
 from __future__ import annotations
 
 import asyncio
+import os
+import time
 from typing import Any
 
 import numpy as np
@@ -30,6 +32,25 @@ from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 from voice.pipecat.state import PiguguTurnState
 
 _INPUT_GAIN = 10.0
+
+# Head of a reply blanked regardless of VAD: the echo canceller has not
+# converged yet there, so that is exactly where the residual is worst (the
+# standard "AEC warm-up" window; LiveKit ships the same idea as
+# aec_warmup_duration). Turns nothing on -- it only drops transcripts.
+_ECHO_GRACE_MS = 300.0
+
+
+def _env_bool(name: str, default: bool) -> bool:
+    """Env flag, defaulting on. Only "0/false/no/off/empty" turn it off.
+
+    Deliberately not ``core.agent_config.get_bool_config_value``: that one
+    accepts only the literal "true", so ``VOICE_ECHO_GATE=1`` would silently
+    read as OFF -- the wrong way for a kill switch to be surprising.
+    """
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() not in ("", "0", "false", "no", "off")
 
 
 class PiguguSttBridge(FrameProcessor):
@@ -56,6 +77,9 @@ class PiguguSttBridge(FrameProcessor):
         # in-session context yet — so a reconnect starts with the last reply as
         # STT context instead of a blank decoder.
         self._context_loader = context_loader
+        # Echo gate kill switch -- this drops transcripts, so it must be
+        # revertible without a code change.
+        self._echo_gate = _env_bool("VOICE_ECHO_GATE", True)
 
     # Deepgram callback contract (read by deepgram.py on_message):
     # client_is_speaking is owned by the TTS bridge via the shared turn state.
@@ -109,6 +133,29 @@ class PiguguSttBridge(FrameProcessor):
         np.clip(arr, -32768, 32767, out=arr)
         return arr.astype(np.int16).tobytes()
 
+    def _echo_suppressed(self) -> bool:
+        """Whether this transcript is the assistant's own reply leaking back.
+
+        The device's speaker bleeds into its own mic, and the AEC leaves a
+        residual that never clears the VAD's energy gate -- but Deepgram
+        normalizes, so it transcribes that residual anyway. The phantom
+        transcript then starts a user turn, which barge-ins on the reply.
+
+        Only fires while the assistant is speaking, so wake-word turns and
+        every turn taken while the bot is silent are untouched.
+        """
+        if not self._echo_gate or not self._state.client_is_speaking:
+            return False
+        if not self._state.vad_wired:
+            # No VAD wired: nothing could ever open the gate, so blocking here
+            # would silently disable barge-in for the whole session.
+            return False
+        # AEC convergence window: drop everything at the head of a reply,
+        # whatever the VAD says.
+        if (time.perf_counter() - self._state.speaking_started_pc) * 1000.0 < _ECHO_GRACE_MS:
+            return True
+        return not self._state.vad_voice_active
+
     # ── Deepgram thread callbacks (run_coroutine_threadsafe → this loop) ──
 
     async def _on_stt_final(self, text: str) -> None:
@@ -116,6 +163,9 @@ class PiguguSttBridge(FrameProcessor):
             return
         text = text.strip()
         if not text:
+            return
+        if self._echo_suppressed():
+            logger.info(f"[SttBridge] echo-gated final: {text!r}")
             return
         # stt_final telemetry is marked by the TurnStorageObserver on the
         # pipeline task (it owns the turn context; the Deepgram thread here
@@ -127,6 +177,11 @@ class PiguguSttBridge(FrameProcessor):
             return
         text = text.strip()
         if not text:
+            return
+        # Before the interim buffer: an echoed interim must not land in
+        # stt_interims[] either.
+        if self._echo_suppressed():
+            logger.info(f"[SttBridge] echo-gated interim: {text!r}")
             return
         if self._state.interims is not None:
             self._state.interims.record(text)
@@ -151,6 +206,14 @@ class PiguguSttBridge(FrameProcessor):
         audio burst, a noisy room, and absent device vad_silence.
         """
         if self._loop is None:
+            return
+        # Same gate as the transcripts. An echoed utterance-end would otherwise
+        # close a user turn that is still open: the roast/inject path sets
+        # client_is_speaking mid-utterance, and the external (AssemblyAI) stop
+        # finalizes on the first proposed stop with wait_for_transcript=False,
+        # so the turn would commit on half the question.
+        if self._echo_suppressed():
+            logger.info("[SttBridge] echo-gated utterance-end")
             return
         if getattr(self.stt, "turn_end_signal", "vad") == "external":
             await self.push_frame(ProposedUserStoppedSpeakingFrame())

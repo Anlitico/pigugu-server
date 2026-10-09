@@ -26,6 +26,13 @@ from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 from voice.pipecat.pigugu_serializer import PiguguMessageFrame
 from voice.pipecat.state import PiguguTurnState
 
+# How long a single voiced chunk keeps ``state.vad_voice_active`` true. This
+# bridges the GAPS INSIDE a real utterance -- measured on real captures,
+# ``last_is_voice`` is true for only 24-59% of a user utterance's chunks -- it
+# is not an echo-suppression window. Echo never sets it at all.
+_VOICE_HOLD_MS = 500
+
+
 class PiguguVadBridge(FrameProcessor):
     """Tracks device + Silero voice signals for the turn sidecar (no turn frames)."""
 
@@ -33,6 +40,10 @@ class PiguguVadBridge(FrameProcessor):
         super().__init__(**kwargs)
         self.vad = vad
         self._state = state or PiguguTurnState()
+        # The echo gate's precondition: without a VAD there is no verdict to
+        # gate on, and the gate must stay inert rather than block every
+        # barge-in.
+        self._state.vad_wired = vad is not None
         # Silero per-connection state lives on this instance (is_vad stores on conn).
         # ``client_audio_buffer`` is the Silero chunk accumulator — the migration
         # from connection.py must keep the conn contract (onnx.py:74 extends it,
@@ -43,6 +54,8 @@ class PiguguVadBridge(FrameProcessor):
         self.client_listen_mode = "auto"
         self.client_audio_buffer = bytearray()
         self.session_id = "?"
+        # perf_counter of the last voiced chunk (0.0 = nobody has spoken yet).
+        self._last_voice_pc = 0.0
 
     async def process_frame(self, frame: Frame, direction: FrameDirection):
         if isinstance(frame, InputAudioRawFrame):
@@ -67,6 +80,30 @@ class PiguguVadBridge(FrameProcessor):
         # watchdog, so a lost utterance-end would hang the turn forever.
         # client_have_voice / client_voice_stop stay tracked for the
         # voice_segments sidecar but emit no frames.
+
+        # Publish the instantaneous verdict (held) for the STT bridge's echo
+        # gate. ``last_is_voice`` is already past the provider's energy gate,
+        # and it leads ``client_have_voice`` -- which additionally needs 500ms
+        # of unbroken voice -- by ~0.5s. Both are zero-trigger on residual
+        # echo, so the faster one costs no barge-in latency.
+        if hasattr(self, "last_is_voice"):
+            now = time.perf_counter()
+            if self.last_is_voice:
+                self._last_voice_pc = now
+            self._state.vad_voice_active = (
+                (now - self._last_voice_pc) * 1000.0 <= _VOICE_HOLD_MS
+            )
+        elif self._state.vad_wired:
+            # The provider never published a verdict: it raised on the chunk
+            # (onnx swallows and returns) or does not publish this attribute at
+            # all. Keying the gate on a signal that never arrives would
+            # silently kill barge-in for the session, so disarm it and say so.
+            self._state.vad_wired = False
+            logger.warning(
+                "[PiguguVadBridge] VAD published no last_is_voice verdict; "
+                "echo gate disabled for this session"
+            )
+
         if self.client_voice_stop:
             self.client_voice_stop = False
 
