@@ -41,6 +41,15 @@ TTS_FRAME_INTERVAL = 0.06  # 60 ms per Opus frame at 16 kHz
 TTS_MAX_SEND_AHEAD = 1.2   # keep the device decode queue ~1.2s ahead
 TTS_STREAM_WARMUP_FRAMES = 5
 
+# A replyless turn hands its text to the next turn that speaks. If replies keep
+# being killed (a barge-in-heavy stretch, or TTS failing outright) that text
+# would otherwise accumulate for the whole session into one ever-growing merged
+# prompt — and it is held outside ctx, so compression cannot trim it. Past this
+# length it is written out as its own user record instead, which is what the
+# pre-merge code did and never drops anything. Well above a normal utterance
+# (a multi-sentence one runs 150-400 chars); it only ever bites on a run.
+_PENDING_TEXT_FLUSH_CHARS = 600
+
 # Marker appended to an interrupted reply's context text so the LLM knows the
 # user cut the reply off mid-speech (Azure ``appended_text_after_truncation``
 # pattern). global.j2 defines its meaning: a reply ending with this marker is
@@ -189,10 +198,12 @@ class PiguguTtsBridge(FrameProcessor):
                 return
         if storage is not None:
             storage.mark_stt_final(text)
-        # Persist the user's utterance into the conversation context (the old
-        # connection.py did this at STT final; agent.py delegates it to the
-        # session layer).
-        self._schedule_ctx("user", text)
+        # The LLM's input for this turn: this turn's words, prepended with any
+        # carried over from a previous replyless turn (see the finally). The
+        # merge stops here -- ``stt_text`` stays this turn's own transcript, so
+        # the sidecar keeps recording what was actually heard per turn.
+        prior_text = self._state.pending_user_text
+        prompt_text = f"{prior_text} {text}".strip() if prior_text else text
 
         tts_pcm = bytearray()  # debug PCM → tts.wav
         holder: dict[str, str] = {"full": ""}
@@ -212,7 +223,7 @@ class PiguguTtsBridge(FrameProcessor):
             full = ""
             try:
                 async for chunk in self._pig.generate_reply(
-                    text,
+                    prompt_text,
                     persona_id=self._persona_id,
                     interrupt_event=self._state.interrupt_event,
                     session_id=self._session_id,
@@ -475,6 +486,31 @@ class PiguguTtsBridge(FrameProcessor):
                 # user's next utterance. The observer attaches this turn's
                 # listen.wav at that point.
                 storage.mark_finalized()
+            # Persist the user's words. A turn that never voiced (no tts/start:
+            # nothing was heard) writes no record of its own — its text is held
+            # in state for the next turn that speaks to pick up, so one
+            # utterance that STT split into several turns ends up as ONE user
+            # message instead of fragments, each with a reply the user never
+            # heard. Written before the assistant reply below so the history
+            # keeps its user-then-assistant order.
+            #
+            # Writing here instead of at turn start also moves this record after
+            # any tool records the same turn persisted (generate_reply writes
+            # those mid-turn), so a tool result now precedes the user message
+            # that asked for it. Accepted: the alternative is the turn-start
+            # write, which is exactly the standalone fragment removed here.
+            if self._tts_started:
+                self._schedule_ctx("user", prompt_text)
+                self._state.pending_user_text = ""
+            else:
+                pending = f"{prior_text} {text}".strip() if prior_text else text
+                if len(pending) >= _PENDING_TEXT_FLUSH_CHARS:
+                    # A run this long is not one utterance any more — write it
+                    # out rather than let the merged prompt grow without bound.
+                    self._schedule_ctx("user", pending)
+                    self._state.pending_user_text = ""
+                else:
+                    self._state.pending_user_text = pending
             # Persist the assistant reply and feed STT context. An interrupted
             # reply persists only the spoken portion, explicitly marked as cut
             # off so the LLM knows it was interrupted rather than a complete
@@ -599,6 +635,22 @@ class PiguguTtsBridge(FrameProcessor):
             )
         except Exception:
             logger.exception(f"[PiguguTtsBridge] ctx.add_turn({role}) failed")
+
+    async def flush_pending_user_text(self) -> None:
+        """Write user text held back from a replyless turn, at session end.
+
+        Such a turn hands its words to the next turn that speaks; if the
+        session ends first, holding them any longer would drop what the user
+        said from the history entirely.
+        """
+        text = self._state.pending_user_text
+        if not text:
+            return
+        self._state.pending_user_text = ""
+        pig = self._pig
+        if pig is None or getattr(pig, "ctx", None) is None:
+            return
+        await self._ctx_add("user", text)
 
     # ── interrupt text truncation ─────────────────────────────────────
 

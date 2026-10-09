@@ -12,9 +12,13 @@ Mirrors the Deepgram provider's callback contract so the same
 Turn-end is driven by the model's semantic (punctuation-based) endpointing:
 a ``Turn`` message with ``end_of_turn=true`` fires ``_on_utterance_end``, which
 the bridge maps to a ``ProposedUserStoppedSpeakingFrame`` (``turn_end_signal``
-= "external"). This is what makes mid-sentence pauses survive — verified in
-PoC: a 700ms mid-sentence pause does not split a turn, while two real turns
-split cleanly.
+= "external"). Note what it actually keys on: ``min_turn_silence`` only arms a
+punctuation-based end-of-turn check, so a pause AFTER A SENTENCE ends the turn
+even with the utterance unfinished. A PoC with one 700ms pause made this look
+like "pauses never split a turn"; real sessions say otherwise — 96% of turns
+end on terminal punctuation while ordinary inter-sentence pauses run 200-500ms,
+so one multi-sentence utterance often arrives as several turns. The turns whose
+reply never voiced are absorbed together by the TTS bridge instead.
 
 Protocol (v3, verified against pipecat 1.8.1 reference):
   - endpoint  wss://streaming.assemblyai.com/v3/ws

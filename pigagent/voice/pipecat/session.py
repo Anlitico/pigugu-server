@@ -92,8 +92,10 @@ def _stop_strategies(stt):
     the turn when no new transcript arrives within 0.6s (their utterance_end
     is slow, so the fallback carries the turn-end).
     "external" providers (AssemblyAI): the model's semantic endpointing drives
-    turn-end via ProposedUserStoppedSpeakingFrame — no inactivity fallback, so
-    a mid-sentence pause never splits a turn.
+    turn-end via ProposedUserStoppedSpeakingFrame — no inactivity fallback.
+    That endpointing ends the turn on a sentence boundary, so it does NOT
+    protect a pause inside one utterance (see the provider's module docstring);
+    the split-off turns whose reply never voiced are merged by the TTS bridge.
     """
     if getattr(stt, "turn_end_signal", "vad") == "external":
         # wait_for_transcript=False: the provider's semantic endpointing is the
@@ -449,6 +451,18 @@ class PiguguSession:
                 logger.debug(f"[PiguguSession] {self.session_id} stt close failed")
         pig = self._tts_bridge._pig if self._tts_bridge else None
         if pig is not None and getattr(pig, "ctx", None) is not None:
+            # User text a replyless turn held back for the next turn that
+            # speaks: the session ending here is its last chance to land. In its
+            # own try, so a failure here cannot be misreported as the ctx-flush
+            # failure below — this write is the only copy of those words.
+            if self._tts_bridge is not None:
+                try:
+                    await self._tts_bridge.flush_pending_user_text()
+                except Exception:
+                    logger.warning(
+                        f"[PiguguSession] {self.session_id} pending user text flush failed",
+                        exc_info=True,
+                    )
             try:
                 await pig.ctx.flush()
             except Exception:

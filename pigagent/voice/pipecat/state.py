@@ -67,6 +67,13 @@ class PiguguTurnState:
         # the wake-word audio (CONFIG_SEND_WAKE_WORD_DATA is off), so the
         # transcript never contains it — see PiguguAgentGateway.
         self.wake_word: str = ""
+        # User text held back from a turn whose reply never voiced, until a turn
+        # that does speak picks it up. A replyless turn is silent for the user
+        # (the reply was killed before any audio), so its words belong with the
+        # next turn's input rather than standing alone: the LLM then answers the
+        # whole utterance at once, and the history holds one user message
+        # instead of a run of fragments with no reply between them.
+        self.pending_user_text: str = ""
         # The live TelemetryCollector turn dict for the current turn. Pipecat
         # runs each FrameProcessor in its own asyncio task with an isolated
         # contextvars copy, so marks set in one processor are invisible to the
