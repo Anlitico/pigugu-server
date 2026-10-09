@@ -263,6 +263,7 @@ class PiguguTtsBridge(FrameProcessor):
                 payload["sentence_id"] = self._current_sentence_id
             await self._push_message(payload)
             self._state.client_is_speaking = True
+            self._state.speaking_started_pc = time.perf_counter()
             self._state.current_sentence_id = self._current_sentence_id
             self._tts_started = True
             # Tell the turn layer the bot is speaking: MinWordsUserTurnStartStrategy
@@ -749,6 +750,7 @@ class PiguguTtsBridge(FrameProcessor):
             return
         await self._push_message({"type": "tts", "state": "start"})
         self._state.client_is_speaking = True
+        self._state.speaking_started_pc = time.perf_counter()
         await self.push_frame(BotStartedSpeakingFrame(), FrameDirection.UPSTREAM)
         await self._pace(frames, mark_first=False, extra_break=stale)
         if (

@@ -17,6 +17,20 @@ class PiguguTurnState:
     def __init__(self):
         self.interrupt_event = asyncio.Event()
         self.client_is_speaking = False
+        # perf_counter at which client_is_speaking last went True (set by the
+        # TTS bridge). The STT bridge uses it to blank the head of a reply,
+        # where the AEC has not converged yet and the residual echo is worst.
+        self.speaking_started_pc: float = 0.0
+        # Server-side Silero VAD verdict, held briefly by the VAD bridge so a
+        # dip between voiced chunks cannot flap it. The STT bridge reads it to
+        # tell the assistant's own echoed reply from a real user: residual echo
+        # never clears the VAD's energy gate, so this stays False for the whole
+        # reply, while real user speech clears it within ~0.2s.
+        self.vad_voice_active: bool = False
+        # Whether a VAD is wired at all. Without one the verdict above can
+        # never light up, so the echo gate must stay inert -- otherwise a
+        # session built without a VAD would silently lose barge-in entirely.
+        self.vad_wired: bool = False
         # Next sentence id (incremented per turn); the TTS bridge sets
         # ``current_sentence_id`` to the one actually playing so a late
         # device tts_played ack can be validated against the right turn.
